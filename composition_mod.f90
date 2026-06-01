@@ -1,0 +1,2888 @@
+MODULE composition_mod
+  USE trace_mod
+  USE prec_mod
+  USE op_math_mod
+  USE mmath_mod, only: refsor
+  USE handyfuncs_mod
+  USE element_mod
+  USE ion_mod, only: ion_type, debye_shield
+  USE level_mod, only: level_type, wcalc
+  USE bbtrans_mod, only:bbtrans_type, add_opacities
+  USE bftrans_mod, only:bftrans_type, H_occupation_probability
+  USE molecule_mod, only:molec_type, irwin_dis
+  USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
+  USE osmet_mod, only:osmet
+  USE omp_lib
+  USE os_mod
+  USE io_mod
+  use, intrinsic :: ieee_arithmetic
+  implicit none
+  private
+
+  type, public :: composition_type
+    logical :: initialised, ll_initialised=.false., loaded=.false.
+    integer :: nel, nmolec, nline, verbose
+    real(dp) :: xmy, suma, grph, tmolim, molh, FeH
+    type(element_type), allocatable :: elements(:)
+    type(molec_type),   allocatable :: molecules(:)
+    type(bftrans_type), allocatable :: trans(:)
+    type(level_type), dimension(:), allocatable :: input_H_levels
+    type(particle_type) :: peachmet
+    real(dp), dimension(:,:,:), allocatable :: temp, ne, rho, zero
+    real(dp), dimension(:,:,:), allocatable :: e_kT, pe, dxi, toth, tothi
+    real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
+    real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
+    real(4), dimension(:,:,:), allocatable :: chi500, vmic
+  contains
+    procedure :: init => injon
+    procedure :: init_molecules
+    procedure :: load_state_variables
+    procedure :: iterate_thermal_eq
+    procedure :: thermal_equilibrium
+    procedure :: compute_energy_and_gas_pressure
+    procedure :: set_aux_data
+    procedure :: molecular_equilibrium
+    procedure :: init_H_levels
+    procedure :: Hoccupation_partition
+    procedure :: molecule_by_id
+    procedure :: element_by_id
+    procedure :: particle_by_id
+    procedure :: trans_by_id
+    procedure :: ion_by_id
+    procedure :: absorption
+    procedure :: add_hrest
+    procedure :: electron_scattering
+    procedure :: rayleigh_scattering
+    procedure :: scattering
+    procedure :: reassign_pointer
+    procedure :: get_totn
+    procedure :: compute_grams_per_hydrogen
+    procedure :: compute_damping_aux
+    procedure :: overwrite_abundance
+    procedure :: init_linelist
+    procedure :: mask_linelist
+    procedure :: add_linelist_opacities
+    procedure :: print_ion_table
+    procedure :: read_molec_file
+    procedure :: parse_mol_id
+    procedure :: print_opacity_contributions
+    procedure :: get_table_frequencies
+  end type
+
+  type, public :: departure_pointer_t
+    character(len=6) :: key=''
+    real(4), pointer :: mem(:,:,:,:) => null()
+    real(8), allocatable :: ev(:)
+    integer :: nlevel=0
+  end type departure_pointer_t
+
+  character(128), public, save :: exclude_elements='', only_elements=''
+  logical, public :: scattering_absorption=.true., mhd_eos=.false.
+  logical, public :: helium_scattering=.true.
+  real(dp), public :: debug_opac=0
+  integer, public :: switch=1
+  real(dp), public :: ref_lam=5000.d0
+  character(len=1024), public :: abundances
+  logical, public :: relative_abundances=.false.
+  logical, public :: read_departures=.false., departure_indices=.false.
+  logical, public :: sample_back_opac=.false.
+  logical, public :: sample_back_opac_in_output=.false.
+  logical, public :: sample_linelist=.false.
+  real(4), public :: opac_table_vmic=-1
+
+  character(len=3), save :: &
+    element_ids(92) = [ &
+    'H ','He','Li','Be','B ','C ','N ','O ','F ', &
+    'Ne','Na','Mg','Al','Si','P ','S ','Cl','Ar', &
+    'K ','Ca','Sc','Ti','V ','Cr','Mn','Fe','Co', &
+    'Ni','Cu','Zn','Ga','Ge','As','Se','Br','Kr', &
+    'Rb','Sr','Y ','Zr','Nb','Mo','Tc','Ru','Rh', &
+    'Pd','Ag','Cd','In','Sn','Sb','Te','I ','Xe', &
+    'Cs','Ba','La','Ce','Pr','Nd','Pm','Sm','Eu', &
+    'Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Hf', &
+    'Ta','W ','Re','Os','Ir','Pt','Au','Hg','Tl', &
+    'Pb','Bi','Po','At','Rn','Fr','Ra','Ac','Th', &
+    'Pa','U ']
+
+  character(len=5), parameter :: roman(0:10) = [ &
+    ' -   ', ' I   ', ' II  ', ' III ', ' IV  ', ' V   ', &
+    ' VI  ', ' VII ', ' VIII', ' IX  ', ' X   ' ]
+
+contains
+
+  !===============================================================================
+  SUBROUTINE injon(self, absdat_file, abund_file, FeH, &
+    isotope_file, molec_file, tmolim, external_abund, alpha_enhancement, &
+    r_process_enhancement)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: absdat_file, abund_file
+    character(len=*), intent(in), optional :: isotope_file, molec_file
+    real(4), intent(in), optional :: tmolim
+    real(8), intent(in) :: FeH
+    real(4), intent(in), optional :: external_abund(:), alpha_enhancement, r_process_enhancement
+    integer :: absdat, lunit, iostat
+    integer :: i, j, k, l, m, nl, nk, niso
+    integer :: lvl_count, skip_back
+    real(dp) :: abund, xion, g2, dump, tecor, decor, ex, stim
+    character(len=3) :: id
+    character(len=6) :: key
+    character(len=65) :: text
+    character(len=128) :: text_line
+    character(len=10) :: s10
+    integer :: g0, nqfix, nqtemp, ifish, ncor
+    real(dp) :: acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c, scale
+    integer :: nkomp,nextl,nutzl,nextt,nutzt,null
+    integer :: ilogl, kvadl, minex, maxex, nnu, iscal
+    integer :: ilogt, kvadt, minet, maxet, ntt, iteta, istim
+
+    class(element_type),    pointer :: elements(:)
+    class(element_type),    pointer :: element, H
+    class(molec_type),      pointer :: molecule
+    class(ion_type),        pointer :: ion, Hm, HI
+    class(isotope_type),    pointer :: iso
+    class(level_type),      pointer :: lvl
+    class(bftrans_type), pointer :: trans
+    integer, save :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%init', itimer=itimer)
+
+106 FORMAT(4(F10.3,F10.4))
+    call os%check_file(absdat_file)
+    open(file=absdat_file, newunit=absdat)
+
+    read(absdat, *) self%nel
+    allocate(self%elements(self%nel))
+
+    elements => self%elements
+
+    read(absdat, *) elements%id
+    read(absdat, *) elements%awgt
+    read(absdat, *) elements%nion
+
+    do i=1, self%nel
+      element => elements(i)
+      element%np = findloc(element_ids, element%id(:3), dim=1)
+
+      if (i>1) then
+        allocate(element%ions(element%nion))
+      else
+        allocate(element%ions(0:element%nion))
+      endif
+    end do
+
+    call os%check_file(abund_file)
+    open(file=abund_file, newunit=lunit, iostat=iostat)
+    call nextentry(lunit)
+    do while (iostat==0)
+      read(lunit, *, iostat=iostat) id, abund
+      call self%element_by_id(id, element, verbose=.true.)
+      if(associated(element)) element%abund = abund
+    end do
+    close(lunit)
+
+    if (elements(1)%abund == 1) then
+      elements%abund = log10(elements%abund) + 12.0
+    endif
+
+    self%FeH = merge(FeH, 0.d0, FeH > -99)
+    do i=1, self%nel
+      element => elements(i)
+      select case (element%id)
+       case ('H', 'He', 'Li')
+        ! do not scale with FeH
+       case default
+        element%abund = element%abund + self%FeH
+      end select
+      if (present(alpha_enhancement)) then
+        select case (element%id)
+         case ('O', 'Ne', 'Mg', 'Si', 'S', 'Ar', 'Ca', 'Ti')
+          element%abund = element%abund + alpha_enhancement
+        end select
+      endif
+      if (present(r_process_enhancement)) then
+        select case (element%id)
+         case ('Ga', 'Ge', 'As', 'Se', 'Br', 'Kr', 'Rb', 'Sr', 'Y',  'Zr', 'Nb', &
+           'Mo', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'I',  &
+           'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Sm', 'Eu', 'Gd', 'Tb', &
+           'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W',  'Re', 'Os', &
+           'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'T', 'U')
+          element%abund = element%abund + r_process_enhancement
+        end select
+      endif
+    end do
+
+    if (present(external_abund)) then
+      ! do not overwrite external abundances with FeH
+      do i=1, size(external_abund)
+        call self%element_by_id(element_ids(i), element, verbose=.true.)
+        if(associated(element)) element%abund = external_abund(i)
+      end do
+    endif
+
+    if (len_trim(abundances) > 0) then
+      do i=1, self%nel
+        element => elements(i)
+        j = index(abundances, trim(element%id)//'=')
+        if (j > 0) then
+          l = len(abundances)
+          l = j + index(abundances(j:l), ' ') - 1
+          j = j + len_trim(element%id) + 1
+          read(abundances(j:l), *) abund
+          if (relative_abundances) then
+            element%abund = element%abund + abund
+          else
+            element%abund = abund
+          endif
+          print '(A, A, A, F8.3)', 'Changing abundance of ', trim(element%id), ' to ', element%abund
+        endif
+      end do
+    endif
+
+    elements%abund = 10**(elements%abund - elements(1)%abund)
+    call self%compute_grams_per_hydrogen()
+
+    do i=1, self%nel
+      element => elements(i)
+
+      do j=1, elements(i)%nion
+        ion => element%ions(j)
+        ion%j = j
+        ion%dxi_fac = j
+
+        !g0 = THE STATISTICAL WEIGHT OF THE GROUND LEVEL
+        !nk = THE NUMBER OF ELECTRON CONFIGURATIONS CONSIDERED.
+
+        read(absdat, *, iostat=iostat) g0
+        backspace(absdat)
+
+        if (g0 > 0) then
+          read(absdat, *, iostat=iostat) g0, nk
+          ion%nk = nk+1
+          skip_back = 0
+          do k=1, nk
+            read(absdat, *) dump, dump, dump, nl
+            skip_back = skip_back + 1 + ceiling(nl / 4.0)
+
+            if (nl > 0) then
+              ion%nk = ion%nk + nl
+              read(absdat, 106) (xion, g2, m=1,nl)
+            endif
+
+          end do
+
+          do k=1, skip_back
+            backspace absdat
+          end do
+
+          allocate(ion%levels(ion%nk))
+          ion%levels%xl=0
+          ion%levels(1)%g = g0
+          ion%levels(1)%xion = 0.d0
+
+          lvl_count = 1
+          do k=1, nk
+            lvl_count = lvl_count + 1
+            lvl => ion%levels(lvl_count)
+
+            !xion = THE IONIZATION ENERGY IN ELECTRON VOLTS
+            !g2   = THE STATISTICAL WEIGHT (2L+1)*(2J+1)
+            !xl   = THE LOWEST QUANTUM NUMBER OF THE ASYMPTOTIC
+            !       (HYDROGENIC) PARTOF THE PARTITION FUNCTION,
+            !nl   = THE NUMBER OF TERMS IN THE (APPROXIMATE) EXPRESSION
+            !       FOR THE 'MIDDLE PART' OF THE PARTITION FUNCTION ('QPRIME').
+
+            read(absdat, *) lvl%xion, lvl%g, lvl%xl, nl
+
+            if (nl > 0) then
+              read(absdat, 106) (ion%levels(m)%xion, ion%levels(m)%g, m=lvl_count+1, lvl_count+nl)
+              lvl_count = lvl_count + nl
+            endif
+          end do
+          ion%xion = ion%levels(2)%xion
+
+        else ! IRWIN FORMAT
+          allocate(ion%irwin(6))
+          read(absdat, *) g0, ion%xion, ion%irwin
+          ion%irwin(:) = ion%irwin(6:1:-1)
+        endif
+      end do
+    end do
+
+    do i=1, self%nel
+      element => elements(i)
+      read(absdat, *) element%active, (element%ions(j)%active, j=1, element%nion)
+    end do
+
+    read(absdat, *) nqfix ! number of ions with constant partition FUNCTION
+
+    do m=1, nqfix
+      read(absdat, *) i, j, elements(i)%ions(j)%parco
+
+      !IQFIX(I,J) = 0 MEANS THAT THE PARTITION FUNCTION IS CONSIDERED TO BE CONSTANT.
+      elements(i)%ions(j)%fixed_part = .true.
+    end do
+
+    read(absdat, *) nqtemp ! number of ions with PF(temp) instead of PF(temp, pe)
+
+    do m=1, nqtemp
+      print *, 'tabulated partition functions to be implemented...'
+      stop
+    end do
+
+    ! IFISH IS A PARAMETER FOR THE CHOICE OF THE ASYMPTOTIC PARTITION
+    ! FUNCTION. IFISH=0 MEANS THAT THE ASYMPTOTIC PART WILL BE EVALU-
+    ! ATED FOLLOWING BASCHEK ET AL., ABH. HAMB. VIII,26 (1966). IFISH
+    ! =1 MEANS THAT IT WILL BE EVALUATED FOLLOWING FISCHEL AND SPARKS
+    ! ASTROPHYS. J. 164, 356 (1971).
+
+    read(absdat, *) ifish
+
+    ! WHEN MOLH IS GREATER THAN ZERO THE MOLECULAR FORMATION WILL BE COMPUTED
+    ! IN SUBR. MOLEQ (ONLY H2 AND H2+), ELSE MORE COMPLETE MOLECULAR
+    ! FORMATION WILL BE EVALUATED IN SUBR. MOL.
+    read(absdat, *) self%tmolim, self%molh
+
+    if (present(tmolim)) then
+      if (tmolim > -98) then
+        self%tmolim = tmolim
+      endif
+    endif
+
+    read(absdat, '(A9)') text
+    if (text(1:9)=='* CORONAL') then
+      ! READS CORONAL ION BALANCE PARAMETERS
+      read(absdat, *) ncor, tecor, decor
+
+      do m=1, ncor
+        read(absdat, *) i, j, acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c
+        element => elements(findloc(elements%np, i, dim=1))
+
+        if (j <= element%nion) then
+          ion => element%ions(j)
+
+          ion%acolc = acolc
+          ion%tcolc = tcolc
+          ion%aradc = aradc
+          ion%adic  = adic
+          ion%bdic  = bdic
+          ion%t0c   = t0c
+          ion%t1c   = t1c
+        endif
+      end do
+    else
+      backspace absdat
+    endif
+
+    do i=1, self%nel
+      element => elements(i)
+      do j=lbound(element%ions, 1), ubound(element%ions, 1)
+        ion => element%ions(j)
+
+        if (j >= 0 .and. j <= 10) then
+          ion%id = trim(element%id(:3)) // trim(roman(j))
+        else
+          stop 'Ion id construction needs to be updated for j > 10'
+        end if
+
+        if(j < ubound(element%ions, 1)) ion%above => element%ions(j+1)
+        if(j > 1) ion%below => element%ions(j-1)
+        ion%awgt = element%awgt
+        ion%abund => element%abund
+      end do
+    end do
+
+    call self%element_by_id('H', H)
+    Hm => H%ions(0) ! H- is ion number 0
+    HI => H%ions(1)
+    HI%below => Hm
+    HI%nk = 15
+
+    Hm%fixed_part = .true.
+    Hm%parco = 1
+    Hm%xion = 0.754
+    Hm%dxi_fac = 2
+    ! --- Different Hm ionisation in Oslo legacy code ---!
+    !Hm%xion = 0.747
+    ! --------------------------------------------------!
+    RYD = HI%xion ! overwriting RYD constant
+    ! --------------------------------------------------!
+    self%peachmet%id = 'Me I' ! pseudo-ion for combination of minor metals
+
+    call self%read_molec_file(molec_file)
+
+    !101 FORMAT(7X,I3,5(9X,I1))
+    !999 FORMAT(4(9X,I1),8X,I2,9X,I1)
+
+    !997 FORMAT(6(F10.0)) ! lam format
+    !998 FORMAT(6(F10.5)) ! xkap format
+    !102 FORMAT(6F10.4)
+    !105 FORMAT(F6.3,F4.0,F5.1,I5)
+
+    !read(absdat,101) nkomp,nextl,nutzl,nextt,nutzt,null
+    read(absdat, '(A)') text_line
+    call march_line(text_line, 10, nkomp)
+    call march_line(text_line, 10, nextl)
+    call march_line(text_line, 10, nutzl)
+    call march_line(text_line, 10, nextt)
+    call march_line(text_line, 10, nutzt)
+    call march_line(text_line, 10, null)
+
+    allocate(self%trans(nkomp))
+    self%trans%verbose = self%verbose
+
+    self%elements(1)%ions%in_opac = .true.
+    self%elements(2)%ions%in_opac = .true.
+    call self%molecule_by_id('H2', molecule)
+    if (associated(molecule)) molecule%in_opac = .true.
+
+    do i=1, nkomp
+      trans => self%trans(i)
+
+      read(absdat,'(A65)') text
+      text = uppercase(text)
+      trans%label = text(:20)
+      trans%key = text(1:5)
+      trans%peach = index(trans%label, 'PEACH') > 0
+      trans%lam3 = trans%peach
+
+      select case(trim(trans%key))
+       case('H- BF')
+        trans%ion => Hm
+       case('H BF')
+        trans%ion => HI
+        ! hydrogen energy level
+        trans%k = extract_int(text(1:10))
+        trans%lam3 = .true.
+       case('H FF')
+        trans%ion => HI
+        trans%lam3 = .true.
+       case('H- FF')
+        trans%ion => HI
+       case('H2+')
+        trans%ion => HI
+        trans%ion2 => HI%above
+       case('H+H')
+        trans%ion => HI
+        trans%ion2 => HI
+       case('H+HE')
+        trans%ion => HI
+        call self%particle_by_id('He I', trans%ion2)
+       case('H2+H')
+        trans%ion => HI
+        call self%particle_by_id('H2', trans%ion2)
+       case('H2+H2')
+        call self%particle_by_id('H2', trans%ion)
+        call self%particle_by_id('H2', trans%ion2)
+       case('H2+HE')
+        call self%particle_by_id('H2', trans%ion)
+        call self%particle_by_id('He I', trans%ion2)
+       case('H2-')
+        call self%particle_by_id('H2', trans%ion)
+       case('HE-')
+        call self%particle_by_id('He I', trans%ion)
+       case ('H2O-')
+        call self%particle_by_id('H2O', trans%ion)
+        trans%molecular = .true.
+       case ('MEIFF')
+        trans%ion => self%peachmet
+        trans%regular = .true.
+        trans%peach = .true.
+       case default
+        if (text(1:1) == '/') then
+          trans%key = text(2:6)
+          id = text(2:3)
+          call self%element_by_id(id, element)
+          read(absdat, *) j, xion, trans%level%g
+          trans%level%xion = xion * hc_e
+          trans%ion => element%ions(j)
+          trans%regular = .true.
+        else
+          id = text(1:2)
+          j = scan(id,'_')
+          if (j > 1) id = id(1:j-1)
+          trans%key = id // text(3:4)
+          j = scan(trans%key, 'IV', back=.true.)
+          if (j > 0) trans%key = trans%key(1:j)
+          j = scan(trans%key, '-')
+          trans%regular = j == 0
+          if (j > 0) then
+            key = trans%key(1:j-1)
+          else
+            key = trans%key
+          endif
+          call self%molecule_by_id(key, molecule)
+          trans%molecular = associated(molecule)
+          trans%ion => molecule
+          if (trans%regular) then
+            if (.not. trans%molecular) then
+              call self%ion_by_id(trans%key, ion)
+              if (associated(ion)) then
+                trans%ion => ion
+                if (trans%peach) trans%ion => ion%above
+              endif
+            endif
+            trans%level%xion = 0
+            trans%level%g = 1
+          elseif (.not. trans%molecular) then
+            call self%ion_by_id(key//' I', ion)
+            trans%ion => ion
+          endif
+        endif
+      end select
+
+      if (.not. associated(trans%ion)) then
+        call trans%deactivate()
+        print *, trans%key,  ' deactivated!'
+      else
+        trans%ion%in_opac = .true.
+      endif
+      if (associated(trans%ion2)) trans%ion2%in_opac = .true.
+
+      !read(absdat,999) ilogl,kvadl,minex,maxex,nnu
+      read(absdat, '(A)') text_line
+      call march_line(text_line, 10, ilogl)
+      call march_line(text_line, 10, kvadl)
+      call march_line(text_line, 10, minex)
+      call march_line(text_line, 10, maxex)
+      call march_line(text_line, 12, nnu)
+
+      trans%nnu = nnu
+      trans%ilogl = ilogl > 0
+      trans%kvadl = kvadl > 0
+      trans%minex = minex > 0
+      trans%maxex = maxex > 0
+
+      if (trans%key == 'H BF') then
+        trans%maxex  = H_occupation_probability
+        !trans%loglam = H_occupation_probability
+      endif
+
+      allocate(trans%lam(nnu))
+      allocate(trans%ldisk(nnu))
+
+      trans%ldisk = .false.
+
+      read(absdat, *, iostat=iostat) trans%lam
+
+      if (iostat /= 0) then
+        print *, iostat, ' Error reading wavelength values for transition: ', trans%key
+        stop
+      endif
+
+      if (trans%loglam) then
+        allocate(trans%lnlam, source=log(trans%lam))
+      endif
+
+      trans%minl = trans%lam(1)
+      trans%maxl = trans%lam(nnu)
+
+
+      do j=1, nnu-1
+        if (trans%lam(j+1) - trans%lam(j) <= 10.) then
+          trans%ldisk(j) = .true.
+        endif
+      end do
+
+      !if (count(trans%ldisk)>0) then
+      !    write(text, '(A,I0,A)') '(A10, ":[",', count(trans%ldisk), '(F14.1,","),F14.1,"],")'
+      !    print text, "'"//trim(trans%key)//"'", pack(trans%lam, trans%ldisk), trans%maxl
+      !else
+      !    write(text, '(A,I0,A)') '(A10, ":[",F14.1,"],")'
+      !    print text, "'"//trim(trans%key)//"'", trans%maxl
+      !endif
+
+      !read(absdat,999) ilogt,kvadt,minet,maxet,ntt,iteta
+      read(absdat, '(A)') text_line
+      call march_line(text_line, 10, ilogt)
+      call march_line(text_line, 10, kvadt)
+      call march_line(text_line, 10, minet)
+      call march_line(text_line, 10, maxet)
+      call march_line(text_line, 10, ntt)
+      call march_line(text_line, 10, iteta)
+      call march_line(text_line, 10, iscal)
+      call march_line(text_line, 10, istim)
+
+      if (iscal>0) read(absdat, *) scale
+
+      trans%ntt = ntt
+      trans%ilogt = ilogt > 0
+      trans%kvadt = kvadt > 0
+      trans%minet = minet > 0
+      trans%maxet = maxet > 0
+      trans%iteta = iteta > 0
+      trans%pedep = iscal > 0
+      trans%istim = istim > 0
+
+      if (ntt > 1) then
+        allocate(trans%temp(ntt))
+        allocate(trans%tt  (ntt))
+        read(absdat, *, iostat=iostat) trans%temp
+
+        if (iostat /= 0) then
+          print *, iostat, ' Error reading temperature values for transition: ', trans%key
+          stop
+        endif
+
+        if (iteta > 0) then
+          allocate(trans%teta(ntt))
+          trans%teta = trans%temp
+          trans%temp = temp_to_theta / trans%teta(ntt:1:-1)
+          trans%tt = trans%teta
+        else
+          trans%tt = trans%temp
+        endif
+
+        trans%mint = trans%temp(1)
+        trans%maxt = trans%temp(ntt)
+      endif
+
+      allocate(trans%xkap(nnu, ntt))
+
+      do j=1, ntt
+        read(absdat, '(6E10.3)') (trans%xkap(k,j),k=1,nnu)
+      end do
+
+      if (iscal > 0) then
+        trans%xkap = trans%xkap * scale
+      endif
+
+      if (trans%ilogl .or. trans%ilogt) then
+        allocate(trans%log_xkap, mold=trans%xkap)
+        trans%log_xkap = trans%xkap
+        where (trans%log_xkap <= 0) trans%log_xkap = 1d-37
+        trans%log_xkap = log(trans%log_xkap)
+      endif
+    end do
+
+    close(absdat)
+
+    if (present(isotope_file)) then
+      if (isotope_file /= '') then
+        call os%check_file(isotope_file)
+        open(file=isotope_file, newunit=lunit)
+        read(lunit, *, iostat=iostat) text
+        do while (iostat==0)
+          do while (text(1:1) == '!')
+            read(lunit, *, iostat=iostat) text
+          end do
+          backspace lunit
+          read(lunit, *, iostat=iostat) id, niso
+          call self%element_by_id(id, element)
+          if (associated(element)) then
+            element%niso = niso
+            allocate(element%isotope(element%niso))
+            do i=1, element%niso
+              iso => element%isotope(i)
+              read(lunit, *) iso%iso, iso%awgt, iso%frac
+            end do
+            do j=1, element%nion
+              element%ions(j)%isotope => element%isotope
+              element%ions(j)%niso = element%niso
+            end do
+          endif
+          read(lunit, *, iostat=iostat) text
+        end do
+        close(lunit)
+        do i=1, self%nmolec
+          molecule => self%molecules(i)
+          call molecule%generate_isotopic_combinations()
+        end do
+      endif
+    endif
+
+    if (allocated(HI%levels)) then
+      allocate(self%input_H_levels, source=HI%levels)
+    endif
+
+    self%initialised = .true.
+    call trace%end(itimer)
+  contains
+
+    !===========================================
+    subroutine march_line(line, n, val)
+      character(len=*) :: line
+      integer :: i, n, val
+      !---------------------------------------
+      i = scan(line(1:n), '0123456789')
+      read(line(i:n), *, iostat=iostat) val
+      if (iostat /= 0) then
+        print *, iostat, ' Error reading fixed format line: ', trans%key, line
+        stop
+      endif
+      line = line(n+1:)
+    end subroutine march_line
+
+  END SUBROUTINE injon
+
+  !===============================================================================
+  SUBROUTINE init_linelist (self, linelist_file, dlam, nu)
+    class(composition_type) :: self
+    class(ion_type), pointer :: HI
+    class(particle_type), pointer :: particle
+    class(bbtrans_type), dimension(:), allocatable :: lines
+    class(bbtrans_type), pointer :: line
+    character(len=*) :: linelist_file
+    real(dp), intent(in) :: dlam
+    real(dp), intent(in), dimension(:), optional :: nu
+    character(20) :: ion_id, siso
+    character(len=512) :: line_text, prev_line
+    real(dp) :: lam0, ent8, ent9, cnt_ev, lam_vac, vbar2e4
+    real(dp) :: upper_ev, upper_g, lower_g, gij, f
+    real(dp) :: nu_min, nu_max, lam_min, lam_max
+    character :: lower_orb, upper_orb
+    character(len=150) :: label
+    character(len=32) :: gq
+    character :: char
+    integer :: iso
+    integer :: lunit, iostat, iostat2, iostat3, nline, i, prev, iso_idx, nkh
+    integer, save :: ntotal, nactive
+    logical :: isotope, ok, skip, lam_mask, hlinedata, is_mol
+    integer :: pos, npost, nskipped
+    integer :: itimer=0
+    !-----------------------------------------------------------------------------
+    if (linelist_file == '' .and. .not. self%ll_initialised) return
+    call trace%begin ('composition_type%init_linelist', itimer=itimer)
+    self%ll_initialised = .true.
+    lam_mask = present(nu)
+    ntotal = 0
+    nactive = 0
+    nkh = 0
+    hlinedata = endswith(linelist_file, 'Hlinedata')
+
+    if (lam_mask) then
+      nu_min = nu(1)
+      nu_max = nu(size(nu))
+      lam_min = 1e8 * CC / nu_max - dlam
+      lam_max = 1e8 * CC / nu_min + dlam
+    endif
+
+    call os%check_file(linelist_file)
+    open(newunit=lunit, file=linelist_file, iostat=iostat)
+    do while (iostat==0)
+      read(lunit, *, iostat=iostat) ion_id
+      if (iostat < 0) exit ! End-of-File
+      call print_failed_line(lunit, iostat)
+      read(lunit, *, iostat=iostat) siso, nline
+      call print_failed_line(lunit, iostat)
+      read(siso, *) iso
+      isotope = iso > 0
+      ion_id = trim_between_words(ion_id)
+      nullify(particle)
+      call self%particle_by_id(ion_id(1:6), particle, verbose=.true., is_molecule=is_mol)
+      ok = associated(particle)
+      ntotal = ntotal + nline
+
+      if (ok .and. isotope) then
+        if (associated(particle%isotope)) then
+          iso_idx = findloc(particle%isotope%iso, iso, 1)
+          ok = iso_idx > 0
+        else
+          ok = iso == nint(particle%awgt)
+          isotope = .not. ok
+        endif
+      endif
+
+      if (.not. ok) then
+        if (isotope) then
+          print *, ion_id(1:6), ' isotope ', iso, ' not found!'
+        endif
+        do i=1, nline
+          read(lunit, *, iostat=iostat) ! skipping this ion
+          call print_failed_line(lunit, iostat)
+        end do
+        cycle
+      endif
+
+      npost = 0
+      nskipped = 0
+      if (lam_mask) then
+        pos = nline+1
+        do i=1, nline
+          ! check if line is outside of range
+          read(lunit, *, iostat=iostat2) lam0
+          skip = lam0 < lam_min .or. lam0 > lam_max
+          if (skip) then
+            if (pos<=nline) then
+              ! we are past the lines within range
+              npost = nline - i + 1
+              exit
+            endif
+            nskipped = nskipped + 1
+          elseif (pos>nline) then
+            ! first line in range has been found
+            pos = i
+          endif
+        end do
+        ! jump back to the first line within range
+        do i=pos, min(i, nline)
+          backspace(lunit)
+        end do
+        nskipped = nskipped + npost
+        nline = nline - nskipped
+      endif
+
+      if (nline == 0) cycle
+      particle%in_linelist = .true.
+
+      if (particle%nline == 0) then
+        allocate(particle%line(nline))
+        particle%nline = nline
+        prev = 0
+      else
+        allocate(lines(nline))
+        lines = particle%line
+        deallocate(particle%line)
+        prev = particle%nline
+        particle%nline = particle%nline + nline
+        allocate(particle%line(particle%nline))
+        particle%line(1:prev) = lines
+        deallocate(lines)
+      endif
+
+      if (isotope) then
+        vbar2e4 = particle%isotope(iso_idx)%compute_vbar2(10000.)
+      else
+        vbar2e4 = particle%compute_vbar2(10000.)
+      endif
+
+      do i=1, nline
+        line => particle%line(prev+i)
+        read(lunit, '(A)', iostat=iostat) line_text
+
+        if (hlinedata) then
+          ! this is a specific Hlinedata format
+          read(line_text, *, iostat=iostat2) line%lam_air, line%i, line%j, line%lower_ev, upper_ev, line%loggf, label, line%ga_in
+        else
+          ! It will try to read as many of these parameters as possible,
+          ! but only lam0 lower_ev and loggf are required.
+          ! Broadening parameters are zero by default if not overwritten here.
+          read(line_text, *, iostat=iostat2) line%lam_air, line%lower_ev, line%loggf, &
+            line%gv_in, line%ga_in, line%gq_in, line%i, line%j
+          departure_indices = departure_indices .or. line%i>0 .or. line%j>0
+        endif
+        call print_failed_line(lunit, iostat2, line_text)
+
+        lam_vac = air2vac(line%lam_air) * 1e-8
+        line%nu0 = CC / lam_vac
+
+        if (particle%id == 'H I') then
+          if (.not. hlinedata) then
+            upper_ev = line%lower_ev + H_E*line%nu0
+            line%i = nint(sqrt(RydV / (RydV-line%lower_ev)))
+            line%j = nint(sqrt(RydV / (RydV-upper_ev)))
+          endif
+          lower_g = 2 * line%i**2
+          line%upper_g = 2 * line%j**2
+          gij = lower_g / line%upper_g
+          f = 10**line%loggf / lower_g
+          call line%init_einstein_coefficients(f, gij)
+          call prepare_hydrogen_damping(line) ! ga is overwritten
+          nkh = max(line%j, nkh)
+        else
+          f = 10**line%loggf
+          if (isotope) then
+            line%iso_idx = iso_idx
+            f = f * particle%isotope(iso_idx)%frac
+          endif
+
+          call line%init_einstein_coefficients(f, 1.d0)
+          call line%prepare_Radiative(line%ga_in)
+          call line%prepare_Stark(line%gq_in, particle%j, particle%xion)
+          call line%prepare_VanderWaals(line%gv_in, particle%j, particle%xion, vbar2e4, is_mol)
+        endif
+        allocate(line%used, source=.false.)
+        allocate(line%strength, source=0.d0)
+        if (line%active) nactive = nactive + 1
+      end do
+      ! skip the rest of the lines outside of range
+      do i=i, nline+npost
+        read(lunit, *)
+      end do
+    end do
+    close(lunit)
+    print '(I12, a, I12, a, a)', nactive, ' of ', ntotal, ' lines read from linelist ', trim(linelist_file)
+    self%nline = nactive
+    call self%ion_by_id('H I', HI)
+    HI%nk = max(HI%nk, nkh)
+    call self%mask_linelist()
+    call trace%end(itimer)
+  END SUBROUTINE init_linelist
+
+  !===============================================================================
+  SUBROUTINE mask_linelist (self)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(molec_type), pointer :: mol
+    integer :: n_excluded, i, ii, p
+    character(len=3) :: id
+    character(len=512) :: drop, only
+    logical :: new_word, in_drop, no_only
+    ! ----------------------------------------------------------------------------
+    drop = ''
+    only = ''
+    drop(2:len(drop)-1) = trim_between_words(exclude_elements)
+    only(2:len(only)-1) = trim_between_words(only_elements)
+    do i=1, self%nel
+      element => self%elements(i)
+      in_drop = index(drop, ' '//trim(element%id)//' ') > 0
+      no_only = index(only, ' '//trim(element%id)//' ') == 0 .and. only_elements /= ''
+      if (in_drop .or. no_only) then
+        element%ions%in_linelist = .false.
+        print *, 'removing ', trim(element%id), ' from linelist'
+      endif
+    end do
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      in_drop = index(drop, ' '//trim(mol%id)//' ') > 0
+      no_only = index(only, ' '//trim(mol%id)//' ') == 0 .and. only_elements /= ''
+      if (in_drop .or. no_only) then
+        mol%in_linelist = .false.
+        print *, 'removing ', trim(mol%id), ' from linelist'
+      endif
+    end do
+  END SUBROUTINE mask_linelist
+
+  !===============================================================================
+  SUBROUTINE add_linelist_opacities(self, nu, all_chi, all_eta, dlam, vproj, departures)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(ion_type), pointer :: ion, HeI
+    class(molec_type), pointer :: mol
+    class(departure_pointer_t), pointer :: dep
+    class(bbtrans_type), pointer :: line
+    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
+    real(8), intent(in), dimension(:) :: nu
+    real(4), intent(inout), dimension(:,:,:,:) :: all_chi
+    real(8), intent(in) :: dlam
+    real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
+    real(4), intent(inout), dimension(:,:,:,:) :: all_eta
+    real(4), dimension(:,:,:), allocatable :: tothi, adamp, stark_pe, ne, temp, e_kT, dxij, chi_fac, unsold
+    real(4), dimension(:,:,:), allocatable, target :: inv_part, vbar2, inv_df, iso_vbar2, iso_inv_df
+    real(4), dimension(:,:,:), pointer, contiguous :: ipart, vpr, fo, t3nhe, ni, nj
+    real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
+    real(4), dimension(:,:,:), pointer :: bi, bj
+    integer :: i, j, k, l, f, f0, nactive, m(3), nf
+    real(8) :: cnt_ev, gf, awgt, iso_awgt, dl, dnu
+    real(4) :: scalar, beta, bnu, h_kT, hv_kT, eta, chi
+    logical :: departures_present, do_nlte
+    integer, save:: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%add_linelist_opacities', itimer=itimer)
+    m = shape(self%ne)
+    allocate(tothi(m(1),m(2),m(3)))
+    allocate(adamp,        mold=tothi)
+    allocate(stark_pe,     mold=tothi)
+    allocate(ne,           mold=tothi)
+    allocate(temp,         mold=tothi)
+    allocate(e_kT,         mold=tothi)
+    allocate(inv_df,       mold=tothi)
+    allocate(iso_inv_df,   mold=tothi)
+    allocate(inv_part,     mold=tothi)
+    allocate(vbar2,        mold=tothi)
+    allocate(iso_vbar2,    mold=tothi)
+    allocate(dxij,         mold=tothi)
+    allocate(chi_fac,      mold=tothi)
+    allocate(unsold,       mold=tothi)
+    allocate(fo,           mold=tothi)
+    allocate(t3nhe,        mold=tothi)
+    allocate(ni,           mold=tothi)
+    allocate(nj,           mold=tothi)
+
+    allocate(chi_l, mold=all_chi)
+    allocate(eta_l, mold=all_chi)
+    chi_l = 0.
+    eta_l = 0.
+
+    departures_present = present(departures)
+
+    if (present(vproj)) then
+      vpr => vproj
+    else
+      allocate(vpr, mold=tothi)
+      vpr = 0
+    endif
+
+    ne   = real(self%ne)
+    temp = real(self%temp)
+    e_kT = real(self%e_kT)
+    tothi = real(self%tothi)
+    stark_pe = real(self%stark_pe)
+    dnu = dlam / (1e8*CC)
+
+    element => self%elements(1)
+    ion => element%ions(1)
+    if (ion%in_linelist .and. ion%nline > 0) then
+      fo = self%fo
+      vbar2 = self%vbar2h
+      t3nhe = self%t3nhe
+      inv_df = element%inverse_doppler_factor(temp, self%vmic)
+      call get_departure_coefficients(ion, dep)
+
+      do l=1, ion%nline
+        line => ion%line(l)
+        if (.not. line%active) cycle
+        call line%get_center(nu, dnu, f0)
+        if (f0 == 0) cycle
+
+        if (associated(dep) .and. .true.) then
+          line%i = find_closest(dep%ev, 100*ion%j + line%lower_ev)
+          line%j = find_closest(dep%ev, 100*ion%j + line%lower_ev + H_E*line%nu0)
+          !print *, 'attached line to levels ', line%lower_ev, dep%ev(line%i), line%lower_ev + H_E*line%nu0, dep%ev(line%j)
+        endif
+
+        ni = ion%levels(line%i)%n
+        nj = ion%levels(line%j)%n
+
+        if (H_occupation_probability) then
+          ni = ni * ion%levels(line%j)%w
+          nj = nj * ion%levels(line%j)%w
+        endif
+
+        do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
+
+        if (do_nlte) then
+          bi => dep%mem(:,:,:,line%i)
+          bj => dep%mem(:,:,:,line%j)
+        endif
+
+        call add_h_opacities(line, f0, nu, vpr, inv_df, temp, &
+          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte)
+      end do
+    endif
+
+    do i=2, self%nel
+      element => self%elements(i)
+      if (.not. any(element%ions%in_linelist)) cycle
+      do j=lbound(element%ions,1), ubound(element%ions,1)
+        ion => element%ions(j)
+        call particle_add_opacities(ion, inv_df, vbar2, unsold, inv_part, dxij, &
+          ne, tothi, stark_pe, temp, e_kT, all_chi, chi_l, eta_l)
+      end do
+    end do
+
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      call particle_add_opacities(mol, inv_df, vbar2, unsold, inv_part, dxij, &
+        ne, tothi, stark_pe, temp, e_kT, all_chi, chi_l, eta_l)
+    end do
+
+    nf = size(nu)
+
+    do k=1, m(3)
+      do j=1, m(2)
+        do i=1, m(1)
+          do f=1, nf
+            all_eta(f,i,j,k) = all_eta(f,i,j,k) + eta_l(f,i,j,k)
+            all_chi(f,i,j,k) = all_chi(f,i,j,k) + chi_l(f,i,j,k)
+          end do
+        end do
+      end do
+    end do
+    if (.not. present(vproj)) deallocate(vpr)
+    call trace%end(itimer)
+
+  contains
+    ! --------------------------------------------------------------------------
+    subroutine get_departure_coefficients(ptc, dep)
+      class(particle_type), target :: ptc
+      class(departure_pointer_t), pointer :: dep
+      integer :: di
+      !---------------------------------------------------------------------------
+      dep => null()
+      if (.not. departures_present) return
+
+      di = findloc([(index(ptc%id, trim(departures(i)%key))>0, i=1, size(departures))], .true., 1)
+      if (di > 0) then
+        dep => departures(di)
+      endif
+    end subroutine get_departure_coefficients
+
+    ! --------------------------------------------------------------------------
+    subroutine particle_add_opacities(ptc, inv_df, vbar2, unsold, inv_part, dxij, &
+      ne, tothi, stark_pe, temp, e_kT, all_chi, chi_l, eta_l)
+      class(particle_type), target :: ptc
+      class(bbtrans_type), pointer :: line
+      class(isotope_type), pointer :: iso
+      real(4), dimension(:,:,:), pointer :: beta0
+      real(4), dimension(:,:,:), pointer, contiguous :: vb2, idopf
+      real(4), dimension(:,:,:), contiguous :: inv_part, unsold
+      real(4), dimension(:,:,:), contiguous, target :: vbar2, inv_df
+      real(4), dimension(:,:,:,:), contiguous :: chi_l, eta_l, all_chi
+      real(4), dimension(:,:,:), contiguous :: ne, tothi, stark_pe, temp, e_kT, dxij
+      integer :: prev_iso
+      !---------------------------------------------------------------------------
+      if (.not. ptc%in_linelist) return
+      if (.not. allocated(ptc%n)) stop 'particle density not allocated'
+
+      inv_df = ptc%inverse_doppler_factor(temp, self%vmic)
+      vbar2 = ptc%compute_vbar2(temp)
+      unsold = vbar2**0.3 * tothi
+      prev_iso = 0
+      do_nlte = .true.
+
+      ! ptc%part is actually the log partition
+      inv_part = ptc%n * exp(-ptc%part)
+      dxij = real(self%dxi) * (ptc%j-1)
+      call get_departure_coefficients(ion, dep)
+
+      do l=1, ptc%nline
+        line => ptc%line(l)
+        if (.not. line%active) cycle
+        call line%get_center(nu, dnu, f0)
+        if (f0 == 0) cycle
+
+        if (associated(dep) .and. .true.) then
+          line%i = find_closest(dep%ev, line%lower_ev)
+          line%j = find_closest(dep%ev, line%lower_ev + H_E*line%nu0)
+          !print *, 'attached line to levels ', line%lower_ev, dep%ev(line%i), line%lower_ev + H_E*line%nu0, dep%ev(line%j)
+        endif
+
+        do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
+
+        if (do_nlte) then
+          bi => dep%mem(:,:,:,line%i)
+          bj => dep%mem(:,:,:,line%j)
+        endif
+
+        if (line%iso_idx == 0) then
+          vb2 => vbar2
+          idopf => inv_df
+        elseif (line%iso_idx /= prev_iso) then
+          iso => ptc%isotope(line%iso_idx)
+          iso_inv_df = iso%inverse_doppler_factor(temp, self%vmic)
+          iso_vbar2 = iso%compute_vbar2(temp)
+          vb2 => iso_vbar2
+          idopf => iso_inv_df
+        endif
+        prev_iso = line%iso_idx
+
+        call add_opacities(line, f0, nu, vpr, idopf, e_kT, dxij, inv_part, ne, tothi, &
+          vb2, stark_pe, unsold, bi, bj, chi_l, eta_l, all_chi, do_nlte)
+      end do
+    end subroutine particle_add_opacities
+  END SUBROUTINE add_linelist_opacities
+
+  !===============================================================================
+  SUBROUTINE reassign_pointer(self)
+    class(composition_type), target :: self
+    class(element_type),     pointer :: element
+    class(molec_type),       pointer :: molecule
+    class(ion_type),         pointer :: ion
+    class(level_type),       pointer :: lvl
+    class(bftrans_type),  pointer :: trans
+    integer :: i, j, m
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%reassign_pointer')
+
+    do i=1, self%nel
+      element => self%elements(i)
+
+      do j=lbound(element%ions,1), ubound(element%ions,1)
+        ion => element%ions(j)
+        ion%abund => element%abund
+
+        if (j > lbound(element%ions,1)) then
+          ion%below => element%ions(j-1)
+        endif
+        if(j < ubound(element%ions,1)) then
+          ion%above => element%ions(j+1)
+        endif
+
+        do m=1, ion%nmolec
+          call self%molecule_by_id(ion%molecules(m)%p%id, molecule)
+          ion%molecules(m)%p => molecule
+        end do
+      end do
+    end do
+
+    do i=1, size(self%molecules)
+      molecule => self%molecules(i)
+
+      do j=1, molecule%nions
+        ion => molecule%ions(j)%p
+        call self%ion_by_id(ion%id, ion)
+        molecule%ions(j)%p => ion
+      end do
+    end do
+
+    do i=1, size(self%trans)
+      trans => self%trans(i)
+      if (associated(trans%ion)) then
+        if (trans%ion%id(1:2) == 'Me') then
+          trans%ion => self%peachmet
+        else
+          call self%particle_by_id(trans%ion%id, trans%ion)
+          if (associated(trans%ion2)) then
+            call self%particle_by_id(trans%ion2%id, trans%ion2)
+          endif
+        endif
+      endif
+    end do
+    call trace%end ()
+  END SUBROUTINE reassign_pointer
+
+  !===============================================================================
+  SUBROUTINE init_molecules(self, molec_file)
+    class(composition_type), target :: self
+    class(molec_type),   pointer :: molecule
+    class(element_type), pointer :: element
+    class(ion_type),     pointer :: ion
+    character(len=*) :: molec_file
+    character(len=3) :: mol_ids(12)
+    character(len=6) :: ion_id
+    integer :: i, j
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%init_molecules')
+
+    mol_ids = ['H2 ', 'H2+', 'H2O', 'OH ', 'CH ', 'CO ', 'CN ', 'C2 ', 'N2 ', 'O2 ', 'NO ', 'NH ']
+
+    if (self%tmolim > 0) then
+      self%nmolec = size(mol_ids)
+    else
+      self%nmolec = 0
+    endif
+
+    allocate(self%molecules(self%nmolec))
+
+    do i=1, self%nmolec
+      molecule => self%molecules(i)
+      molecule%nions = len(trim(mol_ids(i)))
+      molecule%id = trim(mol_ids(i))
+      molecule%awgt = 0
+
+      allocate(molecule%ions(molecule%nions))
+
+      do j=1, molecule%nions
+        ion_id = molecule%id(j:j)
+
+        select case (ion_id(:3))
+         case ('H', 'C', 'N', 'O')
+          ion_id(3:3) = 'I'
+          call self%ion_by_id(ion_id, ion)
+         case ('2')
+          ion => ion ! use previous ion a second time
+         case ('+')
+          molecule%nions = molecule%nions - 1
+          molecule%ions(j-1)%p => ion%above
+          cycle
+         case default
+          cycle
+        end select
+
+        molecule%ions(j)%p => ion
+        ion%nmolec = ion%nmolec + 1
+        molecule%awgt = molecule%awgt + ion%awgt
+      end do
+    end do
+
+    do i=1, self%nel
+      element => self%elements(i)
+      do j=1, element%nion
+        ion => element%ions(j)
+        allocate(ion%molecules(ion%nmolec))
+        ion%mcount = 1
+      end do
+    end do
+
+    do i=1, self%nmolec
+      molecule => self%molecules(i)
+
+      do j=1, molecule%nions
+        ion_id = molecule%id(j:j)
+
+        select case (ion_id)
+         case ('H', 'C', 'N', 'O')
+          ion_id(3:3) = 'I'
+          call self%ion_by_id(ion_id, ion)
+         case ('2')
+          ion => ion ! use previous ion a second time
+         case ('+')
+          ion => ion%above
+         case default
+          cycle
+        end select
+
+        ion%molecules(ion%mcount)%p => molecule
+        ion%mcount = ion%mcount + 1
+      end do
+    end do
+    !call self%read_molec_data(molec_file)
+    call trace%end ()
+  END SUBROUTINE init_molecules
+
+  !===============================================================================
+  SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(ion_type), pointer :: ion
+    class(molec_type), pointer :: mol
+    real(dp), intent(in), dimension(:,:,:) :: temp, ne, rho
+    logical, intent(in), optional :: use_rho, use_ne
+    real(4), intent(in), dimension(:,:,:), optional :: vmic
+    real(dp), dimension(:,:,:), allocatable :: ro, eh, charge
+    real(4), dimension(:,:,:,:), pointer :: chi500
+    real(dp) :: nu500(1), nudebug(1)
+    integer :: i,j, nx, ny, nz, lunit, m(3)
+    integer :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%load_state_variables', itimer=itimer)
+
+    if (.not. self%initialised) then
+      print *, 'composition has not been initialised yet'
+      stop
+    endif
+
+    if (.not. (option(use_rho, .true.) .or. option(use_ne, .true.))) then
+      print *, 'ERROR: At least one of rho or ne must be provided to load_state_variables'
+      stop
+    endif
+
+    if (self%loaded) then
+      deallocate(self%temp)
+      deallocate(self%ne, self%rho, self%pe, self%pg, self%E, self%eh)
+      deallocate(self%toth, self%teta, self%dxi, self%lsaha)
+      deallocate(self%e_kT, self%p6, self%stark_pe, self%tothi, self%zero)
+      if (allocated(self%vmic)) deallocate(self%vmic)
+    endif
+
+    allocate(self%temp, self%ne, self%rho, self%pe, self%pg, self%E, self%eh, mold=temp)
+    allocate(self%toth, self%teta, self%dxi, self%lsaha, mold=temp)
+    allocate(self%e_kT, self%p6, ro, self%stark_pe, self%tothi, self%zero, mold=temp)
+    if (present(vmic)) allocate(self%vmic, source=vmic)
+
+    self%zero = 0.d0
+    self%E = 0
+
+    self%ne = ne
+    if (option(use_ne, .true.)) then
+      call self%thermal_equilibrium(temp, ne, self%rho)
+    else
+      call self%iterate_thermal_eq(temp, rho, self%ne, tol=1d-6)
+      call self%thermal_equilibrium(temp, self%ne, self%rho)
+    endif
+
+    if (option(use_rho, .true.)) then
+      self%rho = rho
+    endif
+
+    self%toth = self%rho / self%grph
+
+    do i=1, self%nel
+      element => self%elements(i)
+      do j=lbound(element%ions,1), ubound(element%ions,1)
+        ion => element%ions(j)
+        ion%n = ion%f * self%toth
+      end do
+    end do
+
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      mol%n = mol%f * self%toth
+    end do
+
+    call self%set_aux_data(temp, self%ne)
+    call self%compute_energy_and_gas_pressure(self%eh, self%E, self%pg)
+    call self%compute_damping_aux()
+    call self%init_H_levels()
+
+    do i=1, self%nel
+      element => self%elements(i)
+      do j=lbound(element%ions,1), ubound(element%ions,1)
+        ion => element%ions(j)
+        call ion%deallocate()
+      end do
+    end do
+
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      call mol%deallocate()
+    end do
+
+    m = shape(self%temp)
+    allocate(self%chi500(m(1),m(2),m(3)))
+    chi500(1:1,1:m(1),1:m(2),1:m(3)) => self%chi500
+    nu500 = 1d8 * CC / air2vac(ref_lam)
+    call self%absorption(nu500, chi500, sorted=.true.)
+
+    if (debug_opac > 0) then
+      nudebug = 1d8 * CC / air2vac(debug_opac)
+      call self%print_opacity_contributions(nudebug)
+    endif
+
+    self%loaded = .true.
+    call trace%end(itimer)
+  END SUBROUTINE load_state_variables
+
+  !=========================================================================
+  SUBROUTINE thermal_equilibrium(self, temp, ne, rho)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(ion_type), pointer :: ion, HI, HeI
+    real(dp), intent(in),  dimension(:,:,:) :: temp, ne
+    real(dp), intent(out), dimension(:,:,:) :: rho
+    real(dp), dimension(:,:,:), allocatable :: fe, xnen, xnecno, toth, dxi, hpart
+    integer :: i, j, itimer=0, itimer2=0, itimer3=0, x, y, z
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%thermal_equilibrium', itimer=itimer)
+    allocate(fe, xnen, xnecno, toth, mold=temp)
+    call self%set_aux_data(temp, ne)
+    call self%ion_by_id('H I', HI)
+    call self%ion_by_id('He I', HeI)
+
+    fe = 0
+    xnecno = 0
+
+    do i=1, self%nel
+      element => self%elements(i)
+      call trace%begin ('composition_type%partition_functions', itimer=itimer2)
+      call element%compute_partition_functions(self%temp, self%e_kT, self%ne)
+      call trace%end(itimer2)
+
+      call trace%begin ('composition_type%ion_equilibrium', itimer=itimer3)
+      call element%compute_ion_equilibrium(self%e_kT, self%lsaha, self%dxi)
+      call trace%end(itimer3)
+
+      do j=lbound(element%ions, 1), ubound(element%ions, 1)
+        ion => element%ions(j)
+
+        ! number of electrons from ion
+        xnen = ion%f * (j-1)
+        fe = fe + xnen
+
+        if (all(element%ions%nmolec == 0)) then
+          ! number of electrons from elements without molecules
+          xnecno = xnecno + xnen
+        endif
+      end do
+    end do
+
+    ! if (mhd_eos) then
+    !   allocate(dxi, hpart, mold=self%temp)
+    !   do i=1, 5
+    !     toth = ne / fe
+    !     HI%n = HI%f * toth
+    !     HeI%n = HeI%f * toth
+    !     call self%Hoccupation_partition(HI%n, HeI%n, hpart)
+    !     hpart = max(1e-40, hpart)
+    !     dxi = - log(hpart*HI%part) / self%e_kT
+    !     call self%elements(1)%compute_ion_equilibrium(self%e_kT, self%lsaha, dxi=dxi)
+    !     call self%elements(2)%compute_ion_equilibrium(self%e_kT, self%lsaha, dxi=dxi)
+    !   end do
+    ! endif
+
+    if (self%nmolec > 0) then
+      call self%molecular_equilibrium(self%temp, self%teta, self%pe, xnecno, fe)
+    endif
+
+    ! total hydrogen number density, computed from scratch
+    toth = ne / fe
+    ! mass density computed from scratch
+    rho = toth * self%grph
+
+    do z=1, size(rho,3)
+      do y=1, size(rho,2)
+        do x=1, size(rho,1)
+          if (rho(x,y,z) /= rho(x,y,z)) then
+            print *, 'NaN in thermal_equilibrium at (', x, ',', y, ',', z, ')'
+          endif
+        end do
+      end do
+    end do
+
+    call trace%end(itimer)
+  END SUBROUTINE thermal_equilibrium
+
+  !=========================================================================
+  SUBROUTINE set_aux_data(self, temp, ne)
+    class(composition_type), target :: self
+    real(dp), intent(in),  dimension(:,:,:) :: temp, ne
+    integer :: i, j
+    real(dp), parameter :: fo_const = 2*PI*(4./15.)**two_third*EC ! 1.25e-9
+    real(dp), parameter :: dxi_const = (EC**3 * sqrt(8*PI)) / (temp_to_theta*BK*EE) ! 4.98e-4
+    !---------------------------------------------------------------------------
+    self%ne = ne
+    self%temp = temp
+    self%teta = temp_to_theta / temp
+    self%e_kT = EK / temp
+    self%pe = temp * BK * ne
+    self%lsaha = log(2 * op_saha_const * temp*sqrt(temp)) - log(ne)
+    self%fo = fo_const * ne**two_third ! Holtsmark normal field strength
+
+    if (debye_shield) then
+      self%dxi = dxi_const * self%teta*sqrt(self%pe)
+      ! --- this only shows up in the Oslo legacy code ---!
+      !self%dxi=min(self%dxi,0.747*0.5)
+      ! --------------------------------------------------!
+    else
+      self%dxi = 0
+    endif
+  END SUBROUTINE set_aux_data
+
+  !=========================================================================
+  ! find a state variables consistent with given temp & rho
+  !=========================================================================
+  SUBROUTINE iterate_thermal_eq(self, temp, rho, ne, tol)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    real(dp), dimension(:,:,:), intent(in) :: temp, rho
+    real(dp), dimension(:,:,:), intent(out) :: ne
+    real(dp), intent(in) :: tol ! stop criterion
+    logical, dimension(:,:,:), allocatable :: ne_converged
+    real(dp), dimension(:,:,:), allocatable :: a, b, c, x, xold, fx, fa, fb, ro, pg
+    real(dp), dimension(:,:,:), allocatable :: lrho
+    integer :: i, nconverged, arr_size, m(3), ix, iy, iz
+    integer, parameter :: nmax = 20 ! max number of iteration
+    !---------------------------------------------------------------------------
+    m = shape(temp)
+    arr_size = size(temp)
+
+    allocate(ne_converged(m(1),m(2),m(3)), source=.false.) ! cant use mold= on different kinds
+    allocate(x, xold, a, b, c, fx, fa, fb, ro, pg, lrho, mold=temp)
+
+    if (ne(1,1,1) == 0.0d0) then
+      ! Saha approximation for pure atomic hydrogen
+      ne = 6.35d-5 * (rho**(-0.5d0)) * (temp**0.75d0) * exp(-7.89d4 / temp)
+      ne = (rho / self%grph) * min(1.0d-1, max(tiny(1.d0), ne))
+    endif
+
+    lrho = log(rho)
+
+    call self%thermal_equilibrium(temp, ne, ro)
+
+    where (ro==ro) ! we skip NaN values
+      fa = log(ro) - lrho
+      ne_converged = abs(fa) < tol
+      a = log(ne)
+      b = a - 0.69*fa
+      ne = exp(b)
+    end where
+
+    call self%thermal_equilibrium(temp, ne, ro)
+
+    where(ro==ro) ! we skip NaN values
+      fb = log(ro) - lrho
+      ne_converged = abs(fb) < tol
+    end where
+
+    nconverged = count(ne_converged)
+
+    i = 0
+    x = b
+    !write(*,fmt="(5x,'it [',I2.2,']',1x,'n-converged:',1x,I8,1X,'/ total size: ',I8)") i, nconverged, arr_size
+
+    do while (nconverged < arr_size .and. i <= nmax)
+      xold = x
+      where (.not. ne_converged .and. ro==ro)
+        c = fb-fa ! log(ro2) - log(ro1)
+        c = (b-a)/c
+        x = a - c*fa
+        x = max(x, min(a,b)-2.d0)
+        x = min(x, max(a,b)+2.d0)
+      end where
+
+      ne_converged = abs(x-xold) < tol
+      nconverged = count(ne_converged)
+      if (arr_size == nconverged) exit ! all good !
+
+      where (.not. ne_converged .and. ro==ro)
+        ne = exp(x)
+      endwhere
+
+      call self%thermal_equilibrium(temp, ne, ro)
+      where (ro==ro) ! we skip NaN values
+        fx = log(ro) - lrho
+        where (abs(a-x) < abs(b-x))
+          b = x
+          fb = fx
+        else where
+          a = x
+          fa = fx
+        end where
+      end where
+      i = i+1
+    end do
+
+    if (nconverged /= arr_size) then
+      write(*,fmt="(5x,'it [',I3.3,']',1x,'n-converged:',1x,I8,1X,'/ total size: ',I8)") i, nconverged, arr_size
+    endif
+
+    where (.not. ne_converged)
+      self%ne = ieee_value(self%ne, ieee_quiet_nan)
+      self%pg = ieee_value(self%pg, ieee_quiet_nan)
+      self%E  = ieee_value(self%E,  ieee_quiet_nan)
+    end where
+
+    deallocate(ne_converged)
+    deallocate(x,xold,a,b,fx,fa,fb)
+  END SUBROUTINE iterate_thermal_eq
+
+  !===============================================================================
+  SUBROUTINE Hoccupation_partition(self, nh, nhe, part)
+    class(composition_type), target :: self
+    real(dp), intent(in), dimension(:,:,:) :: nh, nhe
+    real(dp), intent(out), dimension(:,:,:) :: part
+    class(ion_type), pointer :: HI
+    class(level_type), pointer :: lvl
+    integer :: i, itimer=0, itimer2=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%compute_occupation_weights', itimer=itimer)
+    call self%ion_by_id('H I', HI)
+    if (.not. allocated(HI%levels)) allocate(HI%levels(HI%nk))
+    if (.not. allocated(self%shield)) then
+      allocate(self%shield, mold=self%temp)
+      self%shield = 0.08989 * self%ne**0.16667d0 / sqrt(self%temp) ! the shielding parameter
+      self%shield = (1.d0 + self%shield)**3.15d0 / self%ne
+    endif
+
+    part = 0.
+    do i=1, HI%nk
+      lvl => HI%levels(i)
+      if (.not. allocated(lvl%f)) then
+        allocate(lvl%f, mold=self%temp)
+        call os%mem_register(storage_size(lvl%f), product(HI%m), 'lvl%f')
+        lvl%i = i
+        lvl%xion = RYD * (1. - 1./i**2)
+        lvl%g = 2 * i**2
+        lvl%f = lvl%g * exp(-self%e_kT*lvl%xion)
+      endif
+      if (.not. allocated(lvl%w)) then
+        allocate(lvl%w, mold=self%temp)
+        call os%mem_register(storage_size(lvl%w), product(HI%m), 'lvl%w')
+      endif
+      call trace%begin ('composition_type%compute_occupation_weights%wcalc', itimer=itimer2)
+      call wcalc(nh, nhe, self%ne, self%shield, dble(i), lvl%w)
+      call trace%end (itimer2)
+      part = part + lvl%w * lvl%f
+    end do
+    call trace%end (itimer)
+  END SUBROUTINE Hoccupation_partition
+
+  !===============================================================================
+  SUBROUTINE init_H_levels(self)
+    class(composition_type), target :: self
+    class(ion_type), pointer :: HI, HeI
+    class(level_type), pointer :: lvl
+    real(dp), dimension(:,:,:), allocatable :: h1, part
+    integer, dimension(:,:,:), allocatable :: nniv
+    integer :: i, itimer=0, itimer2=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%init_H_levels', itimer=itimer)
+    call self%ion_by_id('H I', HI)
+    call self%ion_by_id('HE I', HeI)
+
+    if (allocated(self%shield)) deallocate(self%shield)
+    allocate(self%shield, mold=self%temp)
+    self%shield = 0.08989 * self%ne**0.16667d0 / sqrt(self%temp) ! the shielding parameter
+    self%shield = (1.d0 + self%shield)**3.15d0 / self%ne
+
+    !HI%nk = 15
+    if (allocated(HI%levels)) deallocate(HI%levels)
+    allocate(HI%levels(HI%nk))
+    allocate(part, mold=self%temp)
+
+    do i=1, HI%nk
+      lvl => HI%levels(i)
+      allocate(lvl%n, mold=self%temp)
+      call os%mem_register(storage_size(lvl%n), product(HI%m), 'lvl%n')
+      lvl%i = i
+      lvl%xion = RYD * (1. - 1./i**2)
+      lvl%g = 2 * i**2
+      lvl%n = lvl%g * exp(-self%e_kT*lvl%xion)
+    end do
+
+    part = exp(-HI%part)
+    if (H_occupation_probability) then
+      part = 0.
+      do i=1, HI%nk
+        lvl => HI%levels(i)
+        allocate(lvl%w, mold=self%temp)
+        call os%mem_register(storage_size(lvl%w), product(HI%m), 'lvl%w')
+        call trace%begin ('composition_type%init_H_levels%wcalc', itimer=itimer2)
+        call wcalc(HI%n, HeI%n, self%ne, self%shield, dble(i), lvl%w)
+        call trace%end (itimer2)
+        part = part + lvl%w * lvl%n
+        ! we chose not to apply the occupation probability to the hydrogen levels here
+        ! as we avoid divisions in the opacity calculations later this way
+      end do
+      part = 1.d0 / part
+    elseif (self%dxi(1,1,1) > 0) then
+      allocate(h1,   source = sqrt(RYD/self%dxi) )
+      allocate(nniv, source = int(h1)            )
+      do i=1, HI%nk
+        lvl => HI%levels(i)
+        where (nniv < i)
+          lvl%n = 0
+        elsewhere (nniv == i)
+          lvl%n = lvl%n * (h1 - nniv)
+        end where
+      end do
+    endif
+    do i=1, HI%nk
+      lvl => HI%levels(i)
+      lvl%n = HI%n * lvl%n * part
+    end do
+    call trace%end (itimer)
+  END SUBROUTINE init_H_levels
+
+  !===============================================================================
+  SUBROUTINE compute_damping_aux(self)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(ion_type), pointer :: ion, HeI, HI
+    class(molec_type), pointer :: H2, H2p
+    integer :: i, x, y, z
+    !---------------------------------------------------------------------------
+    call self%molecule_by_id('H2',  H2)
+    call self%molecule_by_id('H2+', H2p)
+    call self%ion_by_id('H I', HI)
+    call self%ion_by_id('HE I', HeI)
+
+    self%vbar2h = HI%compute_vbar2(real(self%temp))
+    self%t3nhe = (self%temp/10000.)**0.3 * HeI%n
+    self%stark_pe = self%ne * self%temp**one_sixth
+    self%tothi = HI%n ! total neutral hydrogen density
+
+    if (associated(H2) .and. associated(H2p)) then
+      self%p6 = LOG10((HI%n + 0.41336*HeI%n + 0.85*(H2%n + H2p%n)) * BK * self%temp)
+    else
+      self%p6 = LOG10((HI%n + 0.41336*HeI%n) * BK * self%temp)
+    endif
+
+    if (allocated(self%peachmet%n)) deallocate(self%peachmet%n)
+    allocate(self%peachmet%n, source=self%zero)
+    do i=1, self%nel
+      element => self%elements(i)
+      if (element%nion >= 2) then
+        ion => element%ions(2)
+        select case (trim(element%id))
+         case ('H', 'He', 'C', 'Mg', 'Si')
+          ! do not add
+         case default
+          self%peachmet%n = self%peachmet%n + ion%n
+        end select
+      end if
+    end do
+  END SUBROUTINE compute_damping_aux
+
+  !===============================================================================
+  SUBROUTINE absorption(self, nu, chi, beta, include_absmet, sorted)
+    !use phys_mod, only:planck
+    class(composition_type), target :: self
+    class(bftrans_type), pointer :: trans
+    class(ion_type), pointer :: HeI
+    real(dp), dimension(:), intent(in) :: nu
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
+    real(4), dimension(:,:,:,:), contiguous, intent(in), optional :: beta
+    real(dp), dimension(:), allocatable :: lam, hnu_e
+    logical, optional :: include_absmet, sorted
+    real(dp) :: xray2, epsln, stim
+    integer :: i, x, y, z, f, nf, nx, ny, nz
+    integer :: p(4)=pp, itimer=0, itimer2=0
+    logical :: ok
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%absorption', itimer=itimer)
+    allocate(lam, hnu_e, mold=nu)
+    call self%ion_by_id('HE I', HeI)
+
+    nx = size(self%temp, 1)
+    ny = size(self%temp, 2)
+    nz = size(self%temp, 3)
+    nf = size(nu, 1)
+    lam = cc / nu * 1e8
+    hnu_e = h_e * nu
+    chi = 0
+    call self%add_hrest(chi, lam)
+
+    ! add absorption from all tables, which do not include stimulated emission
+    do i=1, size(self%trans)
+      trans => self%trans(i)
+      if (.not. trans%istim) then
+        call trans%add_absorption(chi, lam, self%temp, self%e_kT, self%teta, &
+          self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, sorted=sorted)
+      endif
+    end do
+
+    if (present(beta)) then
+      do z=1, nz
+        do y=1, ny
+          do x=1, nx
+            do f=1, nf
+              ! all continua above are multiplied by stim
+              !--------------------------------------------------------------------------------
+              !stim = 1. - exp(-28556.*self%teta/lam(f))
+              stim = 1. - beta(f,x,y,z)
+              chi(f,x,y,z) = chi(f,x,y,z) * stim
+            end do
+          end do
+        end do
+      end do
+    else
+      do z=1, nz
+        do y=1, ny
+          do x=1, nx
+            do f=1, nf
+              stim = 1. - exp(-hnu_e(f) * self%e_kT(x,y,z))
+              chi(f,x,y,z) = chi(f,x,y,z) * stim
+            end do
+          end do
+        end do
+      end do
+    endif
+
+    do i=1, size(self%trans)
+      trans => self%trans(i)
+      if (trans%istim) then
+        call trans%add_absorption(chi, lam, self%temp, self%e_kT, self%teta, &
+          self%pe, self%dxi, sorted=sorted)
+      endif
+    end do
+
+    if (scattering_absorption) then
+      call self%electron_scattering(chi)
+      call self%rayleigh_scattering(lam, chi)
+    endif
+
+    if (present(include_absmet)) then
+      if (osmet%initialised .and. include_absmet) then
+        call trace%begin('osmet%add_line_opacities', itimer=itimer2)
+        call osmet%add_line_opacities(nu, self%p6, self%temp, self%rho, chi)
+        call trace%end(itimer2)
+      endif
+    endif
+
+    call trace%end(itimer)
+  END SUBROUTINE absorption
+
+  !===============================================================================
+  SUBROUTINE scattering (self, nu, eta, Jnu, include_absmet)
+    class(composition_type), target :: self
+    real(dp), dimension(:), intent(in) :: nu
+    real(4), dimension(:,:,:,:), intent(inout) :: eta
+    real(4), dimension(:,:,:,:), intent(in) :: Jnu
+    logical, optional :: include_absmet
+    real(4), dimension(:,:,:,:), allocatable :: sumsca, epsln
+    real(4) :: bnu
+    integer :: f, i, j, k, n(4)
+    !---------------------------------------------------------------------------
+    n = shape(Jnu)
+    allocate(sumsca, mold=Jnu)
+    sumsca = 0
+    if (present(include_absmet)) then
+      if (osmet%initialised .and. include_absmet) then
+        allocate(epsln, mold=Jnu)
+        call osmet%compute_epsilon(nu, self%temp, self%ne, epsln)
+        call osmet%add_line_opacities(nu, self%p6, self%temp, self%rho, sumsca)
+        do k=1, n(4)
+          do j=1, n(3)
+            do i=1, n(2)
+              do f=1, n(1)
+                sumsca(f,i,j,k) = sumsca(f,i,j,k) * (1 - epsln(f,i,j,k))
+              end do
+            end do
+          end do
+        end do
+      endif
+    endif
+    call self%electron_scattering(sumsca)
+    call self%rayleigh_scattering(cc / nu * 1e8, sumsca)
+    do k=1, n(4)
+      do j=1, n(3)
+        do i=1, n(2)
+          do f=1, n(1)
+            eta(f,i,j,k) = eta(f,i,j,k) + sumsca(f,i,j,k) * Jnu(f,i,j,k)
+          end do
+        end do
+      end do
+    end do
+  END SUBROUTINE scattering
+
+  !===============================================================================
+  SUBROUTINE get_totn(self, id, abund, totn, el, mol)
+    class(composition_type), target :: self
+    class(element_type), intent(out), optional, pointer :: el
+    class(molec_type), intent(out), optional, pointer :: mol
+    class(element_type), pointer :: element
+    class(molec_type), pointer :: molec
+    character(len=*), intent(in) :: id
+    real(dp), intent(in) :: abund
+    real(dp), dimension(:,:,:) :: totn
+    integer :: j
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%get_totn')
+    element => null()
+    molec   => null()
+
+    call self%element_by_id(id, element)
+    if (associated(element)) then
+      totn = 0
+      do j=1, element%nion
+        totn = totn + element%ions(j)%n
+      end do
+    else
+      call self%molecule_by_id(id, molec)
+      if (associated(molec)) then
+        totn = molec%n
+      else
+        totn = 10.0**(abund-12.0) * self%toth
+      endif
+    endif
+
+    if (present(el) .and. present(mol)) then
+      el => element
+      mol => molec
+    endif
+    call trace%end ()
+  END SUBROUTINE get_totn
+
+  !===============================================================================
+  SUBROUTINE molecular_equilibrium(self, temp, teta, pe, xnecno, fe)
+    class(composition_type), target :: self
+    real(dp), dimension(:,:,:), intent(in) :: temp, pe, teta, xnecno
+    real(dp), dimension(:,:,:), intent(inout) :: fe
+    real(dp), dimension(:,:,:), allocatable :: r, s, b, fepe, p, q
+    class(molec_type), pointer :: molecules(:), mol
+    class(molec_type), pointer :: H2, CN, H2p, CO, N2, H2O, OH
+    type(ion_pointer_t), dimension(:), allocatable :: ions
+    class(ion_type), pointer :: HI, CI, NI, OI, Hm, TiI
+    class(ion_type), pointer :: ion, ioni, ionj
+    integer :: i, j, nx, ny, nz, x,y,z, np1, iter, nions
+    real(dp) :: max_step, scale_factor
+    real(dp), dimension(:,:,:), allocatable :: diff
+    real(dp), dimension(:,:,:,:)  , allocatable, target :: Fvec
+    real(dp), dimension(:,:,:,:,:), allocatable, target :: Amat
+    real(dp), dimension(:), allocatable :: Fold, Fnew
+    logical, dimension(:,:,:), allocatable :: tmolim
+    integer :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%molecular_equilibrium', itimer=itimer)
+
+    nx = size(temp, 1)
+    ny = size(temp, 2)
+    nz = size(temp, 3)
+
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      call mol%allocate(shape(temp))
+      mol%part = mol%irwin_partf(self%temp)
+      call mol%get_dis(self%temp, self%teta, self%e_kT, mol%dis)
+    end do
+
+    call self%ion_by_id('H I', HI)
+    call self%ion_by_id('C I', CI)
+    call self%ion_by_id('N I', NI)
+    call self%ion_by_id('O I', OI)
+    Hm => HI%below
+
+    molecules => self%molecules
+    call self%molecule_by_id('H2' , H2)
+    call self%molecule_by_id('N2' , N2)
+    call self%molecule_by_id('CN' , CN)
+    call self%molecule_by_id('CO' , CO)
+    call self%molecule_by_id('H2+', H2p)
+    call self%molecule_by_id('H2O', H2O)
+    call self%molecule_by_id('OH' , OH)
+
+    nions = 0
+    do i=1, self%nel
+      ion => self%elements(i)%ions(1) ! only consider neutral atoms
+      if (ion%nmolec > 0) nions = nions + 1
+    end do
+
+    np1 = nions + 1
+    allocate(ions(nions))
+    allocate(r, s, diff, q, p, b, fepe, mold=temp)
+    allocate(Fvec(np1, nx, ny, nz))
+    allocate(Amat(np1, np1, nx, ny, nz))
+    allocate(Fold(np1), Fnew(np1))
+    allocate(tmolim(nx,ny,nz))
+
+    tmolim = temp < self%tmolim
+
+    nions = 0
+    do i=1, self%nel
+      associate(elm => self%elements(i), ion => self%elements(i)%ions(1))
+        if (ion%nmolec > 0) then
+          nions = nions + 1
+          ions(nions)%p => ion
+          allocate(ion%fil, ion%ne, source=self%zero)
+          do j=lbound(elm%ions,1), ubound(elm%ions,1)
+            ion%ne = ion%ne + (j-1)*elm%ions(j)%f
+          end do
+          ! ion%fil is the neutral fraction of the element if there are no molecules
+          ion%fil = ion%abund / ion%f
+          ! ion%ne is the number of electrons per neutral atom from the element if there are no molecules
+          ion%ne = ion%ne / ion%f
+        endif
+      end associate
+    end do
+
+    ! xnecno is number of electrons from elements without molecules
+    where (tmolim) fe = xnecno
+    fepe = log(fe) - log(pe)
+
+    where (tmolim)
+      ! K = f_H2 / f_H^2  in f-units
+      b = exp(H2%dis - fepe)
+      ! discriminant of  2K f_H^2 + fil_H f_H - abund_H = 0
+      s = sqrt(HI%fil**2 + 8.0*b*HI%abund)
+      ! stable root (avoids cancellation when K is small)
+      HI%f = 2.0*HI%abund / (HI%fil + s)
+      H2%f = 0.5*(HI%abund - HI%fil*HI%f)
+      fe = xnecno + HI%f * HI%ne
+      fepe = log(fe) - log(pe)
+    end where
+
+    ! where (tmolim)
+    !   b = 0.5 * H2%dis * fepe
+    !   q = - HI%abund * b
+    !   p = HI%fil * b
+    !   HI%f = solve_quadratic(p, q)
+
+    !   fe = HI%f*HI%ne + xnecno
+
+    !   where (fe <= 0)
+    !     r = Hm%saha * pe / H2%dis
+    !     s = 1 / (HI%fil - r)
+    !     p = (xnecno*(1 - r*s) - s/Hm%saha)
+    !     q = xnecno*xnecno*r*s
+    !     fe = solve_quadratic(p, q)
+    !     HI%f = (xnecno - fe)*Hm%saha
+    !   end where
+    ! end where
+
+    do i=1, self%nmolec
+      where (tmolim) molecules(i)%f = molecules(i)%calc_f(fepe)
+    end do
+
+    ! where (tmolim)
+    !   b = CO%dis * fepe
+    !   s = OI%f / (OI%abund + OI%f_of_molecules_with(HI))
+    !   r = b * (CI%abund + CI%f_of_molecules_with(HI)) / CI%f
+
+    !   p = (CI%abund-OI%abund)*s + r
+    !   q = - OI%abund * s * r
+    !   OI%f = solve_quadratic(p, q)
+    !   CI%f = CI%abund*b / (r + OI%f)
+
+    !   CN%f = CN%calc_f(fepe) ! has to be recalculated since CI%f changed
+
+    !   b = 0.5 * N2%dis * fepe
+    !   p = b * (NI%abund + NI%f_of_molecules_with(HI) + NI%f_of_molecules_with(CI)) / NI%f
+    !   q = - NI%abund * b
+    !   NI%f = solve_quadratic(p, q)
+    !   where (NI%f < 0) NI%f = 0
+    ! end where
+
+    diff = 0
+    do iter=1, 100
+      Amat = 0
+      Amat(np1, np1,:,:,:) = - fe
+      Fvec(np1,:,:,:) = xnecno - fe
+
+      do i=1, self%nmolec
+        where (tmolim) molecules(i)%f = molecules(i)%calc_f(fepe)
+      end do
+
+      do i=1, nions
+        ioni => ions(i)%p
+
+        where (tmolim)
+          Amat(i,  i,:,:,:) = ioni%f * ioni%fil
+          Amat(np1,i,:,:,:) = ioni%f * ioni%ne
+          ! number conservation
+          Fvec(i,:,:,:) = ioni%f_of_molecules_with() + ioni%f*ioni%fil - ioni%abund
+          ! charge conservation
+          Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + ioni%f*ioni%ne
+        end where
+
+        if (i==1) then
+          where (tmolim)
+            ! handle charged molecules explicitly (only H2+ in our case)
+            Amat(i,  i,:,:,:) = Amat(i,  i,:,:,:) + 4*H2p%f
+            Amat(np1,i,:,:,:) = Amat(np1,i,:,:,:) + 2*H2p%f
+            Amat(i, np1,:,:,:) = Amat(i, np1,:,:,:) - 2*H2p%f
+            Amat(np1, np1,:,:,:) = Amat(np1, np1,:,:,:) - H2p%f
+            Fvec(i,:,:,:) = Fvec(i,:,:,:) + 2*H2p%f
+            Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + H2p%f
+          end where
+        endif
+
+        do j=1, nions
+          ionj => ions(j)%p
+          where (tmolim) Amat(i,j,:,:,:) = Amat(i,j,:,:,:) + ionj%f_of_molecules_with(ioni, count_double=.true.)
+        end do
+      end do
+
+      do z=1, nz
+        do y=1, ny
+          do x=1, nx
+            if (.not. tmolim(x,y,z)) cycle
+
+            if (iter > 2 .and. diff(x,y,z) < 0.001) then
+              cycle
+            endif
+
+            Fold = [(ions(i)%p%f(x,y,z), i=1, nions), fe(x,y,z)]
+
+            call lineq(Amat(:,:,x,y,z), Fvec(:,x,y,z), np1)
+
+            ! Find the maximum step requested by any variable
+            max_step = maxval(abs(Fvec(1:np1, x,y,z)))
+
+            ! Calculate a global scaling factor
+            ! If max_step > 3.0, we scale everything down so the max is 3.0
+            scale_factor = min(1.0, 3.0 / max_step)
+
+            ! Apply the same scale to all components
+            Fnew = Fold * exp(-Fvec(:,x,y,z) * scale_factor)
+            diff(x,y,z) = maxval(abs(1-Fold/Fnew))
+
+            do i=1, nions
+              ions(i)%p%f(x,y,z) = Fnew(i)
+            end do
+
+            fe(x,y,z) = Fnew(np1)
+            fepe(x,y,z) = log(fe(x,y,z)) - log(pe(x,y,z))
+          end do
+        end do
+      end do
+
+      if (iter > 2 .and. all(diff < 0.001)) exit
+    end do
+
+    Hm%f = HI%f / Hm%saha
+    do i=1, nions
+      ion => ions(i)%p
+      deallocate(ion%fil, ion%ne)
+      do while (associated(ion%above))
+        ion%above%f = ion%f * ion%saha
+        ion => ion%above
+      end do
+    end do
+    do i=1, self%nmolec
+      where (tmolim)
+        molecules(i)%f = molecules(i)%calc_f(fepe)
+      elsewhere
+        molecules(i)%f = 0
+      end where
+    end do
+
+    call trace%end(itimer)
+  END SUBROUTINE molecular_equilibrium
+
+  !===============================================================================
+  SUBROUTINE compute_energy_and_gas_pressure(self, eh, e, pg)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(molec_type), pointer :: mol
+    class(ion_type), pointer :: ion, HI, Hm
+    real(dp), intent(out), dimension(:,:,:) :: eh, pg
+    real(dp), intent(inout), dimension(:,:,:) :: e
+    real(dp), dimension(:,:,:), allocatable :: xerg, ejon, emol
+    integer :: i, j
+    !---------------------------------------------------------------------------
+    allocate(xerg, ejon, emol, mold=pg)
+    call self%ion_by_id('H I', HI)
+    call self%ion_by_id('H -', Hm)
+
+    ejon = 0
+    pg = self%ne
+    eh = - (HI%xion - self%dxi)*(HI%n + Hm%n) - (Hm%xion - 2*self%dxi)*Hm%n
+
+    do i=1, self%nel
+      element => self%elements(i)
+      do j=1, element%nion
+        ion => element%ions(j)
+        pg = pg + ion%n
+        if (i>1 .and. associated(ion%above)) then
+          xerg = ion%xion - self%dxi*j
+          ! energy of ionization (ejon). hydrogen is not included.
+          ejon = ejon + ion%above%n * xerg
+        endif
+      end do
+    end do
+
+    emol = 0
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      pg = pg + mol%n
+      emol = emol + mol%calc_e(self%teta, self%temp, self%dxi)
+    end do
+
+    ! The gas pressure is Pg = NkT, where N is (Ne + Ni + Nmol)
+    pg = pg * BK * self%temp
+
+    !ehm = (Hm%xion + HI%xion) * Hm%f
+    where (.not.ieee_is_nan(E))
+      E = EE*(ejon + eh + emol)
+      E = (1.5*pg + E) / self%rho
+    end where
+  END SUBROUTINE compute_energy_and_gas_pressure
+
+  !===============================================================================
+  SUBROUTINE molecule_by_id(self, id, molecule, verbose)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: id
+    class(molec_type), pointer, intent(out) :: molecule
+    integer :: idx
+    logical, optional :: verbose
+    !---------------------------------------------------------------------------
+    idx = findloc(self%molecules%id, id, 1)
+    if (idx == 0) then
+      molecule => null()
+      if (option(verbose)) then
+        print *, 'molecule with id=' // id // ' was not found.'
+      endif
+    else
+      molecule => self%molecules(idx)
+    endif
+  END SUBROUTINE molecule_by_id
+
+  !===============================================================================
+  SUBROUTINE element_by_id(self, id, element, verbose)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: id
+    class(element_type), pointer, intent(out) :: element
+    integer :: idx
+    logical, optional :: verbose
+    !---------------------------------------------------------------------------
+    idx = findloc(self%elements%id, capitalize(id), 1)
+
+    element => null()
+    if (idx == 0) then
+      if (option(verbose)) then
+        print *, 'Opacity package: element with id = ' // id // ' was not found.'
+      endif
+    else
+      element => self%elements(idx)
+    endif
+  END SUBROUTINE element_by_id
+
+  !===============================================================================
+  SUBROUTINE ion_by_id(self, id, ion, verbose, element_out)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: id
+    class(ion_type), pointer, intent(out) :: ion
+    class(element_type), intent(out), pointer, optional :: element_out
+    class(element_type), pointer :: element
+    logical, optional :: verbose
+    character(3) :: eid, iid
+    character(6) :: trim_id
+    integer :: idx, iostat
+    !---------------------------------------------------------------------------
+    read(id, *, iostat=iostat) eid, iid
+    eid = capitalize(eid)
+    iid = uppercase(iid)
+    ion => null()
+    element => null()
+    if (iostat /= 0) then
+      if (option(verbose)) then
+        print *, 'ion with id = ' // id // ' was not found.'
+      endif
+    else
+      trim_id = trim(eid)//' '//trim(iid)
+      call self%element_by_id(eid, element)
+      if (associated(element)) then
+        idx = findloc(element%ions%id, trim_id, 1)
+        if (lbound(element%ions,1) /= 1) then
+          idx = idx + lbound(element%ions,1) - 1
+        endif
+        if (idx < lbound(element%ions,1) .or. idx>ubound(element%ions,1)) then
+          print *, 'ion with id = ' // trim_id // ' was not found.'
+        else
+          ion => element%ions(idx)
+        endif
+      endif
+      if (present(element_out)) then
+        element_out => element
+      endif
+    endif
+  END SUBROUTINE ion_by_id
+
+  !===============================================================================
+  SUBROUTINE particle_by_id(self, id, particle, verbose, np, ion, mol, is_molecule)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    character(len=*), intent(in) :: id
+    class(particle_type), pointer, intent(out) :: particle
+    logical, intent(in), optional :: verbose
+    integer, intent(out), optional :: np, ion, mol
+    logical, intent(out), optional :: is_molecule
+    logical :: is_mol
+    character(3) :: id1, id2
+    character(6) :: trim_id
+    integer :: idx, iostat, imol, iele
+    !---------------------------------------------------------------------------
+    element => null()
+    particle => null()
+    read(id, *) id1
+    iele = findloc(self%elements%id, capitalize(id1), 1)
+    imol = findloc(self%molecules%id, id1, 1)
+
+    if (iele > 0 .and. .not. imol > 0) then
+      element => self%elements(iele)
+      is_mol = .false.
+    elseif (imol > 0 .and. .not. iele > 0) then
+      particle => self%molecules(imol)
+      is_mol = .true.
+    elseif (imol > 0 .and. iele > 0) then
+      if (findloc(self%elements%id, id1, 1) > 0) then
+        element => self%elements(iele)
+        is_mol = .false.
+      else
+        particle => self%molecules(imol)
+        is_mol = .true.
+      endif
+    endif
+
+    if (associated(element)) then
+      read(id, *) id1, id2
+      id1 = capitalize(id1)
+      id2 = uppercase(id2)
+      trim_id = trim(id1)//' '//trim(id2)
+      idx = findloc(element%ions%id, trim_id, 1)
+      if (idx > 0) then
+        idx = idx + (lbound(element%ions,1)-1)
+        particle => element%ions(idx)
+        if (present(np)) np = element%np
+        if (present(ion)) ion = idx
+      endif
+    endif
+    if (present(mol) .and. is_mol) mol = imol
+    if (present(is_molecule)) is_molecule = is_mol
+    if (option(verbose) .and. .not. associated(particle)) then
+      print *, 'Particle id = ', id, ' is not recognised by opacity package.'
+    endif
+  END SUBROUTINE particle_by_id
+
+  !===============================================================================
+  SUBROUTINE trans_by_id(self, id, trans)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: id
+    class(bftrans_type), pointer, intent(out) :: trans
+    integer :: i, idx
+    !---------------------------------------------------------------------------
+    trans => null()
+    do i=1, size(self%trans)
+      if (trim(self%trans(i)%key) == id) then
+        trans => self%trans(i)
+        call trace%end ()
+        return
+      endif
+    end do
+
+    print *, 'transition key = ', id, ' not found. Stopping...'
+    stop
+  END SUBROUTINE trans_by_id
+
+  !=========================================================================
+  SUBROUTINE compute_grams_per_hydrogen(self)
+    class(composition_type), target :: self
+    !---------------------------------------------------------------------
+    ! Abundances should not be in log units when they enter here!
+    ! XMY = GRAMS OF STELLAR MATTER / GRAMS OF HYDROGEN
+    !---------------------------------------------------------------------
+    self%suma = sum(self%elements%abund)
+    self%xmy  = sum(self%elements%abund*self%elements%awgt) / self%elements(1)%awgt
+    self%grph = XMH*self%xmy
+  END SUBROUTINE compute_grams_per_hydrogen
+
+  !=========================================================================
+  SUBROUTINE overwrite_abundance(self, species, abnd, awgt, relative_abundance)
+    class(composition_type), target :: self
+    class(massive_type), pointer :: species
+    class(element_type), pointer :: element
+    class(molec_type), pointer :: mol
+    class(ion_type), pointer :: ion
+    real(dp), intent(in) :: abnd, awgt
+    logical, intent(in) :: relative_abundance
+    real(dp) :: abund, a
+    integer :: j
+    !---------------------------------------------------------------------
+    select type (species)
+     class is (element_type)
+      element => species
+     class is (molec_type)
+      mol => species
+      do j=1, mol%nions
+        ion => mol%ions(j)%p
+        if (ion%id(1:2) /= 'H ') then
+          call self%element_by_id(ion%id(1:2), element, verbose=.false.)
+          exit
+        endif
+      end do
+     class default
+      print *, 'Particle is not recognised by opacity package.'
+      return
+    end select
+
+    abund = log10(element%abund) + 12.0
+    if (relative_abundance) then
+      a = abund + abnd
+    else
+      a = abnd
+    endif
+    if (abund /= a) then
+      print '(A, A, A, F5.2, A, F5.2)', 'Changing abundance of ', trim(element%id), ' from ', abund, ' to ', a
+      element%abund = 10.0**(a - 12.0)
+      !if (.not. associated(mol)) element%awgt = awgt
+      call self%compute_grams_per_hydrogen()
+    endif
+  END SUBROUTINE overwrite_abundance
+
+  !=========================================================================
+  SUBROUTINE add_hrest(self, chi, lam)
+    class(composition_type), target :: self
+    class(ion_type), pointer :: HI
+    real(4), dimension(:,:,:,:), intent(inout) :: chi
+    real(dp), dimension(:), intent(in) :: lam
+    real(dp), dimension(:), allocatable :: lam3
+    real(dp) :: hrest, umc, fakt, e_kT, dxi
+    real(dp), parameter :: nniv2 = 15.5**2
+    integer :: f, x,y,z
+    integer :: p(4)=pp
+    !---------------------------------------------------------------------
+    call self%ion_by_id('H I', HI)
+    allocate(lam3, mold=lam)
+    lam3 = lam**3
+    do z=1, size(self%temp,3)
+      do y=1, size(self%temp,2)
+        do x=1, size(self%temp,1)
+          e_kT = self%e_kT(x,y,z)
+          dxi = self%dxi(x,y,z)
+          fakt = exp(-e_kT*(HI%xion - dxi) - HI%part(x,y,z))
+          fakt = 2.0898E-26 / (2*RYD*e_kT) * fakt * HI%n(x,y,z)
+          if (RYD >= nniv2 * dxi) then
+            !NNIV=15
+            !XNIV=15.
+            !IF(H(1).LT.XNIV)NNIV=INT(H(1))
+            !ADDF=EXP(TETA31/((FLOAT(NNIV)+0.5)**2)-UMC)-1.
+            !IF(H(1).LT.XNIV+0.5)ADDF=0.
+            !HREST(NTP)=EXPJ*ADDF
+            hrest = exp(e_kT*(RYD/nniv2 - dxi))
+            hrest = fakt * (hrest - 1)
+            chi(:,x,y,z) = chi(:,x,y,z) + hrest*lam3
+          endif
+        end do
+      end do
+    end do
+  END SUBROUTINE add_hrest
+
+  !=========================================================================
+  SUBROUTINE electron_scattering(self, chi)
+    class(composition_type), target :: self
+    real(4), dimension(:,:,:,:), intent(inout) :: chi
+    real(dp), parameter :: thomson = 8./3.*PI*(EC**2/(EM*CC**2))**2
+    real(dp) :: els
+    integer :: f, x, y, z
+    !---------------------------------------------------------------------
+    do z=1, size(chi, 4)
+      do y=1, size(chi, 3)
+        do x=1, size(chi, 2)
+          !els = 4.8206e-9 * self%pe / self%temp
+          els = thomson * self%ne(x,y,z)
+          chi(:,x,y,z) = chi(:,x,y,z) + els
+        end do
+      end do
+    end do
+  END SUBROUTINE electron_scattering
+
+  !=========================================================================
+  SUBROUTINE rayleigh_scattering(self, lam, chi)
+    class(composition_type), target :: self
+    class(molec_type), pointer :: H2
+    class(ion_type), pointer :: HI, HE
+    real(dp), dimension(:), intent(in) :: lam
+    real(4), dimension(:,:,:,:), intent(inout) :: chi
+    real(dp), dimension(:), allocatable :: xray2, HeIscat
+    real(dp) :: xr, ll, scalar, h2ray, rayh, rayh2, nHI, nH2, nHE
+    logical :: do_H2
+    integer :: f, x, y, z
+    !---------------------------------------------------------------------
+    allocate(xray2, HeIscat,  mold=lam)
+
+    ! rayleigh scattering
+    call self%ion_by_id('H I', HI)
+    call self%ion_by_id('HE I', HE)
+    call self%molecule_by_id('H2', H2)
+    do_H2 = associated(H2)
+
+    xray2 = 0.
+    !where (lam > 911.27) xray2 = 1 / max(1026., lam)**2
+    where (lam > 1400) xray2 = 1 / max(1026., lam)**2
+
+    if (helium_scattering) then
+      ! Scattering by HeI in cm**2/atom, from Bues & Wehrse, 1976, A&A 51, 461
+      HeIscat = 0.66520e-24*4.*(500./lam)**4
+    else
+      HeIscat = 0
+    endif
+
+    do z=1, size(chi, 4)
+      do y=1, size(chi, 3)
+        do x=1, size(chi, 2)
+          nHI = HI%n(x,y,z)
+          nHE = HE%n(x,y,z)
+          if (do_H2) then
+            nH2 = H2%n(x,y,z)
+          else
+            nH2 = 0
+          endif
+
+          do f=1, size(lam)
+            xr = xray2(f)
+            if (xr > 0.) then
+              rayh  = (5.799e-13 + xr*(1.422e-6 + xr*2.784)) * nHI ! Dalgarno, quoted by Gingerich (1964)
+              rayh2 = ( 8.14e-13 + xr*( 1.28e-6 + xr*1.61 )) * nH2 ! Dalgarno & Williams (1962)
+
+              ! add sumsca to sumsca from lines
+              chi(f,x,y,z) = chi(f,x,y,z) + (rayh + rayh2)*xr*xr
+            endif
+
+            chi(f,x,y,z) = chi(f,x,y,z) + HeIscat(f) * nHE
+          end do
+        end do
+      end do
+    end do
+  END SUBROUTINE rayleigh_scattering
+
+  !=========================================================================
+  SUBROUTINE print_ion_table(self)
+    class(composition_type), target :: self
+    integer :: i, lunit
+    !---------------------------------------------------------------------
+    open(newunit=lunit, file='./ion_info.txt')
+    write(lunit, '(A8, es12.4)') 'temp=', self%temp(pp(1),pp(2),pp(3))
+    write(lunit, '(A8, es12.4)') 'pe=', self%pe(pp(1),pp(2),pp(3))
+    write(lunit, '(A8, es12.4)') 'ne=', self%ne(pp(1),pp(2),pp(3))
+    write(lunit, '(A8, es12.4)') 'rho=', self%rho(pp(1),pp(2),pp(3))
+    write(lunit, '(A8, es12.4)') 'dxi=', self%dxi(pp(1),pp(2),pp(3))
+
+    do i=1, self%nel
+      call self%elements(i)%print_info(lunit, pp)
+    end do
+    close(lunit)
+  END SUBROUTINE print_ion_table
+
+  !===============================================================================
+  SUBROUTINE read_molec_file (self, molec_file)
+    class(composition_type), target :: self
+    class(element_type), pointer :: element
+    class(molec_type), pointer :: mol
+    type(molec_type) :: molecule
+    type(ion_type), pointer :: ion
+    character(len=*) :: molec_file
+    integer :: i, j, k, lunit, iostat
+    !---------------------------------------------------------------------------
+    self%nmolec = 0
+    if (self%tmolim <= 0) return
+
+    do i=1, self%nel
+      element => self%elements(i)
+      do j=lbound(element%ions,1), ubound(element%ions,1)
+        ion => element%ions(j)
+        if (allocated(ion%molecules)) then
+          deallocate(ion%molecules)
+          ion%nmolec = 0
+        endif
+      end do
+    end do
+
+    call os%check_file(molec_file)
+    open(file=molec_file, newunit=lunit, iostat=iostat)
+    do while (iostat==0)
+      call molecule%read_molec_data(lunit, iostat)
+      if (iostat==0) self%nmolec = self%nmolec + 1
+    end do
+
+    allocate(self%molecules(self%nmolec))
+    rewind(lunit)
+
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      call mol%read_molec_data(lunit, iostat)
+      call self%parse_mol_id(mol)
+      do j=1, mol%nions
+        ion => mol%ions(j)%p
+        ion%nmolec = ion%nmolec + 1
+      end do
+    end do
+
+    close(lunit)
+
+    do i=1, self%nel
+      element => self%elements(i)
+      do j=lbound(element%ions,1), ubound(element%ions,1)
+        ion => element%ions(j)
+        if (ion%nmolec > 0) then
+          allocate(ion%molecules(ion%nmolec))
+        endif
+        ion%mcount = 0
+      end do
+    end do
+
+    do i=1, self%nmolec
+      mol => self%molecules(i)
+      do j=1, mol%nions
+        ion => mol%ions(j)%p
+        ion%mcount = ion%mcount + 1
+        ion%molecules(ion%mcount)%p => mol
+      end do
+    end do
+  END SUBROUTINE read_molec_file
+
+  !===============================================================================
+  SUBROUTINE parse_mol_id (self, mol)
+    class(composition_type) :: self
+    class(molec_type) :: mol
+    class(ion_type), pointer :: ion
+    integer :: i, j, lenid, count, nions
+    character(len=2) :: elem
+    character :: c, next
+    !-----------------------------------------------------------------------
+    lenid = len_trim(mol%id)
+    nions = 0
+    mol%awgt = 0.0
+
+    ! --- First pass: count how many atomic ions are present ---
+    i = 1
+    do while (i <= lenid)
+      c = mol%id(i:i)
+      if (i < lenid) then
+        next = mol%id(i+1:i+1)
+      else
+        next = ' '
+      end if
+      if (c >= 'A' .and. c <= 'Z') then
+        nions = nions + 1
+        ! check next char for lowercase
+        if (next >= 'a' .and. next <= 'z') then
+          i = i + 1
+        end if
+      elseif (c >= '2' .and. c <= '9') then
+        nions = nions + (ichar(c) - ichar('1'))
+      elseif (c == '+' .or. c == '-') then
+        ! handled later
+      end if
+      i = i + 1
+    end do
+
+    if (allocated(mol%ions)) deallocate(mol%ions)
+    allocate(mol%ions(nions))
+    mol%nions = nions
+
+    ! --- Second pass: fill ions ---
+    nions = 0
+    i = 1
+    do while (i <= lenid)
+      c = mol%id(i:i)
+      if (i < lenid) then
+        next = mol%id(i+1:i+1)
+      else
+        next = ' '
+      end if
+      if (c >= 'A' .and. c <= 'Z') then
+        elem = mol%id(i:i)
+        if (next >= 'a' .and. next <= 'z') then
+          elem = mol%id(i:i+1)
+          i = i + 1
+          if (i < lenid) then
+            next = mol%id(i+1:i+1)
+          else
+            next = ' '
+          end if
+        end if
+
+        count = 1
+        if (next >= '2' .and. next <= '9') then
+          count = ichar(next) - ichar('0')
+          i = i + 1
+        end if
+
+        ! look up the ion
+        call self%ion_by_id(trim(elem)//' I', ion)
+        if (associated(ion)) then
+          do j=1, count
+            nions = nions + 1
+            mol%ions(nions)%p => ion
+            mol%awgt = mol%awgt + ion%awgt
+          end do
+        else
+          print *, 'Error: element ' // trim(elem) // ' not found for molecule ' // trim(mol%id)
+          stop
+        endif
+      elseif (c == '+') then
+        mol%ions(nions)%p => ion%above
+      elseif (c == '-') then
+        mol%ions(nions)%p => ion%below
+      end if
+      i = i + 1
+    end do
+  END SUBROUTINE parse_mol_id
+
+  !===============================================================================
+  SUBROUTINE get_table_frequencies(self, nu, out_nu)
+    class(composition_type) :: self
+    real(dp), dimension(:), intent(in) :: nu
+    real(dp), dimension(:), intent(out), allocatable :: out_nu
+    real(dp), dimension(:), allocatable :: tab_lam, tab_nu
+    logical, dimension(:), allocatable :: needed
+    integer :: i, j, nnu, pos
+    !---------------------------------------------------------------------------
+    nnu = sum(self%trans%nnu)
+    allocate(tab_lam(nnu))
+    i=1
+    do j=1, size(self%trans)
+      associate(trans=>self%trans(j))
+        tab_lam(i:i+trans%nnu-1) = trans%lam
+        i = i + trans%nnu
+      end associate
+    end do
+    tab_lam = max(1d0, tab_lam) ! remove zero values
+    call refsor(tab_lam)
+    call remove_close_entries(tab_lam, threshold=0.5d0)
+    nnu = size(tab_lam)
+    allocate(tab_nu, source=cc/tab_lam(nnu:1:-1)*1e8)
+    allocate(needed(nnu), source=.false.)
+    do i=1, size(nu)
+      pos = searchsorted(tab_nu, nu(i), outbounds_ok=.true.)
+      needed(max(1, pos)) = .true.
+      needed(min(pos+1, nnu)) = .true.
+    end do
+    allocate(out_nu, source=pack(tab_nu, needed))
+  END SUBROUTINE get_table_frequencies
+
+  !===============================================================================
+  SUBROUTINE check_for_comment(lunit, comment, n_skipped)
+    integer :: lunit, iostat, n_skipped
+    character(len=1) :: comment, first_char
+    !---------------------------------------------------------------------------
+    iostat = 0
+    n_skipped = 0
+    do while (iostat==0)
+      read(lunit, *, iostat=iostat) first_char
+      if (first_char /= comment) then
+        backspace(lunit)
+        return
+      endif
+      n_skipped = n_skipped + 1
+    end do
+  END SUBROUTINE check_for_comment
+
+  !===============================================================================
+  SUBROUTINE print_opacity_contributions(self, nu)
+    class(composition_type), target :: self
+    class(bftrans_type), pointer :: trans
+    class(ion_type), pointer :: HeI
+    real(dp), dimension(:), intent(in) :: nu
+    real(4), dimension(:,:,:,:), allocatable :: stim, tchi
+    real(4), dimension(:,:,:,:,:), allocatable :: absk, scat
+    real(dp), dimension(:), allocatable :: lam, hnu_e
+    real(4) :: absk_tot, scat_tot
+    character(len=1024) :: text
+    integer, dimension(:), allocatable :: bin, nel, order
+    character(6), dimension(:), allocatable :: key
+    integer :: f, x, y, z, i, j, ib, nb, nh, nx, ny, nz, nf, nt, lunit
+    logical :: first_time = .true.
+    integer, save :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin('composition_type%print_opacity_contributions', itimer=itimer)
+    nx = size(self%temp, 1)
+    ny = size(self%temp, 2)
+    nz = size(self%temp, 3)
+    nf = size(nu, 1)
+    nt = size(self%trans)
+    allocate(stim(nf,nx,ny,nz))
+    allocate(tchi(nf,nx,ny,nz))
+    allocate(bin(nt))
+    allocate(key(nt))
+    allocate(nel(nt), order(nt))
+
+    do i=1, nt
+      trans=> self%trans(i)
+      if (associated(trans%ion)) then
+        nel(i) = findloc([element_ids, 'Me'], trans%ion%id(1:2), 1)
+      else
+        nel(i) = 0
+      endif
+      if (nel(i) == 0) nel(i) = nt+1
+    end do
+    call argsort_int(nel, order)
+
+    nb = 1
+    key(1) = 'Hrest'
+    do i=1, nt
+      trans => self%trans(order(i))
+      ib = findloc(key(1:nb), trim(trans%key), 1)
+      if (ib == 0) then
+        nb = nb + 1
+        ib = nb
+        key(ib) = trim(trans%key)
+      endif
+      bin(i) = ib
+    end do
+
+    allocate(absk(nf, nx, ny, nz, nb), source=0.0)
+    allocate(scat(nf, nx, ny, nz, 2), source=0.0)
+    call self%ion_by_id('HE I', HeI)
+    lam = CC / nu * 1e8
+    hnu_e = h_e * nu
+
+    do z=1, nz
+      do y=1, ny
+        do x=1, nx
+          do f=1, nf
+            stim(f,x,y,z) = 1. - exp(-hnu_e(f) * self%e_kT(x,y,z))
+          end do
+        end do
+      end do
+    end do
+
+    call self%add_hrest(absk(:,:,:,:,1), lam)
+    absk(:,:,:,:,1) = absk(:,:,:,:,1) * stim
+
+    call self%electron_scattering(scat(:,:,:,:,1))
+    call self%rayleigh_scattering(lam, scat(:,:,:,:,2))
+
+    ! add absorption from all tables, which do not include stimulated emission
+    do i=1, nt
+      trans => self%trans(order(i))
+      ib = bin(i)
+      tchi = 0
+      call trans%add_absorption(tchi, lam, self%temp, self%e_kT, self%teta, &
+        self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, sorted=.true.)
+      if (.not. trans%istim) tchi = tchi * stim
+      absk(:,:,:,:,ib) = absk(:,:,:,:,ib) + tchi
+    end do
+
+    call io%lock%set('opacity_contributions')
+    open(newunit=lunit, file=trim(io%run_dir)//'opacity_contributions.txt', access='append')
+    if (first_time) then
+      first_time = .false.
+      write(lunit, '(6A11, 300(A7))') 'Temp', 'Pe', 'Pg', 'NH1', 'ABS/Rho', 'SCAT/Rho', &
+        'Escat', 'Rscat', (trim(key(i)), i=1, nb)
+    endif
+
+    do z=1, nz
+      associate(absk=>absk(1,1,1,z,:),   &
+        scat=>scat(1,1,1,z,:), &
+        rho=>self%rho(1,1,z), &
+        t=>self%temp(1,1,z), &
+        pe=>self%pe(1,1,z), &
+        nh=>self%tothi(1,1,z), &
+        pg=>self%pg(1,1,z))
+
+        absk_tot = sum(absk)
+        scat_tot = sum(scat)
+        write(text, '(6ES11.3, 300(F7.2))') t, pe, pg, nh, &
+          absk_tot/rho, scat_tot/rho, (scat(i)/scat_tot*100, i=1, 2), (absk(i)/absk_tot*100, i=1, nb)
+      end associate
+      call replace_substring(text, '-0.00', '     ')
+      call replace_substring(text, ' 0.00', '     ')
+      write(lunit, '(A)') trim(text)
+    end do
+    close(lunit)
+    call io%lock%unset('opacity_contributions')
+    call trace%end(itimer)
+  END SUBROUTINE print_opacity_contributions
+END MODULE composition_mod
