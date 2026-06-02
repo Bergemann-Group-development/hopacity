@@ -199,7 +199,7 @@ contains
     nz = size(temp, 3)
     allocate(ab(fs:fe))
     allocate(lam3(fs:fe))
-    lam3 = lam**3
+    lam3(fs:fe) = lam(fs:fe)**3
 
     if (self%ntt > 1) then
       call trace%begin('interp_xkap_1', itimer=itimer1)
@@ -321,10 +321,10 @@ contains
                   endif
                   if (i /= 0) then
                     ab(f) = sum([y1, y2, y3]*lagrange(:,f))
+                    if (self%ilogl) ab(f) = exp(ab(f))
                   endif
                 endif
               end do
-              if (self%ilogl) ab = exp(ab)
 
               if (self%lam3) then
                 ab(fs:fe) = ab(fs:fe) * lam3(fs:fe)
