@@ -739,6 +739,7 @@ contains
     logical :: isotope, ok, skip, lam_mask, hlinedata, is_mol
     integer :: pos, npost, nskipped
     integer :: itimer=0
+    real(dp) :: r_i, r_j
     !-----------------------------------------------------------------------------
     if (linelist_file == '' .and. .not. self%ll_initialised) return
     call trace%begin ('composition_type%init_linelist', itimer=itimer)
@@ -856,8 +857,12 @@ contains
           ! It will try to read as many of these parameters as possible,
           ! but only lam0 lower_ev and loggf are required.
           ! Broadening parameters are zero by default if not overwritten here.
+          r_i = 0
+          r_j = 0
           read(line_text, *, iostat=iostat2) line%lam_air, line%lower_ev, line%loggf, &
-            line%gv_in, line%ga_in, line%gq_in, line%i, line%j
+            line%gv_in, line%ga_in, line%gq_in, r_i, r_j
+          line%i = nint(r_i)
+          line%j = nint(r_j)
           departure_indices = departure_indices .or. line%i>0 .or. line%j>0
         endif
         call print_failed_line(lunit, iostat2, line_text)
