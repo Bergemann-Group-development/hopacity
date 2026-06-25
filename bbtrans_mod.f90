@@ -8,6 +8,7 @@ MODULE bbtrans_mod
 
   type :: bbtrans_type
     real(dp) :: nu0
+    real(dp) :: lam0
     real(dp) :: lam_air
     integer :: nnu ! number of frequencies in the line
     real(dp) :: ga=0, gw1=0, gw2=0, gw3=0, gq=0, gv=0 ! line broadening (damping) constants
@@ -34,7 +35,6 @@ MODULE bbtrans_mod
     procedure :: prepare_Radiative
     procedure :: prepare_Stark
     procedure :: prepare_VanderWaals
-    procedure :: get_range
     procedure :: get_center
     procedure :: deactivate
   end type
@@ -474,150 +474,6 @@ contains
   END FUNCTION dirty_voigt
 
   !====================================================================================
-  SUBROUTINE scater_voigt(f0,ired,iblue,a,qq,vel,cf,idf,ref,chi)
-    integer, intent(in) :: f0, ired, iblue
-    real(4), intent(in) :: a, vel, cf, idf, ref
-    real(8), intent(in), dimension(:), contiguous :: qq
-    real(4), intent(inout), dimension(:), contiguous :: chi
-    ! this vectorizable voigt function is based on the paper by
-    ! hui, armstrong and wray, jqsrt 19, 509 (1977). it has been
-    ! checked agains the old landolt & boernstein standard voigt. errors
-    ! become significant (at the < 1 % level) around the "knee" between
-    ! the dopler core and the damping wings for a smaller than 1.e-3.
-    ! note that, as written here, the routine has no provision for
-    ! the trivial case a=0. the normalization is such that the integral
-    ! is sqrt(pi); i.e., a plain exp(-x**2) should be used at a=0.
-    ! the new landolt & boernstein gives a useful expression for the
-    ! small but finite a case.
-
-    ! coded by: a. nordlund/16-dec-82.
-
-    ! WH: reprogrammed the algorithm:
-    ! - expanding the complex expression allows the loop to vectorize
-    ! - interleaving the evaluation of real and imaginary parts, as well
-    !   as the numerator and denominator reduces dependencies and thus
-    !   improves pipelining
-    !
-    ! The original expression was:
-    !
-    !    z=cmplx(a(i),-abs(v(i)))
-    !    h(i)=real(((((((   a6 *z+a5)*z+a4)*z+a3)*z+a2)*z+a1)*z+a0)/
-    !            & (((((((z+b6)*z+b5)*z+b4)*z+b3)*z+b2)*z+b1)*z+b0))
-    !
-
-    ! Single precision coefficients for the Hui et al. recipe
-    real(4), parameter :: a0 = 122.6079
-    real(4), parameter :: a1 = 214.3824
-    real(4), parameter :: a2 = 181.9285
-    real(4), parameter :: a3 = 93.15558
-    real(4), parameter :: a4 = 30.18014
-    real(4), parameter :: a5 = 5.912626
-    real(4), parameter :: a6 = 0.5641896
-    real(4), parameter :: b0 = 122.6079
-    real(4), parameter :: b1 = 352.7306
-    real(4), parameter :: b2 = 457.3345
-    real(4), parameter :: b3 = 348.7039
-    real(4), parameter :: b4 = 170.3540
-    real(4), parameter :: b5 = 53.99291
-    real(4), parameter :: b6 = 10.47986
-    ! Compute denominator and numerator of the complex
-    ! expression in an alternating manner to improve the
-    ! pipelining:
-    ! c-prefixes: numerator
-    ! d-prefixes: denominator
-    real(4) :: vabs,zre,zim,cre1,cim1,cre2,cim2,dre1,dim1,dre2,dim2
-    real(4) :: fac, lchi
-    integer :: f, f1
-    !----------------------------------------------------------------------------------
-    fac = cf * isqp
-    lchi = voigt(a, qq(f0))
-    if (lchi > ref) then
-      ! if so, add and continue with blue wing
-      chi(f0) = chi(f0) + lchi
-      f1 = ired
-      do f=f0+1, iblue
-        lchi = voigt(a, qq(f))
-        ! if line opacity below tolerance exit and save f
-        if (lchi < ref) then
-          f1 = max(ired, 2*f0-f)
-          exit
-        endif
-        chi(f) = chi(f) + lchi
-      end do
-      ! now do red wing, starting where blue wing left off
-      do f=f1, f0-1
-        lchi = voigt(a, qq(f))
-        chi(f) = chi(f) + lchi
-      end do
-    endif
-
-  contains
-    function voigt(a,q) result(h)
-      real(4), intent(in) :: a
-      real(8), intent(in) :: q
-      real(4) :: v, h
-      !----------------------------------------------------------------------------------
-      v = (q - vel) * idf
-      vabs=abs(v)
-      zre=a
-      zim=-vabs
-
-      dre2=zre+b6
-
-      cim1=a6  *zim
-      dim1=(zre+dre2)*zim
-
-      cre1=a6  *zre        +a5
-      dre1=dre2*zre-zim*zim+b5
-
-      cim2=cim1*zre+cre1*zim
-      dim2=dim1*zre+dre1*zim
-
-      cre2=cre1*zre-cim1*zim+a4
-      dre2=dre1*zre-dim1*zim+b4
-
-      cim1=cim2*zre+cre2*zim
-      dim1=dim2*zre+dre2*zim
-
-      cre1=cre2*zre-cim2*zim+a3
-      dre1=dre2*zre-dim2*zim+b3
-
-      cim2=cim1*zre+cre1*zim
-      dim2=dim1*zre+dre1*zim
-
-      cre2=cre1*zre-cim1*zim+a2
-      dre2=dre1*zre-dim1*zim+b2
-
-      cim1=cim2*zre+cre2*zim
-      dim1=dim2*zre+dre2*zim
-
-      cre1=cre2*zre-cim2*zim+a1
-      dre1=dre2*zre-dim2*zim+b1
-
-      cim2=cim1*zre+cre1*zim
-      dim2=dim1*zre+dre1*zim
-
-      cre2=cre1*zre-cim1*zim+a0
-      dre2=dre1*zre-dim1*zim+b0
-
-      ! Gather numbers
-      cim2=cim2*dim2
-      dim2=dim2*dim2
-
-      cre2=cre2*dre2
-      dre2=dre2*dre2
-
-      ! Build the denominator and numerator
-      dre2=dre2+dim2
-      cre2=cre2+cim2
-
-      ! Divide
-      h=cre2/dre2
-      h = h * fac
-    end function voigt
-  END SUBROUTINE scater_voigt
-
-  !====================================================================================
   PURE ELEMENTAL SUBROUTINE line_damping (self, adamp, ne, tothi, vbar2, stark_pe, unsold)
     class(bbtrans_type), intent(in)  :: self
     real(4), intent(in)  :: ne, tothi, vbar2, stark_pe, unsold
@@ -756,47 +612,17 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
-  SUBROUTINE get_range(self, nu, dlam, ired, iblue)
+  SUBROUTINE get_center(self, lam, dlam, i0)
     class(bbtrans_type), intent(in)  :: self
-    real(dp), dimension(:), intent(in) :: nu
+    real(dp), dimension(:), intent(in) :: lam
     real(dp), intent(in) :: dlam
-    integer, intent(out) :: ired, iblue
-    real(dp) :: lam0, lam_red, lam_blue, nu_red, nu_blue
-    !----------------------------------------------------------------------------------
-    if (dlam == 0) then
-      ired = findloc(nu, self%nu0, 1)
-      iblue = ired
-    else
-      lam0 = CC / self%nu0 * 1e8
-      lam_red  = lam0 + dlam
-      lam_blue = lam0 - dlam
-      nu_red  = CC / lam_red  * 1e8
-      nu_blue = CC / lam_blue * 1e8
-
-      ired  = searchsorted(nu, nu_red,  outbounds_ok=.true.)
-      iblue = searchsorted(nu, nu_blue, outbounds_ok=.true.)
-      if (iblue==ired) then
-        ired  = 0
-        iblue = 0
-      elseif (ired == 0) then
-        ired = 1
-      endif
-    endif
-  END SUBROUTINE get_range
-  !------------------------------------------------------------------------------------
-
-  !====================================================================================
-  SUBROUTINE get_center(self, nu, dnu, i0)
-    class(bbtrans_type), intent(in)  :: self
-    real(dp), dimension(:), intent(in) :: nu
-    real(dp), intent(in) :: dnu
     integer, intent(out) :: i0
     !----------------------------------------------------------------------------------
-    if (dnu == 0) then
-      i0 = findloc(nu, self%nu0, 1)
+    if (dlam == 0) then
+      i0 = findloc(lam, self%lam0, 1)
     else
-      i0 = find_closest(nu, self%nu0)
-      if ( abs(nu(i0) - self%nu0) > dnu*nu(i0)*self%nu0 ) then
+      i0 = find_closest(lam, self%lam0)
+      if (abs(lam(i0) - self%lam0) > dlam) then
         i0  = 0
       endif
     endif

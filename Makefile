@@ -2,7 +2,8 @@
 composition_mod.o 	: bftrans_mod.o osmet_mod.o os_mod.o handyfuncs_mod.o optab_mod.o hprofl_mod.o
 element_mod.o		    : op_math_mod.o ion_mod.o
 molecule_mod.o		  : op_math_mod.o ion_mod.o
-ion_mod.o			      : os_mod.o prec_mod.o level_mod.o bbtrans_mod.o
+ion_mod.o			      : os_mod.o prec_mod.o level_mod.o bbtrans_mod.o linelist_mod.o
+linelist_mod.o      : prec_mod.o const_mod.o handyfuncs_mod.o bbtrans_mod.o
 level_mod.o			    : prec_mod.o
 bftrans_mod.o	      : element_mod.o molecule_mod.o os_mod.o
 bbtrans_mod.o       : op_math_mod.o level_mod.o

@@ -22,18 +22,14 @@ MODULE trans_mod
 
     real(8) :: upper_ev
 
-    integer :: ired  = 0 ! start index where line is active in overall frequency grid
-    integer :: iblue = 0 ! end index where line is active in overall frequency grid
-    real(8) :: nu_min, nu_max
+    integer :: iblue = 0 ! start index where line is active in overall wavelength grid
+    integer :: ired  = 0 ! end index where line is active in overall wavelength grid
+    real(8) :: lam_min, lam_max
 
     real(8), dimension(:), pointer, contiguous :: nu => null()  ! frequencies [Hz]
-    real(8), dimension(:), pointer, contiguous :: nu_input => null()
+    real(8), dimension(:), pointer, contiguous :: lam => null() ! wavelength [AA]
+    real(8), dimension(:), pointer, contiguous :: lam_input => null()
     real(8), dimension(:), allocatable :: wnu ! frequency quadrature weight [Hz]
-
-    integer, dimension(:), pointer, contiguous :: if => null()
-    !real(8),dimension(:,:,:),  allocatable :: rij,rji
-    !real(8),dimension(:,:,:),  allocatable :: qrad ! heating rate
-    !real(8),dimension(:,:,:),  allocatable :: gamma_ij,gamma_ji
 
   contains
     procedure :: overlaps
@@ -46,7 +42,6 @@ MODULE trans_mod
     ! for now only 'voigt' or
     ! 'hlinop' for hydrogen
 
-    real(8) :: lam0       ! line center vacuum wavelength [cm]
     logical :: hydrogen
     real(4),dimension(:), allocatable :: q  ! frequencies [Doppler units]
     real(8),dimension(:), allocatable :: wq ! frequency quadrature weight [Doppler units]
@@ -67,13 +62,12 @@ MODULE trans_mod
     integer :: iso=0
 
   contains
-    procedure :: get_nu
+    procedure :: get_lam
     procedure :: freql
 
   end type line_type
 
   type, extends(transition_type) ::  cont_type
-
     character(len=20) :: bf_type ! either 'detail' or 'hydrogenic'
 
     !real(8) :: nu0 ! ionization edge frequency
@@ -92,17 +86,25 @@ contains
     class(cont_type), intent(in) :: self
     real(8), intent(in), dimension(:) :: nu
     real(4), intent(inout), dimension(:) :: alpha
-    real(8), allocatable, dimension(:) :: dalpha_dnu
+    real(8), allocatable, dimension(:) :: dalpha_dnu, nu_input, alpha_input
     real(8) :: minl, maxl
+    integer :: n
     !----------------------------------------------------------------------------------
-    allocate(dalpha_dnu, mold=self%nu_input)
-    minl = minval(self%nu_input)
-    maxl = maxval(self%nu_input)
-    call hermite_derivative(dalpha_dnu, self%nu_input, self%alpha_input)
-    call hermite_interpolation(alpha, nu, self%nu_input, self%alpha_input, dalpha_dnu)
+    ! The detailed bf cross sections are Hermite-interpolated in frequency (as in the
+    ! original frequency code) for backwards compatibility: Hermite interpolation is
+    ! nonlinear in the abscissa, so a nu grid and a lam grid give different results.
+    ! lam_input is stored increasing, so reverse it to get increasing frequencies.
+    n = size(self%lam_input)
+    allocate(nu_input(n), alpha_input(n), dalpha_dnu(n))
+    nu_input    = HZ_TO_AA / self%lam_input(n:1:-1)
+    alpha_input = self%alpha_input(n:1:-1)
+    minl = minval(nu_input)
+    maxl = maxval(nu_input)
+    call hermite_derivative(dalpha_dnu, nu_input, alpha_input)
+    call hermite_interpolation(alpha, nu, nu_input, alpha_input, dalpha_dnu)
     where (nu > maxl) alpha = 0
     where (nu < minl) alpha = 0
-    deallocate(dalpha_dnu)
+    deallocate(dalpha_dnu, nu_input, alpha_input)
   END SUBROUTINE hermite_interp
 
   !====================================================================================
@@ -114,8 +116,8 @@ contains
     !--------------------------------------------------------------------------------
     skip = .false.
 
-    fs_out = max(self%ired,  fs_in)
-    fe_out = min(self%iblue, fe_in)
+    fs_out = max(self%iblue,  fs_in)
+    fe_out = min(self%ired,  fe_in)
 
     if (fs_out > fe_out) skip = .true.
     if (fs_out > fe_in)  skip = .true.
@@ -128,18 +130,16 @@ contains
     class(transition_type), intent(in) :: self, other
     !--------------------------------------------------------------------------------
     overlaps = .false.
-
-    if (self%ired > other%ired .and. self%ired < other%iblue) overlaps = .true.
-    if (other%ired > self%ired .and. other%ired < self%iblue) overlaps = .true.
-
+    if (self%iblue > other%iblue .and. self%iblue < other%ired) overlaps = .true.
+    if (other%iblue > self%iblue .and. other%iblue < self%ired) overlaps = .true.
   end function overlaps
   !------------------------------------------------------------------------------------
 
   !====================================================================================
-  SUBROUTINE get_nu(self, qnorm, nu, legacy)
+  SUBROUTINE get_lam(self, qnorm, lam, legacy)
     class(line_type), intent(inout)  :: self
     real(8), intent(in) :: qnorm
-    real(8), intent(inout), dimension(:), pointer, contiguous :: nu
+    real(8), intent(inout), dimension(:), pointer, contiguous :: lam
     real(8), dimension(:), allocatable :: q
     logical, intent(in) :: legacy
     real(8) :: dq, a, qmax, q0
@@ -152,10 +152,10 @@ contains
     if (nnu < 0) then
       call symmetric_log_grid(q0, qmax, q)
       self%nnu = size(q)
-      ! convert to [Hz]
-      allocate(nu(self%nnu))
-      q = (CC / self%nu0 * CM_TO_AA) - q
-      nu = CC / (q * AA_TO_CM)
+      ! q is a symmetric wavelength offset [AA] about the line center; lam0+q keeps
+      ! the grid increasing
+      allocate(lam(self%nnu))
+      lam = self%lam0 + q
     else
       linear = qmax.le.q0
 
@@ -177,10 +177,10 @@ contains
         endif
       endif
 
-      ! convert to [Hz]
-      allocate(nu(nnu))
-      q = q * qnorm * KM_TO_CM/cc
-      nu = self%nu0*(1.0 + q)
+      ! convert to wavelength [AA]
+      allocate(lam(nnu))
+      q = q * (qnorm * KM_TO_CM) / cc
+      lam = self%lam0*(1.0 + q)
     endif
   END SUBROUTINE
 
@@ -264,13 +264,12 @@ contains
       end do
     end if
 
-    ! convert to [Hz]
     allocate(self%q(nnu))
-    allocate(self%nu(nnu))
+    allocate(self%lam(nnu))
     self%q = q*KM_TO_CM/cc
-    self%nu = self%nu0*(1.0 + self%q)
-    self%nu_min = self%nu(1)
-    self%nu_max = self%nu(nnu)
+    self%lam = self%lam0*(1.0 + self%q)
+    self%lam_min = self%lam(1)
+    self%lam_max = self%lam(nnu)
   END SUBROUTINE freql
   !------------------------------------------------------------------------------------
 

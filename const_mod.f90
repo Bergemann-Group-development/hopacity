@@ -42,10 +42,12 @@ MODULE const_mod
   real(8), parameter :: XMH = 1.67339d-24 ! uu*1.008
 
   ! unit conversions
-  real(8), parameter :: KM_TO_CM =1d5
-  real(8), parameter :: CM_TO_KM =1d-5
-  real(8), parameter :: AA_TO_CM =1d-8
-  real(8), parameter :: CM_TO_AA =1d8
+  real(8), parameter :: KM_TO_CM = 1d5
+  real(8), parameter :: CM_TO_KM = 1d-5
+  real(8), parameter :: AA_TO_CM = 1d-8
+  real(8), parameter :: CM_TO_AA = 1d8
+  real(8), parameter :: HZ_TO_AA = CC / AA_TO_CM
+  real(8), parameter :: AA_TO_HZ = AA_TO_CM / CC
 
   ! convenient compound constants
 

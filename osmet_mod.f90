@@ -10,7 +10,7 @@ MODULE osmet_mod
   integer :: mnu=154000, mtem=17, mp6=18
 
   type :: osmet_type
-    real(dp), dimension(:), pointer, contiguous :: nu
+    real(dp), dimension(:), pointer, contiguous :: lam
     real(dp), dimension(:), allocatable :: p6, temp
     real(4), dimension(:,:,:), pointer, contiguous :: ostabl
     logical, dimension(:), pointer, contiguous :: active
@@ -81,14 +81,14 @@ contains
       all_ostabl(:, :, nnu) = orig_ostabl
     end do
     mnu = nnu
-    allocate(self%nu(mnu))
+    allocate(self%lam(mnu))
     allocate(self%active(mnu), source=.false.)
     call os%mem_register(storage_size(self%ostabl), maxp6*maxtem*mnu, label='osmet')
     allocate(self%ostabl(maxp6, maxtem, mnu))
-    ! copy in reverse order into final arrays
+    ! file is wavenumber-decreasing, i.e. wavelength-increasing: copy in file order
     do nnu = 1, mnu
-      self%ostabl(:, :, nnu) = all_ostabl(:maxp6, :maxtem, mnu - nnu + 1)
-      self%nu(nnu) = CC * dble(all_wnum(mnu - nnu + 1))
+      self%ostabl(:, :, nnu) = all_ostabl(:maxp6, :maxtem, nnu)
+      self%lam(nnu) = CM_TO_AA / dble(all_wnum(nnu))
     end do
     deallocate(all_ostabl, all_wnum)
     close(lunit)
@@ -97,9 +97,9 @@ contains
   END SUBROUTINE init
 
   !===============================================================================
-  SUBROUTINE add_line_opacities(self, nu, p6, temp, rho, chi)
+  SUBROUTINE add_line_opacities(self, lam, p6, temp, rho, chi)
     class(osmet_type), intent(inout) :: self
-    real(8), dimension(:), intent(in) :: nu
+    real(8), dimension(:), intent(in) :: lam
     real(8), dimension(:,:,:), intent(in) :: p6, temp, rho
     real(4), dimension(:,:,:,:), intent(inout) :: chi
     real(8) :: p, t
@@ -130,10 +130,10 @@ contains
           dy = (t - self%temp(iy)) / (self%temp(iy+1) - self%temp(iy))
 
           do f=1, nf
-            iz = searchsorted(self%nu, nu(f))
+            iz = searchsorted(self%lam, lam(f))
             if (iz < 0) cycle
 
-            dz = (nu(f) - self%nu(iz)) / (self%nu(iz+1) - self%nu(iz))
+            dz = (lam(f) - self%lam(iz)) / (self%lam(iz+1) - self%lam(iz))
 
             a1 = self%ostabl(ix,   iy,   iz)
             b1 = self%ostabl(ix+1, iy,   iz)

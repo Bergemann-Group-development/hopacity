@@ -3,6 +3,7 @@ MODULE ion_mod
   USE prec_mod
   USE level_mod
   USE bbtrans_mod, only: bbtrans_type
+  USE linelist_mod, only: linelist_type
   implicit none
 
   type, extends(state_type) :: massive_type
@@ -27,6 +28,7 @@ MODULE ion_mod
     type(level_type), allocatable :: levels(:)
     type(level_type), allocatable :: nlte_levels(:)
     type(bbtrans_type), dimension(:), allocatable :: line
+    type(linelist_type) :: ll ! structure-of-arrays bulk linelist (new path)
     real(dp), allocatable, dimension(:) :: irwin
     logical :: in_linelist=.false., in_opac=.false.
     logical :: allocated=.false.

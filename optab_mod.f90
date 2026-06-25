@@ -48,9 +48,7 @@ contains
 
     sp%nnu = self%nbin
     sp%name = 'bins'
-    allocate(sp%nu(sp%nnu))
-    sp%nu = cc * 1e8 / [(i, i=1, self%nbin)]
-
+    call sp%reset(lam=[(dble(i), i=1, self%nbin)])
     self%initialised = .true.
   END SUBROUTINE init
 
