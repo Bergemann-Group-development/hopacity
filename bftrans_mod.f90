@@ -37,13 +37,7 @@ MODULE bftrans_mod
     procedure :: deactivate
   end type
 
-  integer :: fs, fe
   logical, public :: H_occupation_probability=.true.
-  integer, dimension(:), allocatable :: iw
-  logical, dimension(:), allocatable :: quad
-  real(dp), dimension(:,:), allocatable :: lagrange
-  real(dp), dimension(:,:), allocatable, target :: pvt_xkap
-  !$omp threadprivate(fs, fe, iw, quad, lagrange, pvt_xkap)
 
 contains
   
@@ -55,10 +49,14 @@ contains
   END SUBROUTINE deactivate
 
   !===============================================================================
-  SUBROUTINE load_lam_interp_weights(self, lam, active)
+  SUBROUTINE load_lam_interp_weights(self, lam, active, fs, fe, iw, quad, lagrange)
     class(bftrans_type), target :: self
     real(dp), dimension(:), intent(in) :: lam
     logical, intent(out) :: active
+    integer, intent(out) :: fs, fe
+    integer, dimension(:), intent(inout) :: iw
+    logical, dimension(:), intent(inout) :: quad
+    real(dp), dimension(:,:), intent(inout) :: lagrange
     real(dp), dimension(:), pointer, contiguous :: xx
     real(dp) :: x
     integer :: nf, f
@@ -174,16 +172,21 @@ contains
   end FUNCTION linear_weight
 
   !===============================================================================
-  SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, ne, nhe, shield)
+  SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield)
     class(bftrans_type) :: self
     class(level_type), pointer :: lvl
     real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
     real(dp), intent(in), dimension(:,:,:), target :: temp, teta
     real(dp), intent(inout), dimension(:,:,:) :: fakt
     real(dp), intent(in), dimension(:) :: lam
+    integer, intent(in) :: fs, fe
+    integer, dimension(:), intent(in) :: iw
+    logical, dimension(:), intent(in) :: quad
+    real(dp), dimension(:,:), intent(in) :: lagrange
     real(dp), intent(in), dimension(:,:,:), optional :: ne, nhe, shield
     real(dp), dimension(:,:,:), pointer :: newt
     real(dp), dimension(:), allocatable :: ab, lam3
+    real(dp), dimension(:,:), allocatable, target :: pvt_xkap
     real(dp), dimension(:,:), pointer :: xkap
     real(dp), dimension(3,self%ntt-1) :: dtdt
     real(dp), dimension(self%ntt-1) :: dtdt1
@@ -444,6 +447,10 @@ contains
     logical :: active
     real(dp) :: prev, post
     integer :: i,j,k,f,nf, m(2), p(4)=pp
+    integer :: fs, fe
+    integer, dimension(:), allocatable :: iw
+    logical, dimension(:), allocatable :: quad
+    real(dp), dimension(:,:), allocatable :: lagrange
     integer :: itimer=0
     !---------------------------------------------------------------------------
     if (.not. self%active) return
@@ -452,19 +459,18 @@ contains
     allocate(quad(nf))
     allocate(iw(nf), source=-1)
     allocate(lagrange(3,nf), source=0.d0)
-    allocate(pvt_xkap, mold=self%xkap)
     allocate(fakt, mold=temp)
     fakt = huge(1d0)
     if (.not. allocated(self%ion%n)) then
       stop 'add_absorption: ion%n not allocated'
     endif
-    call self%load_lam_interp_weights(lam, active)
+    call self%load_lam_interp_weights(lam, active, fs, fe, iw, quad, lagrange)
 
     if (active) then
       !if (nf > 1) prev = chi(p(1), p(2), p(3), p(4))
 
       call self%absorption_factor(e_kT, teta, pe, dxi, fakt)
-      call self%interp_xkap(chi, temp, teta, fakt, lam, ne, nhe, shield)
+      call self%interp_xkap(chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield)
 
       !if (nf > 1) then
       !  post = chi(p(1),p(2),p(3),p(4))
@@ -476,7 +482,6 @@ contains
     deallocate(quad)
     deallocate(iw)
     deallocate(lagrange)
-    deallocate(pvt_xkap)
     call trace%end(itimer)
   END SUBROUTINE add_absorption
 

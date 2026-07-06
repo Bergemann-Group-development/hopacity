@@ -28,7 +28,8 @@ MODULE ion_mod
     type(level_type), allocatable :: levels(:)
     type(level_type), allocatable :: nlte_levels(:)
     type(bbtrans_type), dimension(:), allocatable :: line
-    type(linelist_type) :: ll ! structure-of-arrays bulk linelist (new path)
+    ! structure-of-arrays bulk linelist (new path), one per isotope (index 0 = main)
+    type(linelist_type), allocatable :: ll(:)
     real(dp), allocatable, dimension(:) :: irwin
     logical :: in_linelist=.false., in_opac=.false.
     logical :: allocated=.false.

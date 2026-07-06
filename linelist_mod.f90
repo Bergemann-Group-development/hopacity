@@ -26,43 +26,73 @@ MODULE linelist_mod
   USE prec_mod
   USE const_mod
   USE trace_mod
-  USE handyfuncs_mod, only: air2vac
+  USE handyfuncs_mod, only: air2vac, vac2air
   USE bbtrans_mod, only: voigt_function2, disable_ga, disable_stark, disable_vdw, &
-                         f_conv, tol => tolerance
+                         f_conv, tol => tolerance, bbtrans_type
   implicit none
   private
 
-  public :: linelist_type, build_linelist, finalize_linelist, add_opacity
+  public :: linelist_type, build_linelist, finalize_linelist, add_opacity, add_opacity_equi, voigt_peak
+  public :: append_line, add_rates, write_ll_header, write_ll_record, bij_const
+  public :: reserve_linelist, print_ll_particle, print_ll_atom
 
   !-------------------------------------------------------------------------------------
+  ! Single precision is sufficient for all line parameters except the log-wavelength
+  ! sort key llam0, which must resolve sub-Doppler-width offsets (~1e-5 relative) used
+  ! by the march and the profile abscissa; lam0 is dropped and reconstructed via exp(llam0).
   type :: linelist_type
     integer :: nline = 0
-    ! line centres
-    real(dp), allocatable :: nu0(:)      ! rest frequency [Hz]
-    real(dp), allocatable :: lam0(:)     ! vacuum wavelength [AA]
     real(dp), allocatable :: llam0(:)    ! log(lam0) (natural log) -- sort key for the march
-    real(dp), allocatable :: lower_ev(:) ! lower level energy [eV]
+    real(4),  allocatable :: nu0(:)      ! rest frequency [Hz]
+    real(4),  allocatable :: lower_ev(:) ! lower level energy [eV]
     ! oscillator strength + Einstein prefactor folded into one log term, so
-    ! Rij = inv_part*idf*exp(gpref - ex), with gpref = loggf*ln10 + log(bij_const*frac/nu0)
-    real(dp), allocatable :: gpref(:)
+    ! Rij = inv_part*idf*exp(gpref - ex), with gpref = loggf*ln10 + log(bij_const/nu0).
+    ! The isotope fraction is NOT folded in here; the caller applies it to the
+    ! per-isotope population base (bulk path) or via append_line's gpref (model atoms).
+    real(4),  allocatable :: gpref(:)
     ! broadening (already scaled by over_4pi/nu0, exactly as the AoS prepare_* routines)
-    real(dp), allocatable :: ga(:)       ! radiative damping
-    real(dp), allocatable :: gw1(:)      ! van der Waals coefficient
-    real(dp), allocatable :: gw2(:)      ! van der Waals exponent
-    real(dp), allocatable :: gq(:)       ! Stark constant (sign encodes recipe)
+    real(4),  allocatable :: ga(:)       ! radiative damping
+    real(4),  allocatable :: gw1(:)      ! van der Waals coefficient
+    real(4),  allocatable :: gw2(:)      ! van der Waals exponent
+    real(4),  allocatable :: gq(:)       ! Stark constant (sign encodes recipe)
     logical,  allocatable :: unsold(:)   ! .true. -> Unsold vdW, .false. -> Barklem
     ! bookkeeping
-    integer,  allocatable :: iso_idx(:)  ! isotope index (0 = main isotope)
     integer,  allocatable :: lev_i(:)    ! NLTE lower level index (filled at opacity time)
     integer,  allocatable :: lev_j(:)    ! NLTE upper level index
     logical,  allocatable :: active(:)   ! line is active
     logical,  allocatable :: used(:)     ! diagnostic: line contributed somewhere
-    real(dp), allocatable :: strength(:) ! diagnostic: max opacity/continuum at centre
+    real(4),  allocatable :: strength(:) ! diagnostic: max peak-opacity/continuum estimate
+    ! raw inputs kept only for the linelist_out.txt diagnostic dump
+    real(4),  allocatable :: loggf(:), gv_in(:), ga_in(:), gq_in(:)
+    ! --- optional extensions, used by model-atom linelists (atom_trans_t%ll) ---------
+    ! ipart selects the 4th dim of the caller's lnbase array (population base per ion
+    ! stage); unallocated means all lines use lnbase(:,:,:,1) (the bulk-linelist case).
+    integer,  allocatable :: ipart(:)
+    ! iws/iwe: per-line frequency window (local, 1-based); allocated -> "windowed" mode
+    ! (the union grid of an NLTE run is per-line ascending but not globally sorted, so
+    ! the marching cursor is replaced by a bisection inside each window).
+    integer,  allocatable :: iws(:), iwe(:)
+    integer,  allocatable :: icen(:)     ! window centre index (f0 seed; grid is symmetric)
+    integer,  allocatable :: itrans(:)   ! target column in gamma_ij/gamma_ji (patch subset)
+    real(4),  allocatable :: wA(:)       ! Einstein Aij (x component weight) for rates
+    real(4),  allocatable :: cwt(:)      ! component weight (wphi measure; 1 for plain lines)
+    real(4),  allocatable :: dej(:)      ! upper_ev - lower_ev = H_E*nu0 [eV] (preconditioning)
+    integer,  allocatable :: iso_out(:)  ! isotope number for the linelist_out.txt grouping
   end type linelist_type
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
-  real(dp), parameter :: ex_cutoff = -85.0_dp  ! skip cells where exp(-ex) underflows
+  real(dp), parameter :: over_h4pi = 1.0_dp / h_4pi
+  real(4),  parameter :: over_pi   = 0.3183098862
+  real(dp), parameter :: ex_cutoff = -85.0_dp  ! skip lines whose log(Rij) underflows
+  real(4), parameter  :: voigt_peak = 0.5641895835 ! 1/sqrt(pi): max of voigt_function2
+
+  ! --- profiling work counters (add_opacity); cheap integer increments ----------------
+  logical,    public :: ll_profile = .false.   ! enable counting
+  integer(8), public :: ll_nvisit = 0          ! active line-visits (cell x line)
+  integer(8), public :: ll_npass  = 0          ! lines passing the ex/strength cutoff
+  integer(8), public :: ll_nvoigt = 0          ! Voigt evaluations (centre + wings)
+  integer(8), public :: ll_nmarch = 0          ! cursor advance steps
 
 contains
 
@@ -74,16 +104,16 @@ contains
   ! in [lam_min, lam_max] are kept (contiguous slice, located by bisection).
   !-------------------------------------------------------------------------------------
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
-                            iso_idx, iso_frac, vbar2e4, do_mask, lam_min, lam_max)
+                            vbar2e4, do_mask, lam_min, lam_max)
     type(linelist_type), intent(inout) :: ll
     character(len=*),    intent(in)    :: buf
     integer(8),          intent(in)    :: lstart(:), lend(:)
-    integer,             intent(in)    :: n, ion_j, iso_idx
-    real(dp),            intent(in)    :: awgt, xion, iso_frac, vbar2e4
+    integer,             intent(in)    :: n, ion_j
+    real(dp),            intent(in)    :: awgt, xion, vbar2e4
     logical,             intent(in)    :: is_mol, do_mask
     real(dp),            intent(in)    :: lam_min, lam_max
     real(dp) :: lam_air, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
-    real(dp) :: nu0, lam0
+    real(dp) :: nu0, lam0, ga_t, gw1_t, gw2_t, gq_t
     integer  :: lo, hi, nkeep, i, k, iostat
     integer, save :: it_mask=0, it_parse=0
     !-----------------------------------------------------------------------------------
@@ -119,25 +149,80 @@ contains
       ll%nline = k
       lam0  = air2vac(lam_air)
       nu0   = HZ_TO_AA / lam0
-      ll%lam0(k)     = lam0
       ll%llam0(k)    = log(lam0)
       ll%nu0(k)      = nu0
       ll%lower_ev(k) = lower_ev
-      ll%gpref(k)    = loggf*ln10 + log(bij_const * iso_frac / nu0)
-      ll%iso_idx(k)  = iso_idx
+      ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
       ll%lev_i(k)    = nint(r_i)
       ll%lev_j(k)    = nint(r_j)
       ll%active(k)   = .true.
       ll%used(k)     = .false.
       ll%strength(k) = 0
+      ll%loggf(k)    = loggf
+      ll%gv_in(k)    = gv_in
+      ll%ga_in(k)    = ga_in
+      ll%gq_in(k)    = gq_in
 
-      call prepare_radiative   (ll%ga(k),  ga_in, nu0, loggf)
-      call prepare_stark       (ll%gq(k),  gq_in, nu0, lower_ev, ion_j, xion)
-      call prepare_vanderwaals (ll%gw1(k), ll%gw2(k), ll%unsold(k), gv_in, nu0, &
+      call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
+      call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
+      call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
                                 lower_ev, ion_j, xion, vbar2e4, is_mol)
+      ll%ga(k)  = ga_t
+      ll%gq(k)  = gq_t
+      ll%gw1(k) = gw1_t
+      ll%gw2(k) = gw2_t
     end do
     call trace%end(it_parse)
   END SUBROUTINE build_linelist
+
+  !=====================================================================================
+  ! Append a single line with explicit (already prepared) parameters; used to convert
+  ! model-atom bound-bound transitions (atom_mod%build_ll) into a linelist_type.
+  ! Broadening parameters carry the same over_4pi/nu0 scaling as the prepare_* routines.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, ga, gw1, gw2, gq, unsold, &
+                         lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
+                         loggf, gv_in, ga_in, gq_in)
+    type(linelist_type), intent(inout) :: ll
+    real(8), intent(in) :: llam0, gpref
+    real(8), intent(in) :: nu0, lower_ev, ga, gw1, gw2, gq, wA, cwt, dej
+    real(8), intent(in) :: loggf, gv_in, ga_in, gq_in
+    logical, intent(in) :: unsold
+    integer, intent(in) :: lev_i, lev_j, itrans, ipart, iso_out
+    integer :: k
+    !-----------------------------------------------------------------------------------
+    call grow(ll, 1)
+    call grow_ext(ll, 1)
+    k = ll%nline + 1
+    ll%nline = k
+    ll%llam0(k)    = llam0
+    ll%nu0(k)      = nu0
+    ll%lower_ev(k) = lower_ev
+    ll%gpref(k)    = gpref
+    ll%ga(k)       = ga
+    ll%gw1(k)      = gw1
+    ll%gw2(k)      = gw2
+    ll%gq(k)       = gq
+    ll%unsold(k)   = unsold
+    ll%lev_i(k)    = lev_i
+    ll%lev_j(k)    = lev_j
+    ll%active(k)   = .true.
+    ll%used(k)     = .false.
+    ll%strength(k) = 0
+    ll%loggf(k)    = loggf
+    ll%gv_in(k)    = gv_in
+    ll%ga_in(k)    = ga_in
+    ll%gq_in(k)    = gq_in
+    ll%itrans(k)   = itrans
+    ll%ipart(k)    = ipart
+    ll%wA(k)       = wA
+    ll%cwt(k)      = cwt
+    ll%dej(k)      = dej
+    ll%iso_out(k)  = iso_out
+    ll%iws(k)      = 0
+    ll%iwe(k)      = 0
+    ll%icen(k)     = 0
+  END SUBROUTINE append_line
 
   !=====================================================================================
   ! After all blocks for a particle have been appended, sort every parallel array by
@@ -169,22 +254,36 @@ contains
     call trace%end(it_argsort)
 
     call trace%begin ('ll_permute', itimer=it_permute)
-    call permute8(ll%nu0,      idx)
-    call permute8(ll%lam0,     idx)
     call permute8(ll%llam0,    idx)
-    call permute8(ll%lower_ev, idx)
-    call permute8(ll%gpref,    idx)
-    call permute8(ll%ga,       idx)
-    call permute8(ll%gw1,      idx)
-    call permute8(ll%gw2,      idx)
-    call permute8(ll%gq,       idx)
-    call permute8(ll%strength, idx)
-    call permutei(ll%iso_idx,  idx)
+    call permute4(ll%nu0,      idx)
+    call permute4(ll%lower_ev, idx)
+    call permute4(ll%gpref,    idx)
+    call permute4(ll%loggf,    idx)
+    call permute4(ll%gv_in,    idx)
+    call permute4(ll%ga_in,    idx)
+    call permute4(ll%gq_in,    idx)
+    call permute4(ll%ga,       idx)
+    call permute4(ll%gw1,      idx)
+    call permute4(ll%gw2,      idx)
+    call permute4(ll%gq,       idx)
+    call permute4(ll%strength, idx)
     call permutei(ll%lev_i,    idx)
     call permutei(ll%lev_j,    idx)
     call permutel(ll%unsold,   idx)
     call permutel(ll%active,   idx)
     call permutel(ll%used,     idx)
+    ! model-atom extensions (bulk linelists leave these unallocated)
+    if (allocated(ll%ipart)) then
+      call permutei(ll%ipart,   idx)
+      call permutei(ll%itrans,  idx)
+      call permutei(ll%iso_out, idx)
+      call permutei(ll%iws,     idx)
+      call permutei(ll%iwe,     idx)
+      call permutei(ll%icen,    idx)
+      call permute4(ll%wA,      idx)
+      call permute4(ll%cwt,     idx)
+      call permute4(ll%dej,     idx)
+    end if
     call trace%end(it_permute)
   END SUBROUTINE finalize_linelist
 
@@ -193,110 +292,136 @@ contains
   !
   !   chi, eta  : (nf, m1, m2, m3)  accumulated into (the "local" work arrays)
   !   cont      : (nf, m1, m2, m3)  continuum reference for the tolerance window
-  !   llam      : (nf)              log(lambda) of the (ascending) wavelength grid
-  !   inv_df    : (m1,m2,m3, 0:niso) inverse Doppler width c/v_th, indexed by isotope
-  !   vbar2     : (m1,m2,m3, 0:niso) mean square velocity, indexed by isotope
-  !   per-cell  : vproj, e_kT, dxij, inv_part, ne, tothi, stark_pe
+  !   logref    : (nf, m1, m2, m3)  log(tol*cont/voigt_peak); log-space tolerance pre-test
+  !   llam      : (nf)              log(lambda) of the wavelength grid (globally ascending
+  !                                 unless ll is windowed, then ascending per window)
+  !   inv_df    : (m1,m2,m3)       inverse Doppler width c/v_th (this ll's isotope)
+  !   vbar2     : (m1,m2,m3)       mean square velocity (this ll's isotope)
+  !   lnbase    : (m1,m2,m3, np)    log(n) - log_part + dxij*e_kT + log(idf) per
+  !                                 population group (idf = this ll's isotope Doppler
+  !                                 factor; bulk linelist: np=1; model atoms:
+  !                                 one group per ion stage, selected by ll%ipart)
+  !   per-cell  : vproj, e_kT, ne, tothi, stark_pe
   !   dep_mem   : (m1,m2,m3, nlevel) NLTE departure coefficients (or size 0 if LTE)
   !   do_nlte   : whether dep_mem applies to this particle
+  !
+  ! The wing cutoff is evaluated on the LTE line opacity (phi*Rij), so the profile
+  ! extent does not depend on the departure coefficients (no flip-flop between
+  ! NLTE iterations); the departures only scale the added chi/eta.
   !-------------------------------------------------------------------------------------
-  SUBROUTINE add_opacity(ll, llam, chi, eta, cont, vproj, inv_df, vbar2, e_kT, dxij, &
-                         inv_part, ne, tothi, stark_pe, dep_mem, do_nlte)
+  SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
+                         lnbase, ne, tothi, stark_pe, dep_mem, do_nlte)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
-    real(4),  dimension(:,:,:,:), intent(in)    :: cont
-    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, dxij, inv_part, ne, tothi, stark_pe
-    real(4),  dimension(:,:,:,0:), intent(in)   :: inv_df, vbar2
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
+    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, ne, tothi, stark_pe
+    real(4),  dimension(:,:,:),   intent(in)    :: inv_df, vbar2
+    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
     real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
     logical,  intent(in) :: do_nlte
-    integer  :: i, j, k, l, f, f0, fc, nf, m(3), iso, nl
-    real(8)  :: llc
-    real(4)  :: idf0, idf, vb2, unsold_c, ekt, dxij_c, invpart, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, cchi, ceta, ref, vs, phi, lchi, leta
+    integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb
+    real(8)  :: llc, dl
+    real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
     real(8)  :: arg
-    logical  :: nlte, asc
+    real(4)  :: base_s(size(lnbase,4))
+    logical  :: nlte, has_ipart
+    integer(8) :: c_visit, c_pass, c_voigt, c_march
     !-----------------------------------------------------------------------------------
     m  = shape(vproj)
     nf = size(llam)
     nl = ll%nline
+    np = size(lnbase, 4)
     if (nl == 0) return
-    ! the march is a monotonic cursor; it works for either grid direction (lam is
-    ! normally ascending, i.e. nu descending) as long as the grid is monotonic.
-    asc = llam(nf) >= llam(1)
+    has_ipart = allocated(ll%ipart)
+    c_visit = 0; c_pass = 0; c_voigt = 0; c_march = 0
+    ! the spectrum machinery always delivers lam (hence llam) ascending; the monotonic
+    ! march relies on this, so assert it once rather than branching per line.
+    if (nf > 1 .and. llam(nf) < llam(1)) &
+      error stop 'linelist add_opacity: log(lambda) grid must be ascending'
 
     do k = 1, m(3)
       do j = 1, m(2)
         do i = 1, m(1)
-          idf0     = inv_df(i,j,k,0)
-          unsold_c = vbar2(i,j,k,0)**0.3 * tothi(i,j,k)   ! Unsold uses the main isotope
+          idf      = inv_df(i,j,k)
+          unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
+          lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
           ekt      = e_kT(i,j,k)
-          dxij_c   = dxij(i,j,k)
-          invpart  = inv_part(i,j,k)
           ne_c     = ne(i,j,k)
           tothi_c  = tothi(i,j,k)
           starkpe  = stark_pe(i,j,k)
           vproj_c  = vproj(i,j,k)
-          if (asc) then; fc = 1; else; fc = nf; end if
+          ! line-independent part of log(Rij) per population group (idf folded in)
+          base_s(1:np) = lnbase(i,j,k,1:np)
+          fc = 1
+          ws = 1
+          we = nf
 
           do l = 1, nl
             if (.not. ll%active(l)) cycle
+            c_visit = c_visit + 1
 
-            ! shifted line centre in log(lambda); monotonic in l (vproj_c fixed),
-            ! so the cursor fc only moves one way through the grid.
+            ! shifted line centre in log(lambda)
             llc = ll%llam0(l) - vproj_c
-            if (asc) then
-              do while (fc < nf)
-                if (llam(fc) >= llc) exit
-                fc = fc + 1
-              end do
-              if (fc > 1) then
-                if (abs(llam(fc) - llc) < abs(llam(fc-1) - llc)) then
-                  f0 = fc
-                else
-                  f0 = fc - 1
-                end if
+            ! monotonic in l (vproj_c fixed), so the cursor fc only advances
+            ! forward through the (ascending) grid.
+            do while (fc < nf)
+              if (llam(fc) >= llc) exit
+              fc = fc + 1
+              c_march = c_march + 1
+            end do
+            if (fc > 1) then
+              if (abs(llam(fc) - llc) < abs(llam(fc-1) - llc)) then
+                f0 = fc
               else
-                f0 = 1
+                f0 = fc - 1
               end if
             else
-              do while (fc > 1)
-                if (llam(fc) >= llc) exit
-                fc = fc - 1
-              end do
-              if (fc < nf) then
-                if (abs(llam(fc) - llc) < abs(llam(fc+1) - llc)) then
-                  f0 = fc
-                else
-                  f0 = fc + 1
-                end if
-              else
-                f0 = nf
-              end if
+              f0 = 1
             end if
 
-            ! exponent of the folded Boltzmann * gf * Einstein prefactor; the cutoff
-            ! now accounts for line strength (gpref), skipping negligible lines before
-            ! the damping and Voigt work (the tolerance test below still backstops).
-            ex  = (ll%lower_ev(l) - dxij_c) * ekt
-            arg = invpart + ll%gpref(l) - ex
+            ! log(Rij) for the main isotope = base + gpref - ex.
+            ex  = ll%lower_ev(l) * ekt
+            if (has_ipart) then
+              arg = base_s(ll%ipart(l)) + ll%gpref(l) - ex
+            else
+              arg = base_s(1) + ll%gpref(l) - ex
+            end if
             if (arg < ex_cutoff) cycle
 
-            iso = ll%iso_idx(l)
-            if (iso == 0) then
-              idf = idf0
-              vb2 = vbar2(i,j,k,0)
+            ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= logref(f0).
+            ! This rejects the vast majority of lines without evaluating exp().
+            if (arg <= logref(f0,i,j,k)) cycle
+
+            ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
+            Rij = exp(arg)
+
+            nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
+            if (nlte) then
+              bi = dep_mem(i,j,k, ll%lev_i(l))
+              bj = dep_mem(i,j,k, ll%lev_j(l))
             else
-              idf = inv_df(i,j,k,iso)
-              vb2 = vbar2(i,j,k,iso)
+              bi = 1.0
+              bj = 1.0
             end if
+
+            ! folding b_i into ref makes every phi*Rij test an actual-opacity test
+            ! (phi*Rij >= ref <=> phi*Rij*bi >= tol*cont) at no per-frequency cost
+            ref = tol * cont(f0,i,j,k) / bi
+
+            ! exact pre-filter: voigt_function2 <= 1/sqrt(pi) everywhere, so if even the
+            ! peak cannot reach the tolerance the whole line is negligible -- skip
+            ! the damping and Voigt evaluations entirely (most lines drop out here).
+            if (voigt_peak * Rij <= ref) cycle
+            c_pass = c_pass + 1
 
             ! damping parameter (physical, then scaled by idf as in the AoS kernel)
             a = ll%ga(l)
             if (ll%unsold(l)) then
               a = a + ll%gw1(l) * unsold_c
             else
-              a = a + ll%gw1(l) * vb2**ll%gw2(l) * tothi_c
+              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
             if (ll%gq(l) >= 0.0) then
               a = a + ll%gq(l) * ne_c
@@ -305,60 +430,441 @@ contains
             end if
             a = a * idf
 
-            Rij = idf * exp(arg)
-
-            nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
-            if (nlte) then
-              cchi = Rij * dep_mem(i,j,k, ll%lev_i(l))
-              ceta = Rij * dep_mem(i,j,k, ll%lev_j(l))
-            else
-              cchi = Rij
-              ceta = Rij
-            end if
-
-            ref = tol * cont(f0,i,j,k)
-
-            ! centre
-            vs   = idf * real(llam(f0) - llc)
-            phi  = voigt_function2(a, vs)
-            lchi = phi * cchi
-            leta = phi * ceta
-            if (lchi <= ref) cycle
-
             ll%used(l)     = .true.
-            ll%strength(l) = max(ll%strength(l), real(lchi / cont(f0,i,j,k), dp))
-            chi(f0,i,j,k)  = chi(f0,i,j,k) + lchi
-            eta(f0,i,j,k)  = eta(f0,i,j,k) + leta
+            ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
 
-            ! red wing
-            f = f0 + 1
-            do while (lchi >= ref .and. f <= nf)
+            ! analytic profile extent where phi*Rij drops to ref: Gaussian core
+            ! v^2 = ln(peak/ref) = arg - logref, Lorentz wing v^2 = a*Rij/(pi*ref);
+            ! a straight (data-independent) loop over [fa,fb], centre included,
+            ! pipelines much better than a walk whose exit condition depends on
+            ! the previous Voigt value
+            vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
+            edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
+            if (vm2 >= edge*edge) then
+              fa = ws         ! line fills the window; skip the extent bisections
+              fb = we
+            else
+              dl = sqrt(vm2) / idf
+              fa = bisect_nearest(llam, ws, f0, llc - dl)
+              fb = bisect_nearest(llam, f0, we, llc + dl)
+            end if
+            c_voigt = c_voigt + fb - fa + 1
+
+            do f = fa, fb
               vs   = idf * real(llam(f) - llc)
               phi  = voigt_function2(a, vs)
-              lchi = phi * cchi
-              leta = phi * ceta
-              chi(f,i,j,k) = chi(f,i,j,k) + lchi
-              eta(f,i,j,k) = eta(f,i,j,k) + leta
-              f = f + 1
-            end do
-
-            ! blue wing
-            f    = f0 - 1
-            lchi = ref
-            do while (lchi >= ref .and. f >= 1)
-              vs   = idf * real(llam(f) - llc)
-              phi  = voigt_function2(a, vs)
-              lchi = phi * cchi
-              leta = phi * ceta
-              chi(f,i,j,k) = chi(f,i,j,k) + lchi
-              eta(f,i,j,k) = eta(f,i,j,k) + leta
-              f = f - 1
+              lte  = phi * Rij
+              chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
+              eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
             end do
           end do
         end do
       end do
     end do
+    if (ll_profile) then
+      !$omp atomic
+      ll_nvisit = ll_nvisit + c_visit
+      !$omp atomic
+      ll_npass  = ll_npass  + c_pass
+      !$omp atomic
+      ll_nvoigt = ll_nvoigt + c_voigt
+      !$omp atomic
+      ll_nmarch = ll_nmarch + c_march
+    endif
   END SUBROUTINE add_opacity
+
+  !=====================================================================================
+  ! add_opacity variant for a grid that is EQUIDISTANT in log(lambda) (constant-R grid;
+  ! caller dispatches on spectrum%equidistant). Same physics as add_opacity, but the
+  ! nearest grid index and both wing limits are pure arithmetic -- no forward march and
+  ! no bisection are needed, because the grid spacing dllam is constant. The Voigt window
+  ! limits come from inverting the far-wing approximation (Gaussian core vs. Lorentz wing,
+  ! v = sqrt(vm2)/idf in log(lambda)) and converting that half-width straight to an index
+  ! offset via 1/dllam. Windowed (per-line ll%iws/iwe) mode is not supported here.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
+                              lnbase, ne, tothi, stark_pe, dep_mem, do_nlte)
+    type(linelist_type), intent(inout) :: ll
+    real(dp), dimension(:),       intent(in)    :: llam
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
+    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, ne, tothi, stark_pe
+    real(4),  dimension(:,:,:),   intent(in)    :: inv_df, vbar2
+    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
+    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
+    logical,  intent(in) :: do_nlte
+    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff
+    real(8)  :: llc, llam1, dllam, inv_dllam
+    real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
+    real(8)  :: arg
+    real(4)  :: base_s(size(lnbase,4))
+    logical  :: nlte, has_ipart
+    integer(8) :: c_visit, c_pass, c_voigt
+    !-----------------------------------------------------------------------------------
+    m  = shape(vproj)
+    nf = size(llam)
+    nl = ll%nline
+    np = size(lnbase, 4)
+    if (nl == 0) return
+    if (nf < 2) return
+    has_ipart = allocated(ll%ipart)
+    c_visit = 0; c_pass = 0; c_voigt = 0
+    if (llam(nf) < llam(1)) &
+      error stop 'linelist add_opacity_equi: log(lambda) grid must be ascending'
+
+    ! constant grid spacing in log(lambda); index = nint((llc - llam1)/dllam) + 1
+    llam1     = llam(1)
+    dllam     = (llam(nf) - llam(1)) / real(nf - 1, 8)
+    inv_dllam = 1.0_dp / dllam
+
+    do k = 1, m(3)
+      do j = 1, m(2)
+        do i = 1, m(1)
+          idf      = inv_df(i,j,k)
+          unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
+          lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
+          ekt      = e_kT(i,j,k)
+          ne_c     = ne(i,j,k)
+          tothi_c  = tothi(i,j,k)
+          starkpe  = stark_pe(i,j,k)
+          vproj_c  = vproj(i,j,k)
+          ! line-independent part of log(Rij) per population group (idf folded in)
+          base_s(1:np) = lnbase(i,j,k,1:np)
+
+          do l = 1, nl
+            if (.not. ll%active(l)) cycle
+            c_visit = c_visit + 1
+
+            ! shifted line centre in log(lambda); nearest index by arithmetic
+            llc = ll%llam0(l) - vproj_c
+            f0  = nint((llc - llam1) * inv_dllam) + 1
+            f0  = min(nf, max(1, f0))
+
+            ! log(Rij) for the main isotope = base + gpref - ex.
+            ex  = ll%lower_ev(l) * ekt
+            if (has_ipart) then
+              arg = base_s(ll%ipart(l)) + ll%gpref(l) - ex
+            else
+              arg = base_s(1) + ll%gpref(l) - ex
+            end if
+            if (arg < ex_cutoff) cycle
+
+            ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= logref(f0).
+            ! This rejects the vast majority of lines without evaluating exp().
+            if (arg <= logref(f0,i,j,k)) cycle
+
+            ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
+            Rij = exp(arg)
+
+            nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
+            if (nlte) then
+              bi = dep_mem(i,j,k, ll%lev_i(l))
+              bj = dep_mem(i,j,k, ll%lev_j(l))
+            else
+              bi = 1.0
+              bj = 1.0
+            end if
+
+            ! folding b_i into ref makes every phi*Rij test an actual-opacity test
+            ! (phi*Rij >= ref <=> phi*Rij*bi >= tol*cont) at no per-frequency cost
+            ref = tol * cont(f0,i,j,k) / bi
+
+            ! exact pre-filter: voigt_function2 <= 1/sqrt(pi) everywhere, so if even the
+            ! peak cannot reach the tolerance the whole line is negligible -- skip
+            ! the damping and Voigt evaluations entirely (most lines drop out here).
+            if (voigt_peak * Rij <= ref) cycle
+            c_pass = c_pass + 1
+
+            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
+            a = ll%ga(l)
+            if (ll%unsold(l)) then
+              a = a + ll%gw1(l) * unsold_c
+            else
+              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
+            end if
+            if (ll%gq(l) >= 0.0) then
+              a = a + ll%gq(l) * ne_c
+            else
+              a = a - ll%gq(l) * starkpe
+            end if
+            a = a * idf
+
+            ll%used(l)     = .true.
+            ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
+
+            ! analytic profile extent where phi*Rij drops to ref, in v-units: Gaussian
+            ! core v^2 = arg - logref, Lorentz far wing v^2 = a*Rij/(pi*ref). On a
+            ! uniform log(lambda) grid the half-width in llam is sqrt(vm2)/idf, so the
+            ! index half-width is that over dllam -- no bisection required.
+            vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
+            noff = int(sqrt(vm2) / idf * inv_dllam) + 1
+            fa   = max(1,  f0 - noff)
+            fb   = min(nf, f0 + noff)
+            c_voigt = c_voigt + fb - fa + 1
+
+            do f = fa, fb
+              vs   = idf * real(llam(f) - llc)
+              phi  = voigt_function2(a, vs)
+              lte  = phi * Rij
+              chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
+              eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+            end do
+          end do
+        end do
+      end do
+    end do
+    if (ll_profile) then
+      !$omp atomic
+      ll_nvisit = ll_nvisit + c_visit
+      !$omp atomic
+      ll_npass  = ll_npass  + c_pass
+      !$omp atomic
+      ll_nvoigt = ll_nvoigt + c_voigt
+    endif
+  END SUBROUTINE add_opacity_equi
+
+  !=====================================================================================
+  ! index of the grid point in llam(ws:we) (ascending) closest to llc
+  !-------------------------------------------------------------------------------------
+  PURE FUNCTION bisect_nearest(llam, ws, we, llc) result(f0)
+    real(dp), dimension(:), intent(in) :: llam
+    integer,  intent(in) :: ws, we
+    real(8),  intent(in) :: llc
+    integer :: f0, lo, hi, mid
+    !-----------------------------------------------------------------------------------
+    lo = ws
+    hi = we
+    do while (lo < hi)                 ! first index with llam >= llc
+      mid = (lo + hi) / 2
+      if (llam(mid) < llc) then
+        lo = mid + 1
+      else
+        hi = mid
+      end if
+    end do
+    f0 = lo
+    if (f0 > ws) then
+      if (abs(llam(f0-1) - llc) < abs(llam(f0) - llc)) f0 = f0 - 1
+    end if
+  END FUNCTION bisect_nearest
+
+  !=====================================================================================
+  ! Rate kernel for model-atom linelists: accumulates the angular/frequency quadrature
+  ! of the radiative bound-bound rates (gamma_ij/gamma_ji, per patch-subset transition
+  ! column ll%itrans) and, optionally, the profile normalization wphi.  Mirrors
+  ! add_opacity: same population/damping evaluation (exp(arg), damping from scratch)
+  ! and the same LTE wing cutoff (phi*Rij vs tol*cont), so the rate integration window
+  ! is identical to the opacity window and iteration-stable.
+  !
+  ! Correspondence with the old rt_patch bound_bound_rates (see voigt_profile, which
+  ! carries an extra idf*(nu/nu0) versus voigt_function2):
+  !   old sum_A = sum_f phi_old*wmu*wnu*Aij, wnu = trapz(nu)/(h_4pi*nu)
+  !             ~ (wmu*Aij*idf/h_4pi) * sum_f phi*w,  w = trapz weight of log(lambda)
+  !   (the smooth nu/nu0 factor across the profile is dropped; it largely cancels in
+  !    the gamma/wphi normalization).  Preconditioning:
+  !   Bij*ni = (Rij/idf)*b_i,  Bji*nj = (Rij/idf)*b_j*exp(-dej*e_kT).
+  !   wphi   = sum_f phi_old*wq ~ idf * sum_f phi*w  (accumulated with wmu, x component
+  !            weight cwt so split multi-component lines reproduce the composite).
+  !
+  ! Windowed mode is mandatory: rates run on the NLTE union grid, which is only
+  ! ascending inside each line's own window.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE add_rates(ll, llam, Inu, Psi, cont, logref, vproj, inv_df, vbar2, e_kT, &
+                       lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, wmu, precond, &
+                       gamma_ij, gamma_ji, wphi, get_wphi)
+    type(linelist_type), intent(inout) :: ll
+    real(dp), dimension(:),       intent(in)    :: llam
+    real(4),  dimension(:,:,:,:), intent(in)    :: Inu, Psi
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
+    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, ne, tothi, stark_pe
+    real(4),  dimension(:,:,:),   intent(in)    :: inv_df, vbar2
+    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
+    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
+    logical,  intent(in) :: do_nlte, precond, get_wphi
+    real(4),  intent(in) :: wmu
+    real(4),  dimension(:,:,:,:), intent(inout) :: gamma_ij, gamma_ji
+    real(4),  dimension(:,:,:,:), intent(inout), optional :: wphi
+    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, ws, we, it, fa, fb
+    real(8)  :: llc, sA, sI, sP, dl
+    real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, w, c, g_ij, g_ji, beta0
+    real(4)  :: lvb2, vm2, edge
+    real(8)  :: arg
+    real(4)  :: base_s(size(lnbase,4))
+    logical  :: nlte, has_ipart
+    integer(8) :: c_visit, c_pass, c_voigt
+    !-----------------------------------------------------------------------------------
+    m  = shape(vproj)
+    nf = size(llam)
+    nl = ll%nline
+    np = size(lnbase, 4)
+    if (nl == 0) return
+    if (.not. allocated(ll%iws)) error stop 'linelist add_rates: windowed linelist required'
+    has_ipart = allocated(ll%ipart)
+    c_visit = 0; c_pass = 0; c_voigt = 0
+
+    do k = 1, m(3)
+      do j = 1, m(2)
+        do i = 1, m(1)
+          idf      = inv_df(i,j,k)
+          unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
+          lvb2     = log(vbar2(i,j,k))
+          ekt      = e_kT(i,j,k)
+          ne_c     = ne(i,j,k)
+          tothi_c  = tothi(i,j,k)
+          starkpe  = stark_pe(i,j,k)
+          vproj_c  = vproj(i,j,k)
+          base_s(1:np) = lnbase(i,j,k,1:np)
+
+          do l = 1, nl
+            if (.not. ll%active(l)) cycle
+            c_visit = c_visit + 1
+
+            llc = ll%llam0(l) - vproj_c
+            ws  = ll%iws(l)
+            we  = ll%iwe(l)
+            f0  = ll%icen(l)
+            do while (f0 < we)
+              if (llam(f0) >= llc) exit
+              f0 = f0 + 1
+            end do
+            do while (f0 > ws)
+              if (llam(f0-1) < llc) exit
+              f0 = f0 - 1
+            end do
+            if (f0 > ws) then
+              if (abs(llam(f0-1) - llc) < abs(llam(f0) - llc)) f0 = f0 - 1
+            end if
+
+            ex  = ll%lower_ev(l) * ekt
+            if (has_ipart) then
+              arg = base_s(ll%ipart(l)) + ll%gpref(l) - ex
+            else
+              arg = base_s(1) + ll%gpref(l) - ex
+            end if
+            if (arg < ex_cutoff) cycle
+            if (arg <= logref(f0,i,j,k)) cycle
+
+            ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
+            Rij = exp(arg)
+
+            ref = tol * cont(f0,i,j,k)
+            if (voigt_peak * Rij <= ref) cycle
+            c_pass = c_pass + 1
+
+            ! damping from scratch, identical to add_opacity
+            a = ll%ga(l)
+            if (ll%unsold(l)) then
+              a = a + ll%gw1(l) * unsold_c
+            else
+              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
+            end if
+            if (ll%gq(l) >= 0.0) then
+              a = a + ll%gq(l) * ne_c
+            else
+              a = a - ll%gq(l) * starkpe
+            end if
+            a = a * idf
+
+            ! centre
+            vs  = idf * real(llam(f0) - llc)
+            phi = voigt_function2(a, vs)
+            c_voigt = c_voigt + 1
+            lte = phi * Rij
+            if (lte <= ref) cycle
+
+            w  = trapw(llam, ws, we, f0)
+            sA = phi * w
+            sI = phi * w * Inu(f0,i,j,k)
+            sP = 0
+            if (precond) sP = phi * phi * w * Psi(f0,i,j,k)
+
+            ! analytic wing extent (same criterion as add_opacity), straight loops
+            vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
+            edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
+            if (vm2 >= edge*edge) then
+              fa = ws
+              fb = we
+            else
+              dl = sqrt(vm2) / idf
+              fa = bisect_nearest(llam, ws, f0, llc - dl)
+              fb = bisect_nearest(llam, f0, we, llc + dl)
+            end if
+            c_voigt = c_voigt + fb - fa
+
+            do f = f0+1, fb        ! red wing
+              vs  = idf * real(llam(f) - llc)
+              phi = voigt_function2(a, vs)
+              w   = trapw(llam, ws, we, f)
+              sA  = sA + phi * w
+              sI  = sI + phi * w * Inu(f,i,j,k)
+              if (precond) sP = sP + phi * phi * w * Psi(f,i,j,k)
+            end do
+            do f = fa, f0-1        ! blue wing
+              vs  = idf * real(llam(f) - llc)
+              phi = voigt_function2(a, vs)
+              w   = trapw(llam, ws, we, f)
+              sA  = sA + phi * w
+              sI  = sI + phi * w * Inu(f,i,j,k)
+              if (precond) sP = sP + phi * phi * w * Psi(f,i,j,k)
+            end do
+
+            nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
+            if (nlte) then
+              bi = dep_mem(i,j,k, ll%lev_i(l))
+              bj = dep_mem(i,j,k, ll%lev_j(l))
+            else
+              bi = 1.0
+              bj = 1.0
+            end if
+
+            c    = wmu * ll%wA(l) * idf * over_h4pi
+            g_ij = c * sI
+            g_ji = c * (sI + sA)
+            if (precond) then
+              beta0 = exp(-ll%dej(l) * ekt)
+              g_ij  = g_ij - c * sP * Rij * bj * beta0
+              g_ji  = g_ji - c * sP * Rij * bi
+            end if
+
+            it = ll%itrans(l)
+            gamma_ij(i,j,k,it) = gamma_ij(i,j,k,it) + g_ij
+            gamma_ji(i,j,k,it) = gamma_ji(i,j,k,it) + g_ji
+            if (get_wphi) then
+              wphi(i,j,k,it) = wphi(i,j,k,it) + wmu * idf * ll%cwt(l) * sA
+            end if
+          end do
+        end do
+      end do
+    end do
+    if (ll_profile) then
+      !$omp atomic
+      ll_nvisit = ll_nvisit + c_visit
+      !$omp atomic
+      ll_npass  = ll_npass  + c_pass
+      !$omp atomic
+      ll_nvoigt = ll_nvoigt + c_voigt
+    endif
+  END SUBROUTINE add_rates
+
+  !-------------------------------------------------------------------------------------
+  ! trapezoid quadrature weight of point f on llam(ws:we) (matches set_weights on the
+  ! same window: half intervals at the window edges)
+  !-------------------------------------------------------------------------------------
+  PURE FUNCTION trapw(llam, ws, we, f) result(w)
+    real(dp), dimension(:), intent(in) :: llam
+    integer, intent(in) :: ws, we, f
+    real(4) :: w
+    !-----------------------------------------------------------------------------------
+    if (f == ws) then
+      w = 0.5 * real(llam(min(ws+1,we)) - llam(ws))
+    elseif (f == we) then
+      w = 0.5 * real(llam(we) - llam(max(we-1,ws)))
+    else
+      w = 0.5 * real(llam(f+1) - llam(f-1))
+    end if
+  END FUNCTION trapw
 
   !=====================================================================================
   ! Ported broadening setup (scalar versions of the bbtrans_mod prepare_* routines).
@@ -461,6 +967,139 @@ contains
   END SUBROUTINE prepare_vanderwaals
 
   !=====================================================================================
+  ! linelist_out.txt writers -- one block per (species, isotope), in the same format
+  ! the linelist reader (init_linelist2) and tumult's LineList.from_tumult_format
+  ! parse:  "'Fe I'" / "'iso' nlines" / records "lam_air evi loggf gv ga gq i j
+  ! strength" (the trailing strength column is a diagnostic; both readers ignore it).
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE write_ll_header(unit, id, iso, n)
+    integer, intent(in) :: unit, iso, n
+    character(len=*), intent(in) :: id
+    !-----------------------------------------------------------------------------------
+    write(unit, "(A)") "'"//trim(id)//"'"
+    write(unit, "(A,I0,A,I0)") "'", iso, "' ", n
+  END SUBROUTINE write_ll_header
+
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE write_ll_record(unit, lam_air, evi, loggf, gv, ga, gq, i, j, strength)
+    integer, intent(in) :: unit, i, j
+    real(8), intent(in) :: lam_air, evi, loggf, gv, ga, gq, strength
+    !-----------------------------------------------------------------------------------
+    write(unit, "(F12.4, F10.4, F9.3, F14.6, 2(ES12.3), 2(I6), ES12.3)") &
+      lam_air, evi, loggf, gv, ga, gq, i, j, strength
+  END SUBROUTINE write_ll_record
+
+  !=====================================================================================
+  ! All linelist_out.txt blocks of one composition particle: for each isotope (main
+  ! first), a header plus the detailed AoS records (incl. hydrogen) and the bulk SoA
+  ! records that were used. ll is the per-isotope SoA array (0 = main, k = isotope
+  ! iso_values(k)); the AoS lines still carry their own iso_idx into iso_values.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE print_ll_particle(unit, id, iso_values, ll, lines)
+    integer,             intent(in) :: unit
+    character(len=*),    intent(in) :: id
+    integer,             intent(in) :: iso_values(:)
+    type(linelist_type), intent(in) :: ll(0:)
+    type(bbtrans_type),  intent(in), optional :: lines(:)
+    integer :: l, kiso, isoval, n
+    !-----------------------------------------------------------------------------------
+    do kiso=0, ubound(ll,1)
+      isoval = 0
+      if (kiso > 0) isoval = iso_values(kiso)
+      ! first pass: block size (the header carries the record count)
+      n = 0
+      if (present(lines)) then
+        do l=1, size(lines)
+          if (lines(l)%active .and. lines(l)%used .and. lines(l)%iso_idx == kiso) n = n+1
+        end do
+      endif
+      do l=1, ll(kiso)%nline
+        if (ll(kiso)%active(l) .and. ll(kiso)%used(l)) n = n + 1
+      end do
+      if (n == 0) cycle
+
+      call write_ll_header(unit, id, isoval, n)
+      ! detailed (AoS) transitions, incl. hydrogen
+      if (present(lines)) then
+        do l=1, size(lines)
+          associate(line => lines(l))
+            if (line%active .and. line%used .and. line%iso_idx == kiso) then
+              call write_ll_record(unit, line%lam_air, line%lower_ev, line%loggf, &
+                line%gv_in, line%ga_in, line%gq_in, line%i, line%j, line%strength)
+            endif
+          end associate
+        end do
+      endif
+      ! bulk (SoA) linelist lines
+      do l=1, ll(kiso)%nline
+        associate(sll => ll(kiso))
+          if (.not. (sll%active(l) .and. sll%used(l))) cycle
+          call write_ll_record(unit, vac2air(exp(sll%llam0(l))), &
+            dble(sll%lower_ev(l)), dble(sll%loggf(l)), dble(sll%gv_in(l)), &
+            dble(sll%ga_in(l)), dble(sll%gq_in(l)), sll%lev_i(l), sll%lev_j(l), &
+            dble(sll%strength(l)))
+        end associate
+      end do
+    end do
+  END SUBROUTINE print_ll_particle
+
+  !=====================================================================================
+  ! All linelist_out.txt blocks of one model-atom SoA linelist (atom_trans_t%ll), one
+  ! per (ion stage, isotope). ids(s-s0+1) is the species id of stage s; the isotope
+  ! numbers are taken from iso_out directly (ascending, so the main block leads). evi
+  ! is relative to the stage ground level and i/j are the atom level indices, so a
+  ! block is a self-consistent input linelist for that species.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE print_ll_atom(unit, ll, ids, s0)
+    integer,             intent(in) :: unit, s0
+    character(len=*),    intent(in) :: ids(:)
+    type(linelist_type), intent(in) :: ll
+    integer :: l, s, n, k, nv, iv, isoval
+    integer :: ivals(64)
+    !-----------------------------------------------------------------------------------
+    if (ll%nline == 0) return
+    ! collect and sort the isotope numbers present among the exported lines
+    nv = 0
+    do l=1, ll%nline
+      if (.not. (ll%active(l) .and. ll%used(l))) cycle
+      if (any(ivals(1:nv) == ll%iso_out(l))) cycle
+      nv = min(nv + 1, size(ivals))
+      ivals(nv) = ll%iso_out(l)
+    end do
+    do k=2, nv                     ! insertion sort; nv is tiny
+      iv = ivals(k)
+      l  = k - 1
+      do while (l >= 1)
+        if (ivals(l) <= iv) exit
+        ivals(l+1) = ivals(l)
+        l = l - 1
+      end do
+      ivals(l+1) = iv
+    end do
+
+    do s = minval(ll%ipart(1:ll%nline)), maxval(ll%ipart(1:ll%nline))
+      do k=1, nv
+        isoval = ivals(k)
+        n = 0
+        do l=1, ll%nline
+          if (ll%active(l) .and. ll%used(l) .and. ll%ipart(l) == s &
+              .and. ll%iso_out(l) == isoval) n = n + 1
+        end do
+        if (n == 0) cycle
+        call write_ll_header(unit, ids(s-s0+1), isoval, n)
+        do l=1, ll%nline
+          if (.not. (ll%active(l) .and. ll%used(l) .and. ll%ipart(l) == s &
+              .and. ll%iso_out(l) == isoval)) cycle
+          call write_ll_record(unit, vac2air(exp(ll%llam0(l))), &
+            dble(ll%lower_ev(l)), dble(ll%loggf(l)), dble(ll%gv_in(l)), &
+            dble(ll%ga_in(l)), dble(ll%gq_in(l)), ll%lev_i(l), ll%lev_j(l), &
+            dble(ll%strength(l)))
+        end do
+      end do
+    end do
+  END SUBROUTINE print_ll_atom
+
+  !=====================================================================================
   ! --- small private helpers ---------------------------------------------------------
   !=====================================================================================
 
@@ -500,23 +1139,51 @@ contains
     integer, intent(in) :: extra
     integer :: need
     need = ll%nline + extra
-    call grow8(ll%nu0,      ll%nline, need)
-    call grow8(ll%lam0,     ll%nline, need)
     call grow8(ll%llam0,    ll%nline, need)
-    call grow8(ll%lower_ev, ll%nline, need)
-    call grow8(ll%gpref,    ll%nline, need)
-    call grow8(ll%ga,       ll%nline, need)
-    call grow8(ll%gw1,      ll%nline, need)
-    call grow8(ll%gw2,      ll%nline, need)
-    call grow8(ll%gq,       ll%nline, need)
-    call grow8(ll%strength, ll%nline, need)
-    call growi(ll%iso_idx,  ll%nline, need)
+    call grow4(ll%nu0,      ll%nline, need)
+    call grow4(ll%lower_ev, ll%nline, need)
+    call grow4(ll%gpref,    ll%nline, need)
+    call grow4(ll%loggf,    ll%nline, need)
+    call grow4(ll%gv_in,    ll%nline, need)
+    call grow4(ll%ga_in,    ll%nline, need)
+    call grow4(ll%gq_in,    ll%nline, need)
+    call grow4(ll%ga,       ll%nline, need)
+    call grow4(ll%gw1,      ll%nline, need)
+    call grow4(ll%gw2,      ll%nline, need)
+    call grow4(ll%gq,       ll%nline, need)
+    call grow4(ll%strength, ll%nline, need)
     call growi(ll%lev_i,    ll%nline, need)
     call growi(ll%lev_j,    ll%nline, need)
     call growl(ll%unsold,   ll%nline, need)
     call growl(ll%active,   ll%nline, need)
     call growl(ll%used,     ll%nline, need)
   END SUBROUTINE grow
+
+  ! pre-size all arrays (incl. the model-atom extensions) for nline+extra entries,
+  ! so per-line append_line calls do not reallocate
+  SUBROUTINE reserve_linelist(ll, extra)
+    type(linelist_type), intent(inout) :: ll
+    integer, intent(in) :: extra
+    call grow(ll, extra)
+    call grow_ext(ll, extra)
+  END SUBROUTINE reserve_linelist
+
+  ! model-atom extension arrays (see append_line)
+  SUBROUTINE grow_ext(ll, extra)
+    type(linelist_type), intent(inout) :: ll
+    integer, intent(in) :: extra
+    integer :: need
+    need = ll%nline + extra
+    call growi(ll%ipart,   ll%nline, need)
+    call growi(ll%itrans,  ll%nline, need)
+    call growi(ll%iso_out, ll%nline, need)
+    call growi(ll%iws,     ll%nline, need)
+    call growi(ll%iwe,     ll%nline, need)
+    call growi(ll%icen,    ll%nline, need)
+    call grow4(ll%wA,      ll%nline, need)
+    call grow4(ll%cwt,     ll%nline, need)
+    call grow4(ll%dej,     ll%nline, need)
+  END SUBROUTINE grow_ext
 
   SUBROUTINE grow8(a, used, need)
     real(dp), allocatable, intent(inout) :: a(:)
@@ -530,6 +1197,19 @@ contains
     tmp(1:used) = a(1:used)
     call move_alloc(tmp, a)
   END SUBROUTINE grow8
+
+  SUBROUTINE grow4(a, used, need)
+    real(4), allocatable, intent(inout) :: a(:)
+    integer, intent(in) :: used, need
+    real(4), allocatable :: tmp(:)
+    if (.not. allocated(a)) then
+      allocate(a(need)); return
+    end if
+    if (size(a) >= need) return
+    allocate(tmp(need))
+    tmp(1:used) = a(1:used)
+    call move_alloc(tmp, a)
+  END SUBROUTINE grow4
 
   SUBROUTINE growi(a, used, need)
     integer, allocatable, intent(inout) :: a(:)
@@ -570,6 +1250,19 @@ contains
     end do
     a(1:n) = tmp
   END SUBROUTINE permute8
+
+  SUBROUTINE permute4(a, idx)
+    real(4), allocatable, intent(inout) :: a(:)
+    integer, intent(in) :: idx(:)
+    real(4), allocatable :: tmp(:)
+    integer :: n, i
+    n = size(idx)
+    allocate(tmp(n))
+    do i = 1, n
+      tmp(i) = a(idx(i))
+    end do
+    a(1:n) = tmp
+  END SUBROUTINE permute4
 
   SUBROUTINE permutei(a, idx)
     integer, allocatable, intent(inout) :: a(:)

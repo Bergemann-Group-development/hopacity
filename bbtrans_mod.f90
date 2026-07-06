@@ -23,7 +23,7 @@ MODULE bbtrans_mod
     integer :: iso_idx=0 ! isotope index for lines in line list
     ! Added to deal with multi component lines
     ! IO > 1 leads to the following being read from the atom file
-    integer :: io ! number of components in term (lifted from Multi 2.3)
+    integer :: io = 0 ! number of components in term (lifted from Multi 2.3)
     real(8), dimension(:), allocatable :: dq
     real(8), dimension(:), allocatable :: wt
     real(8), dimension(:), allocatable :: da

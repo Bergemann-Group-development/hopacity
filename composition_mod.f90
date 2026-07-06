@@ -7,12 +7,14 @@ MODULE composition_mod
   USE element_mod
   USE ion_mod, only: ion_type, debye_shield
   USE level_mod, only: level_type, wcalc
-  USE bbtrans_mod, only:bbtrans_type, add_opacities
+  USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
   USE molecule_mod, only:molec_type, irwin_dis
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE linelist_mod, only: linelist_type, build_linelist, finalize_linelist, &
-                          ll_add_opacity => add_opacity
+                          ll_add_opacity => add_opacity, &
+                          ll_add_opacity_equi => add_opacity_equi, voigt_peak, &
+                          ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type
   USE osmet_mod, only:osmet
   USE omp_lib
@@ -38,7 +40,6 @@ MODULE composition_mod
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
   contains
     procedure :: init => injon
-    procedure :: init_molecules
     procedure :: load_state_variables
     procedure :: iterate_thermal_eq
     procedure :: thermal_equilibrium
@@ -937,7 +938,9 @@ contains
       no_only = index(only, ' '//trim(element%id)//' ') == 0 .and. only_elements /= ''
       if (in_drop .or. no_only) then
         element%ions%in_linelist = .false.
-        print *, 'removing ', trim(element%id), ' from linelist'
+        if (sum(element%ions%nline, 1) > 0) then
+          print *, 'removing ', trim(element%id), ' from linelist'
+        endif
       endif
     end do
     do i=1, self%nmolec
@@ -946,7 +949,9 @@ contains
       no_only = index(only, ' '//trim(mol%id)//' ') == 0 .and. only_elements /= ''
       if (in_drop .or. no_only) then
         mol%in_linelist = .false.
-        print *, 'removing ', trim(mol%id), ' from linelist'
+        if (mol%nline > 0) then
+          print *, 'removing ', trim(mol%id), ' from linelist'
+        endif
       endif
     end do
   END SUBROUTINE mask_linelist
@@ -1188,14 +1193,27 @@ contains
     integer(8), allocatable :: lstart(:), lend(:)
     character(20) :: ion_id, siso
     class(ion_type), pointer :: HI
-    real(dp) :: lam_min, lam_max, vbar2e4, iso_frac
+    real(dp) :: lam_min, lam_max, vbar2e4
     integer :: lunit, iostat, nrec, p, nline, iso, iso_idx, nbefore, nkh, rel
-    integer :: i, j, nactive, ntotal
+    integer :: i, j, nactive, ntotal, niso
     integer(8) :: fsize, b0, bnl, e
     logical :: isotope, ok, is_mol, lam_mask
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
     !-----------------------------------------------------------------------------
     if (linelist_file == '' .and. .not. self%ll_initialised) return
+
+    ! every particle gets a per-isotope SoA linelist array ll(0:niso) (0 = main),
+    ! before the hydrogen delegation so the diagnostic writer always sees an
+    ! allocated array; idempotent so repeated calls (one per file) accumulate into it
+    do i=1, self%nel
+      do j=lbound(self%elements(i)%ions,1), ubound(self%elements(i)%ions,1)
+        call ensure_ll_allocated(self%elements(i)%ions(j))
+      end do
+    end do
+    do i=1, self%nmolec
+      call ensure_ll_allocated(self%molecules(i))
+    end do
+
     ! hydrogen lines keep the original (AoS / Stark-profile) treatment
     if (endswith(linelist_file, 'Hlinedata')) then
       call self%init_linelist(linelist_file, dlam, lam)
@@ -1203,6 +1221,7 @@ contains
     endif
     call trace%begin ('composition_type%init_linelist2', itimer=itimer)
     self%ll_initialised = .true.
+
     lam_mask = present(lam)
     if (lam_mask) then
       lam_min = lam(1) - dlam
@@ -1274,12 +1293,10 @@ contains
       ntotal = ntotal + nline
 
       iso_idx = 0
-      iso_frac = 1
       if (ok .and. isotope) then
         if (associated(particle%isotope)) then
           iso_idx = findloc(particle%isotope%iso, iso, 1)
           ok = iso_idx > 0
-          if (ok) iso_frac = particle%isotope(iso_idx)%frac
         else
           ok = iso == nint(particle%awgt)
           isotope = .not. ok
@@ -1308,11 +1325,11 @@ contains
       endif
 
       particle%in_linelist = .true.
-      nbefore = particle%ll%nline
-      call build_linelist(particle%ll, buf, lstart(p:p+nline-1), lend(p:p+nline-1), &
-        nline, particle%awgt, particle%j, particle%xion, is_mol, iso_idx, iso_frac, &
+      nbefore = particle%ll(iso_idx)%nline
+      call build_linelist(particle%ll(iso_idx), buf, lstart(p:p+nline-1), &
+        lend(p:p+nline-1), nline, particle%awgt, particle%j, particle%xion, is_mol, &
         vbar2e4, lam_mask, lam_min, lam_max)
-      nactive = nactive + (particle%ll%nline - nbefore)
+      nactive = nactive + (particle%ll(iso_idx)%nline - nbefore)
       p = p + nline
     end do
     deallocate(buf, lstart, lend)
@@ -1322,11 +1339,15 @@ contains
     call trace%begin ('init_linelist2_sort', itimer=it_sort)
     do i=1, self%nel
       do j=lbound(self%elements(i)%ions,1), ubound(self%elements(i)%ions,1)
-        call finalize_linelist(self%elements(i)%ions(j)%ll)
+        do iso_idx=0, ubound(self%elements(i)%ions(j)%ll, 1)
+          call finalize_linelist(self%elements(i)%ions(j)%ll(iso_idx))
+        end do
       end do
     end do
     do i=1, self%nmolec
-      call finalize_linelist(self%molecules(i)%ll)
+      do iso_idx=0, ubound(self%molecules(i)%ll, 1)
+        call finalize_linelist(self%molecules(i)%ll(iso_idx))
+      end do
     end do
     call trace%end(it_sort)
 
@@ -1339,6 +1360,17 @@ contains
     call trace%end(itimer)
 
   contains
+    ! allocate the per-isotope SoA linelist array ll(0:niso) once (0 = main isotope)
+    subroutine ensure_ll_allocated(p)
+      class(particle_type), intent(inout) :: p
+      integer :: niso
+      !-------------------------------------------------------------------------
+      if (allocated(p%ll)) return
+      niso = 0
+      if (associated(p%isotope)) niso = size(p%isotope)
+      allocate(p%ll(0:niso))
+    end subroutine ensure_ll_allocated
+
     ! hydrogen block -> AoS particle%line(:), matching the original init_linelist
     subroutine add_h_block(particle, buf, lstart, lend, n)
       class(particle_type), pointer :: particle
@@ -1430,14 +1462,16 @@ contains
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
     real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
-    real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT, dxij
-    real(4), dimension(:,:,:), allocatable :: inv_part, inv_df, vbar2, fo, t3nhe, ni, nj
+    real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
+    real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
     real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
-    real(4), dimension(:,:,:,:), allocatable :: dummy_dep
-    real(4), dimension(:,:,:,:), allocatable :: idf4, vb4
+    real(4), dimension(:,:,:,:), allocatable :: dummy_dep, logref
+    real(4), dimension(:,:,:),   allocatable :: idf3, vb3
+    real(4), dimension(:,:,:,:), allocatable :: lnbase
     real(4), dimension(:,:,:), pointer, contiguous :: vpr
     real(4), dimension(:,:,:), pointer :: bi, bj
     real(8), dimension(:), allocatable :: llam
+    real(4) :: log_tol_over_voigt_peak
     integer :: i, j, k, l, f, f0, m(3), nf
     logical :: departures_present, do_nlte
     integer, save :: itimer=0
@@ -1446,8 +1480,9 @@ contains
     m = shape(self%ne)
     nf = sp%nnu
     allocate(tothi(m(1),m(2),m(3)))
-    allocate(stark_pe, ne, temp, e_kT, dxij, inv_part, inv_df, vbar2, fo, t3nhe, &
+    allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
              ni, nj, mold=tothi)
+    allocate(lnbase(m(1),m(2),m(3),1))
     allocate(chi_l, eta_l, mold=all_chi)
     allocate(dummy_dep(m(1),m(2),m(3),1), source=0.)
     chi_l = 0.
@@ -1469,6 +1504,15 @@ contains
 
     allocate(llam(nf))
     llam = log(sp%lam)
+
+    ! Precompute once here (shared by all particles); guard non-positive continuum.
+    allocate(logref, mold=all_chi)
+    log_tol_over_voigt_peak = log(tolerance / voigt_peak)
+    where (all_chi > 0.)
+      logref = log_tol_over_voigt_peak + log(all_chi)
+    elsewhere
+      logref = -huge(1.)
+    end where
 
     ! --- hydrogen: identical to the AoS path (Stark profiles via add_h_opacities) ---
     element => self%elements(1)
@@ -1528,6 +1572,13 @@ contains
       end do
     end do
     if (.not. present(vproj)) deallocate(vpr)
+
+    if (ll_profile) then
+      print '(a,3(a,i0),a,f7.2,a,f6.2)', 'll_profile (cumulative):', &
+        ' visit=', ll_nvisit, ' pass=', ll_npass, ' voigt=', ll_nvoigt, &
+        ' | voigt/pass=', real(ll_nvoigt)/max(ll_npass,1_8), &
+        ' pass%=', 100.*real(ll_npass)/max(ll_nvisit,1_8)
+    endif
     call trace%end(itimer)
 
   contains
@@ -1546,42 +1597,63 @@ contains
     ! --------------------------------------------------------------------------
     subroutine particle_add_opacities_soa(ptc)
       class(particle_type), target :: ptc
-      integer :: niso, ll_n, ki
+      integer :: niso, ll_n, kiso
+      real(dp) :: iso_frac
       !-------------------------------------------------------------------------
       if (.not. ptc%in_linelist) return
-      ll_n = ptc%ll%nline
-      if (ll_n == 0) return
       if (.not. allocated(ptc%n)) stop 'particle density not allocated'
-
-      ! isotope-indexed Doppler width and mean velocity (index 0 = main isotope)
-      niso = maxval(ptc%ll%iso_idx(1:ll_n))
-      allocate(idf4(m(1),m(2),m(3),0:niso))
-      allocate(vb4 (m(1),m(2),m(3),0:niso))
-      idf4(:,:,:,0) = ptc%inverse_doppler_factor(temp, self%vmic)
-      vb4 (:,:,:,0) = ptc%compute_vbar2(temp)
-      do ki=1, niso
-        idf4(:,:,:,ki) = ptc%isotope(ki)%inverse_doppler_factor(temp, self%vmic)
-        vb4 (:,:,:,ki) = ptc%isotope(ki)%compute_vbar2(temp)
-      end do
-
-      ! ptc%part is the log partition function; inv_part carries the density
-      inv_part = log(ptc%n) - ptc%part
-      dxij = real(self%dxi) * (ptc%j-1)
+      niso = ubound(ptc%ll, 1)     ! ll(0:niso), index 0 = main isotope
 
       call get_departure_coefficients(ptc, dep)
-      if (associated(dep)) then
-        do l=1, ll_n
-          ptc%ll%lev_i(l) = find_closest(dep%ev, ptc%ll%lower_ev(l))
-          ptc%ll%lev_j(l) = find_closest(dep%ev, ptc%ll%lower_ev(l) + H_E*ptc%ll%nu0(l))
-        end do
-        call ll_add_opacity(ptc%ll, llam, chi_l, eta_l, all_chi, vpr, idf4, vb4, &
-          e_kT, dxij, inv_part, ne, tothi, stark_pe, dep%mem, .true.)
-      else
-        call ll_add_opacity(ptc%ll, llam, chi_l, eta_l, all_chi, vpr, idf4, vb4, &
-          e_kT, dxij, inv_part, ne, tothi, stark_pe, dummy_dep, .false.)
-      endif
 
-      deallocate(idf4, vb4)
+      ! one kernel call per isotope: its own line list ll(kiso), Doppler width,
+      ! mean velocity and isotope fraction (the fraction is applied here, per
+      ! isotope, rather than folded into each line's gpref -- see build_linelist)
+      do kiso=0, niso
+        associate(sll => ptc%ll(kiso))
+          ll_n = sll%nline
+          if (ll_n == 0) cycle
+
+          if (kiso == 0) then
+            idf3 = ptc%inverse_doppler_factor(temp, self%vmic)
+            vb3  = ptc%compute_vbar2(temp)
+            iso_frac = 1
+          else
+            idf3 = ptc%isotope(kiso)%inverse_doppler_factor(temp, self%vmic)
+            vb3  = ptc%isotope(kiso)%compute_vbar2(temp)
+            iso_frac = ptc%isotope(kiso)%frac
+          endif
+
+          ! ptc%part is the log partition function; lnbase carries the density, the
+          ! continuum lowering, this isotope's Doppler factor and its fraction
+          lnbase(:,:,:,1) = log(ptc%n) - ptc%part &
+                          + real(self%dxi) * (ptc%j-1) * e_kT + log(idf3) &
+                          + real(log(iso_frac), 4)
+
+          if (associated(dep)) then
+            do l=1, ll_n
+              sll%lev_i(l) = find_closest(dep%ev, real(sll%lower_ev(l), 8))
+              sll%lev_j(l) = find_closest(dep%ev, real(sll%lower_ev(l), 8) + H_E*sll%nu0(l))
+            end do
+            ! arithmetic kernel on a uniform log(lambda) grid, else the general march
+            if (sp%equidistant) then
+              call ll_add_opacity_equi(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
+                vb3, e_kT, lnbase, ne, tothi, stark_pe, dep%mem, .true.)
+            else
+              call ll_add_opacity(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
+                vb3, e_kT, lnbase, ne, tothi, stark_pe, dep%mem, .true.)
+            endif
+          else
+            if (sp%equidistant) then
+              call ll_add_opacity_equi(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
+                vb3, e_kT, lnbase, ne, tothi, stark_pe, dummy_dep, .false.)
+            else
+              call ll_add_opacity(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
+                vb3, e_kT, lnbase, ne, tothi, stark_pe, dummy_dep, .false.)
+            endif
+          endif
+        end associate
+      end do
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2
 
@@ -1643,95 +1715,6 @@ contains
     end do
     call trace%end ()
   END SUBROUTINE reassign_pointer
-
-  !===============================================================================
-  SUBROUTINE init_molecules(self, molec_file)
-    class(composition_type), target :: self
-    class(molec_type),   pointer :: molecule
-    class(element_type), pointer :: element
-    class(ion_type),     pointer :: ion
-    character(len=*) :: molec_file
-    character(len=3) :: mol_ids(12)
-    character(len=6) :: ion_id
-    integer :: i, j
-    !---------------------------------------------------------------------------
-    call trace%begin ('composition_type%init_molecules')
-
-    mol_ids = ['H2 ', 'H2+', 'H2O', 'OH ', 'CH ', 'CO ', 'CN ', 'C2 ', 'N2 ', 'O2 ', 'NO ', 'NH ']
-
-    if (self%tmolim > 0) then
-      self%nmolec = size(mol_ids)
-    else
-      self%nmolec = 0
-    endif
-
-    allocate(self%molecules(self%nmolec))
-
-    do i=1, self%nmolec
-      molecule => self%molecules(i)
-      molecule%nions = len(trim(mol_ids(i)))
-      molecule%id = trim(mol_ids(i))
-      molecule%awgt = 0
-
-      allocate(molecule%ions(molecule%nions))
-
-      do j=1, molecule%nions
-        ion_id = molecule%id(j:j)
-
-        select case (ion_id(:3))
-         case ('H', 'C', 'N', 'O')
-          ion_id(3:3) = 'I'
-          call self%ion_by_id(ion_id, ion)
-         case ('2')
-          ion => ion ! use previous ion a second time
-         case ('+')
-          molecule%nions = molecule%nions - 1
-          molecule%ions(j-1)%p => ion%above
-          cycle
-         case default
-          cycle
-        end select
-
-        molecule%ions(j)%p => ion
-        ion%nmolec = ion%nmolec + 1
-        molecule%awgt = molecule%awgt + ion%awgt
-      end do
-    end do
-
-    do i=1, self%nel
-      element => self%elements(i)
-      do j=1, element%nion
-        ion => element%ions(j)
-        allocate(ion%molecules(ion%nmolec))
-        ion%mcount = 1
-      end do
-    end do
-
-    do i=1, self%nmolec
-      molecule => self%molecules(i)
-
-      do j=1, molecule%nions
-        ion_id = molecule%id(j:j)
-
-        select case (ion_id)
-         case ('H', 'C', 'N', 'O')
-          ion_id(3:3) = 'I'
-          call self%ion_by_id(ion_id, ion)
-         case ('2')
-          ion => ion ! use previous ion a second time
-         case ('+')
-          ion => ion%above
-         case default
-          cycle
-        end select
-
-        ion%molecules(ion%mcount)%p => molecule
-        ion%mcount = ion%mcount + 1
-      end do
-    end do
-    !call self%read_molec_data(molec_file)
-    call trace%end ()
-  END SUBROUTINE init_molecules
 
   !===============================================================================
   SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic)
@@ -2362,19 +2345,22 @@ contains
     class(composition_type), target :: self
     real(dp), dimension(:,:,:), intent(in) :: temp, pe, teta, xnecno
     real(dp), dimension(:,:,:), intent(inout) :: fe
-    real(dp), dimension(:,:,:), allocatable :: r, s, b, fepe, p, q
+    real(dp), dimension(:,:,:), allocatable :: s, b, fepe
     class(molec_type), pointer :: molecules(:), mol
-    class(molec_type), pointer :: H2, CN, H2p, CO, N2, H2O, OH
+    class(molec_type), pointer :: H2
     type(ion_pointer_t), dimension(:), allocatable :: ions
-    class(ion_type), pointer :: HI, CI, NI, OI, Hm, TiI
-    class(ion_type), pointer :: ion, ioni, ionj
-    integer :: i, j, nx, ny, nz, x,y,z, np1, iter, nions
-    real(dp) :: max_step, scale_factor
-    real(dp), dimension(:,:,:), allocatable :: diff
-    real(dp), dimension(:,:,:,:)  , allocatable, target :: Fvec
+    class(ion_type), pointer :: HI, Hm
+    class(ion_type), pointer :: ion, ioni
+    integer :: i, j, m, iq, nx, ny, nz, x,y,z, np1, iter, nions, nfail
+    real(dp) :: max_step, scale_factor, fmin_new, errf
+    real(dp), dimension(:,:,:), allocatable :: diff, fmin, alam
+    real(dp), dimension(:,:,:,:)  , allocatable, target :: Fvec, step
     real(dp), dimension(:,:,:,:,:), allocatable, target :: Amat
-    real(dp), dimension(:), allocatable :: Fold, Fnew
-    logical, dimension(:,:,:), allocatable :: tmolim
+    logical, dimension(:,:,:), allocatable :: tmolim, act, frozen
+    integer, dimension(:,:), allocatable :: nu
+    integer, dimension(:),   allocatable :: qmol, nm1
+    integer,  parameter :: niter_max = 100
+    real(dp), parameter :: alam_min = 1.d0/1024.d0
     integer :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%molecular_equilibrium', itimer=itimer)
@@ -2391,19 +2377,10 @@ contains
     end do
 
     call self%ion_by_id('H I', HI)
-    call self%ion_by_id('C I', CI)
-    call self%ion_by_id('N I', NI)
-    call self%ion_by_id('O I', OI)
     Hm => HI%below
 
     molecules => self%molecules
     call self%molecule_by_id('H2' , H2)
-    call self%molecule_by_id('N2' , N2)
-    call self%molecule_by_id('CN' , CN)
-    call self%molecule_by_id('CO' , CO)
-    call self%molecule_by_id('H2+', H2p)
-    call self%molecule_by_id('H2O', H2O)
-    call self%molecule_by_id('OH' , OH)
 
     nions = 0
     do i=1, self%nel
@@ -2413,11 +2390,11 @@ contains
 
     np1 = nions + 1
     allocate(ions(nions))
-    allocate(r, s, diff, q, p, b, fepe, mold=temp)
+    allocate(s, b, fepe, diff, fmin, alam, mold=temp)
     allocate(Fvec(np1, nx, ny, nz))
+    allocate(step(np1, nx, ny, nz))
     allocate(Amat(np1, np1, nx, ny, nz))
-    allocate(Fold(np1), Fnew(np1))
-    allocate(tmolim(nx,ny,nz))
+    allocate(tmolim(nx,ny,nz), act(nx,ny,nz), frozen(nx,ny,nz))
 
     tmolim = temp < self%tmolim
 
@@ -2439,8 +2416,24 @@ contains
       end associate
     end do
 
-    ! xnecno is number of electrons from elements without molecules
-    where (tmolim) fe = xnecno
+    ! integer stoichiometry: nu(i,m) = number of nuclei of solve element i in
+    ! molecule m, qmol = net molecular charge, nm1 = (number of atoms) - 1
+    allocate(nu(nions, self%nmolec), qmol(self%nmolec), nm1(self%nmolec))
+    nu = 0
+    qmol = 0
+    do m=1, self%nmolec
+      mol => self%molecules(m)
+      nm1(m) = mol%nions - 1
+      do j=1, mol%nions
+        call constituent_root(mol%ions(j)%p, i, iq)
+        nu(i,m) = nu(i,m) + 1
+        qmol(m) = qmol(m) + iq
+      end do
+    end do
+
+    ! the incoming fe is the full Saha electron fraction, which keeps the
+    ! electrons donated by the molecule-forming metals (Mg, Si, Fe, ...) in the
+    ! initial guess; only the hydrogen contribution is adjusted for H2 formation
     fepe = log(fe) - log(pe)
 
     where (tmolim)
@@ -2451,132 +2444,132 @@ contains
       ! stable root (avoids cancellation when K is small)
       HI%f = 2.0*HI%abund / (HI%fil + s)
       H2%f = 0.5*(HI%abund - HI%fil*HI%f)
-      fe = xnecno + HI%f * HI%ne
+      fe = fe + (HI%f - HI%abund/HI%fil) * HI%ne
       fepe = log(fe) - log(pe)
     end where
 
-    ! where (tmolim)
-    !   b = 0.5 * H2%dis * fepe
-    !   q = - HI%abund * b
-    !   p = HI%fil * b
-    !   HI%f = solve_quadratic(p, q)
-
-    !   fe = HI%f*HI%ne + xnecno
-
-    !   where (fe <= 0)
-    !     r = Hm%saha * pe / H2%dis
-    !     s = 1 / (HI%fil - r)
-    !     p = (xnecno*(1 - r*s) - s/Hm%saha)
-    !     q = xnecno*xnecno*r*s
-    !     fe = solve_quadratic(p, q)
-    !     HI%f = (xnecno - fe)*Hm%saha
-    !   end where
-    ! end where
-
-    do i=1, self%nmolec
-      where (tmolim) molecules(i)%f = molecules(i)%calc_f(fepe)
+    ! bring the other ionization stages in line with the initial guess; the
+    ! stage ratios are fixed by Saha at the given Pe, and molecules with
+    ! ionized constituents (H2+) read those f's directly in calc_f
+    do i=1, nions
+      ion => ions(i)%p
+      do while (associated(ion%above))
+        where (tmolim) ion%above%f = ion%f * ion%saha
+        ion => ion%above
+      end do
+      ion => ions(i)%p
+      do while (associated(ion%below))
+        where (tmolim) ion%below%f = ion%f / ion%below%saha
+        ion => ion%below
+      end do
     end do
 
-    ! where (tmolim)
-    !   b = CO%dis * fepe
-    !   s = OI%f / (OI%abund + OI%f_of_molecules_with(HI))
-    !   r = b * (CI%abund + CI%f_of_molecules_with(HI)) / CI%f
-
-    !   p = (CI%abund-OI%abund)*s + r
-    !   q = - OI%abund * s * r
-    !   OI%f = solve_quadratic(p, q)
-    !   CI%f = CI%abund*b / (r + OI%f)
-
-    !   CN%f = CN%calc_f(fepe) ! has to be recalculated since CI%f changed
-
-    !   b = 0.5 * N2%dis * fepe
-    !   p = b * (NI%abund + NI%f_of_molecules_with(HI) + NI%f_of_molecules_with(CI)) / NI%f
-    !   q = - NI%abund * b
-    !   NI%f = solve_quadratic(p, q)
-    !   where (NI%f < 0) NI%f = 0
-    ! end where
-
     diff = 0
-    do iter=1, 100
+    fmin = huge(0.d0)
+    alam = 1
+    frozen = .not. tmolim
+
+    do iter=1, niter_max
+      if (all(frozen)) exit
+      act = .not. frozen
+
+      ! residuals Fvec and Jacobian Amat = dFvec/dln(f) at the current state;
+      ! the molecular fractions follow algebraically from the atomic ones
+      do m=1, self%nmolec
+        where (act) molecules(m)%f = molecules(m)%calc_f(fepe)
+      end do
+
       Amat = 0
       Amat(np1, np1,:,:,:) = - fe
       Fvec(np1,:,:,:) = xnecno - fe
 
-      do i=1, self%nmolec
-        where (tmolim) molecules(i)%f = molecules(i)%calc_f(fepe)
-      end do
-
       do i=1, nions
         ioni => ions(i)%p
-
-        where (tmolim)
+        where (act)
           Amat(i,  i,:,:,:) = ioni%f * ioni%fil
           Amat(np1,i,:,:,:) = ioni%f * ioni%ne
           ! number conservation
-          Fvec(i,:,:,:) = ioni%f_of_molecules_with() + ioni%f*ioni%fil - ioni%abund
+          Fvec(i,:,:,:) = ioni%f*ioni%fil - ioni%abund
           ! charge conservation
           Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + ioni%f*ioni%ne
         end where
+      end do
 
-        if (i==1) then
-          where (tmolim)
-            ! handle charged molecules explicitly (only H2+ in our case)
-            Amat(i,  i,:,:,:) = Amat(i,  i,:,:,:) + 4*H2p%f
-            Amat(np1,i,:,:,:) = Amat(np1,i,:,:,:) + 2*H2p%f
-            Amat(i, np1,:,:,:) = Amat(i, np1,:,:,:) - 2*H2p%f
-            Amat(np1, np1,:,:,:) = Amat(np1, np1,:,:,:) - H2p%f
-            Fvec(i,:,:,:) = Fvec(i,:,:,:) + 2*H2p%f
-            Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + H2p%f
+      do m=1, self%nmolec
+        mol => molecules(m)
+        do i=1, nions
+          if (nu(i,m) == 0) cycle
+          where (act)
+            Fvec(i,:,:,:) = Fvec(i,:,:,:) + nu(i,m)*mol%f
+            ! coupling to fe from the pressure-to-f conversion of mol%f
+            Amat(i,np1,:,:,:) = Amat(i,np1,:,:,:) - (nu(i,m)*nm1(m))*mol%f
           end where
-        endif
-
-        do j=1, nions
-          ionj => ions(j)%p
-          where (tmolim) Amat(i,j,:,:,:) = Amat(i,j,:,:,:) + ionj%f_of_molecules_with(ioni, count_double=.true.)
+          do j=1, nions
+            if (nu(j,m) == 0) cycle
+            where (act) Amat(i,j,:,:,:) = Amat(i,j,:,:,:) + (nu(i,m)*nu(j,m))*mol%f
+          end do
         end do
+        if (qmol(m) /= 0) then
+          where (act)
+            Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + qmol(m)*mol%f
+            Amat(np1,np1,:,:,:) = Amat(np1,np1,:,:,:) - (qmol(m)*nm1(m))*mol%f
+          end where
+          do j=1, nions
+            if (nu(j,m) == 0) cycle
+            where (act) Amat(np1,j,:,:,:) = Amat(np1,j,:,:,:) + (qmol(m)*nu(j,m))*mol%f
+          end do
+        endif
       end do
 
       do z=1, nz
         do y=1, ny
           do x=1, nx
-            if (.not. tmolim(x,y,z)) cycle
+            if (frozen(x,y,z)) cycle
 
-            if (iter > 2 .and. diff(x,y,z) < 0.001) then
+            ! residual-based convergence, relative to each element abundance
+            errf = abs(Fvec(np1,x,y,z)) / fe(x,y,z)
+            do i=1, nions
+              errf = max(errf, abs(Fvec(i,x,y,z)) / ions(i)%p%abund)
+            end do
+            if (errf < 1d-10) then
+              frozen(x,y,z) = .true.
               cycle
             endif
 
-            Fold = [(ions(i)%p%f(x,y,z), i=1, nions), fe(x,y,z)]
+            fmin_new = 0.5d0 * sum(Fvec(:,x,y,z)**2)
+            if (iter > 1 .and. fmin_new > fmin(x,y,z) .and. alam(x,y,z) > alam_min) then
+              ! the last step increased the residual norm: backtrack to half
+              ! the step length instead of solving at the rejected state
+              alam(x,y,z) = 0.5d0 * alam(x,y,z)
+              call apply_step(x, y, z, +alam(x,y,z))
+              cycle
+            endif
+            fmin(x,y,z) = fmin_new
+
+            ! step-based convergence, guarded by a residual check so that a
+            ! stalled iteration is not mistaken for a converged one
+            if (iter > 2 .and. diff(x,y,z) < 0.001 .and. errf < 0.001) then
+              frozen(x,y,z) = .true.
+              cycle
+            endif
 
             call lineq(Amat(:,:,x,y,z), Fvec(:,x,y,z), np1)
 
-            ! Find the maximum step requested by any variable
+            ! limit the maximum step requested by any variable to 3 in ln f
             max_step = maxval(abs(Fvec(1:np1, x,y,z)))
-
-            ! Calculate a global scaling factor
-            ! If max_step > 3.0, we scale everything down so the max is 3.0
             scale_factor = min(1.0, 3.0 / max_step)
+            step(:,x,y,z) = Fvec(:,x,y,z) * scale_factor
 
-            ! Apply the same scale to all components
-            Fnew = Fold * exp(-Fvec(:,x,y,z) * scale_factor)
-            diff(x,y,z) = maxval(abs(1-Fold/Fnew))
-
-            do i=1, nions
-              ions(i)%p%f(x,y,z) = Fnew(i)
-            end do
-
-            fe(x,y,z) = Fnew(np1)
-            fepe(x,y,z) = log(fe(x,y,z)) - log(pe(x,y,z))
+            alam(x,y,z) = 1
+            call apply_step(x, y, z, -1.d0)
           end do
         end do
       end do
-
-      if (iter > 2 .and. all(diff < 0.001)) exit
     end do
 
     Hm%f = HI%f / Hm%saha
     do i=1, nions
       ion => ions(i)%p
-      deallocate(ion%fil, ion%ne)
       do while (associated(ion%above))
         ion%above%f = ion%f * ion%saha
         ion => ion%above
@@ -2590,7 +2583,98 @@ contains
       end where
     end do
 
+    nfail = count(.not. frozen)
+    if (nfail > 0) then
+      print *, 'molecular_equilibrium: ', nfail, ' points not converged after', &
+        niter_max, ' iterations; worst residual norm:', &
+        sqrt(2.d0*maxval(fmin, mask=.not. frozen))
+    endif
+
+    do i=1, nions
+      ion => ions(i)%p
+      deallocate(ion%fil, ion%ne)
+    end do
+
     call trace%end(itimer)
+
+  contains
+    !---------------------------------------------------------------------------
+    ! Find the solve-list index of the neutral root of constituent ion c, and
+    ! the charge that c carries relative to it
+    !---------------------------------------------------------------------------
+    subroutine constituent_root(c, idx, charge)
+      type(ion_type), pointer, intent(in) :: c
+      integer, intent(out) :: idx, charge
+      type(ion_type), pointer :: pt
+      !-------------------------------------------------------------------------
+      pt => c
+      charge = 0
+      do ! search downwards, covering neutral and positive-ion constituents
+        idx = solve_index(pt)
+        if (idx > 0) return
+        if (.not. associated(pt%below)) exit
+        pt => pt%below
+        charge = charge + 1
+      end do
+      pt => c
+      charge = 0
+      do while (associated(pt%above)) ! covers negative-ion constituents
+        pt => pt%above
+        charge = charge - 1
+        idx = solve_index(pt)
+        if (idx > 0) return
+      end do
+      print *, 'molecular_equilibrium: no solve element for constituent ', c%id
+      stop
+    end subroutine constituent_root
+
+    !---------------------------------------------------------------------------
+    function solve_index(pt) result(idx)
+      type(ion_type), pointer, intent(in) :: pt
+      integer :: idx, ii
+      !-------------------------------------------------------------------------
+      do ii=1, nions
+        if (associated(ions(ii)%p, pt)) then
+          idx = ii
+          return
+        endif
+      end do
+      idx = 0
+    end function solve_index
+
+    !---------------------------------------------------------------------------
+    ! Move the state of point (x,y,z) by exp(fac*step) and keep the dependent
+    ! quantities (ionization stages, fe, fepe) in sync; fac=-1 takes a full
+    ! Newton step, positive fractions undo part of the previous one
+    !---------------------------------------------------------------------------
+    subroutine apply_step(x, y, z, fac)
+      integer,  intent(in) :: x, y, z
+      real(dp), intent(in) :: fac
+      type(ion_type), pointer :: pt
+      real(dp) :: fnew
+      integer :: ii
+      !-------------------------------------------------------------------------
+      diff(x,y,z) = 0
+      do ii=1, nions
+        pt => ions(ii)%p
+        fnew = pt%f(x,y,z) * exp(fac * step(ii,x,y,z))
+        diff(x,y,z) = max(diff(x,y,z), abs(1 - pt%f(x,y,z)/fnew))
+        pt%f(x,y,z) = fnew
+        do while (associated(pt%above))
+          pt%above%f(x,y,z) = pt%f(x,y,z) * pt%saha(x,y,z)
+          pt => pt%above
+        end do
+        pt => ions(ii)%p
+        do while (associated(pt%below))
+          pt%below%f(x,y,z) = pt%f(x,y,z) / pt%below%saha(x,y,z)
+          pt => pt%below
+        end do
+      end do
+      fnew = fe(x,y,z) * exp(fac * step(np1,x,y,z))
+      diff(x,y,z) = max(diff(x,y,z), abs(1 - fe(x,y,z)/fnew))
+      fe(x,y,z) = fnew
+      fepe(x,y,z) = log(fnew) - log(pe(x,y,z))
+    end subroutine apply_step
   END SUBROUTINE molecular_equilibrium
 
   !===============================================================================
