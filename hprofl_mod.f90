@@ -3,6 +3,7 @@ MODULE hprofl_mod
   USE prec_mod, only: RYD
   USE const_mod
   USE op_math_mod, only: interp1d_sorted
+  USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, phi_vcs, ensure_vcs_loaded
   implicit none
 
   real(4), dimension(4,3), parameter ::  xknmtb = reshape([&
@@ -156,10 +157,13 @@ contains
     real(8) :: q
     real(4), parameter :: tol=1e-7
     integer :: i,j,k,f, nf, m(3), itimer=0
-    logical lymanalf, used
+    logical lymanalf, used, use_vcs
     !----------------------------------------------------------------------------------
     ! Lyman alpha wings require special treatment
     lymanalf = (self%i == 1) .and. (self%j == 2)
+    ! Optional tabulated VCS (Lemke 1997) profile for this line; whole-profile
+    ! replacement of the analytic Voigt-core + Stark-wing construction.
+    use_vcs = vcs_supported(self%i, self%j)
     m = shape(vproj)
     nf = size(nu)
     inv_nu0 = 1.0 / self%nu0
@@ -207,7 +211,9 @@ contains
           lchi = ref
           do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
-            if (lymanalf) then
+            if (use_vcs) then
+              phi = phi_vcs(self%i, self%j, q, self%nu0, t, e, nh1)
+            else if (lymanalf) then
               call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
             else
               phi = hvoigt(self, q, hwlor, t, e, hfwid, hwstk, idf)
@@ -228,7 +234,9 @@ contains
           lchi = ref
           do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
-            if (lymanalf) then
+            if (use_vcs) then
+              phi = phi_vcs(self%i, self%j, q, self%nu0, t, e, nh1)
+            else if (lymanalf) then
               call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
             else
               phi = hvoigt(self, q, hwlor, t, e, hfwid, hwstk, idf)
@@ -267,6 +275,12 @@ contains
     real(4) :: vdw, resont, hwstk, hfwid, hwlor, phi
     logical :: lymanalf
     !---------------------------------------------------------------------------
+    ! Optional tabulated VCS (Lemke 1997) profile: whole-profile replacement.
+    if (vcs_supported(self%i, self%j)) then
+      hprofile = phi_vcs(self%i, self%j, q, self%nu0, temp, ne, tothi)
+      return
+    endif
+
     lymanalf = (self%i == 1) .and. (self%j == 2)
     hwstk = self%gq * fo
 
@@ -437,6 +451,9 @@ contains
     real(4) :: xknm, radamp, resont, vdw
     real(8), save, dimension(14) :: finest, finswt
     !----------------------------------------------------------------------------------
+    ! Load the tabulated VCS grids on first use (idempotent, serial setup phase).
+    if (hydrogen_vcs_table) call ensure_vcs_loaded()
+
     n = self%i
     m = self%j
     mmn = m-n
