@@ -530,7 +530,15 @@ contains
         do kk=1, nele(mm)
           a = a + enu(kk,mm)*yy(eidx(kk,mm))
         end do
-        fmol(mm) = exp(min(a, 0d0)) ! f_mol <= 1 by construction
+        ! No physical solution ever needs f_mol anywhere near 1 (even H2 stays
+        ! below ~0.5); the old min(a,0) cap enforcing "f_mol <= 1" was a
+        ! spurious plateau that Newton's search path legitimately crosses
+        ! while still converging, and its zero slope there is inconsistent
+        ! with the analytic Jacobian below, breaking descent and stalling
+        ! the iteration. Clamp only far out, purely as an overflow guard, so
+        ! fmol stays smooth (exp's own derivative matches the Jacobian)
+        ! throughout the whole physically reachable range.
+        fmol(mm) = exp(min(a, 300d0))
         do kk=1, nele(mm)
           resid(eidx(kk,mm)) = resid(eidx(kk,mm)) + enu(kk,mm)*fmol(mm)
         end do
