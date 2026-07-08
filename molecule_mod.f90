@@ -1,5 +1,6 @@
 MODULE molecule_mod
   USE os_mod
+  USE trace_mod
   USE prec_mod
   USE op_math_mod
   USE ion_mod
@@ -136,6 +137,455 @@ contains
 
     e = - de * self%n
   END FUNCTION calc_e
+
+  !=========================================================================
+  ! Molecular + ionization equilibrium, solved cell by cell.
+  !
+  ! The caller supplies the molecules and the solve elements: one neutral
+  ! "root" ion per molecule-forming element (ions).  The routine runs at
+  ! fixed electron density, so within one cell the Saha ratios between the
+  ! ionization stages of every element, the electron pressure, and the
+  ! dissociation constants are all constants.  With yi = ln f_i for the
+  ! neutral fraction of each solve element and ye = ln fe, every molecular
+  ! fraction is an explicit function of the unknowns,
+  !
+  !   ln f_mol = C_m + sum_i nu_im*yi - (n_m - 1)*ye ,
+  !
+  ! where the per-cell constant C_m absorbs the dissociation constant, the
+  ! electron pressure, and the Saha factors of charged constituents (H2+).
+  ! The nonlinear system is number conservation for each solve element plus
+  ! charge conservation,
+  !
+  !   F_i = f_i*phi_i + sum_m nu_im*f_mol - A_i           = 0
+  !   F_e = xnecno + sum_i q_i*f_i + sum_m q_m*f_mol - fe = 0 ,
+  !
+  ! with phi_i (total nuclei per neutral) and q_i (electrons per neutral)
+  ! given by the fixed Saha ladder of element i.  It is solved by a damped
+  ! Newton method in log space: analytic Jacobian, step capped in ln f,
+  ! Armijo backtracking on |F|^2.  One iteration costs nions+nmol+1
+  ! exponentials plus an (nions+1)^2 linear solve; there are no logarithms,
+  ! pointer walks, 3D-array accesses, or array-syntax statements inside the
+  ! iteration, and the working set is O((nions+1)^2) scalars.
+  !=========================================================================
+  SUBROUTINE molecular_equilibrium(molecules, ions, tmolim, temp, teta, e_kT, &
+                                   pe, xnecno, fe)
+    class(molec_type), target, intent(inout) :: molecules(:)
+    type(ion_pointer_t), intent(in) :: ions(:)
+    real(dp), intent(in) :: tmolim
+    real(dp), dimension(:,:,:), intent(in) :: temp, teta, e_kT, pe, xnecno
+    real(dp), dimension(:,:,:), intent(inout) :: fe
+    class(molec_type), pointer :: mol
+    type(ion_type), pointer :: pt
+    integer :: i, j, k, m, iq, nx, ny, nz, np1, nions, nmol, mxc
+    integer :: x, y, z, iter, nfail, iH, iH2, qlo, qhi
+    ! fixed stoichiometry: per-constituent root index / charge offset, and
+    ! per-molecule lists of distinct solve elements with their multiplicity
+    integer, dimension(:),   allocatable :: ncons, nele, nm1, qmol
+    integer, dimension(:,:), allocatable :: cidx, cq, eidx, enu
+    ! per-cell constants
+    real(dp), dimension(:,:), allocatable :: rat        ! stage/neutral ratios
+    real(dp), dimension(:),   allocatable :: fil, ce    ! phi_i, q_i
+    real(dp), dimension(:),   allocatable :: abund, Cm
+    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, fH
+    ! Newton state
+    real(dp), dimension(:),   allocatable :: yv, yt, Fv, Ft, stp
+    real(dp), dimension(:),   allocatable :: fi, fit, fm, fmt
+    real(dp), dimension(:,:), allocatable :: Amat
+    real(dp) :: norm2, norm2t, errf, lam, smax, worst
+    logical  :: converged
+    integer,  parameter :: niter_max = 100
+    real(dp), parameter :: tol       = 1d-10      ! scaled residual target
+    real(dp), parameter :: tol_stall = 1d-6       ! acceptable when stalled
+    real(dp), parameter :: step_max  = 3d0        ! cap on |d ln f| per step
+    real(dp), parameter :: lam_min   = 1d0/1024d0 ! smallest damping factor
+    integer :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('molecule_mod::molecular_equilibrium', itimer=itimer)
+
+    nx = size(temp, 1)
+    ny = size(temp, 2)
+    nz = size(temp, 3)
+    nmol  = size(molecules)
+    nions = size(ions)
+    np1   = nions + 1
+
+    ! molecule partition functions and equilibrium constants; the scalar
+    ! irwin_partf call keeps the elemental expansion out of the hot files
+    do m=1, nmol
+      mol => molecules(m)
+      call mol%allocate(shape(temp))
+      do z=1, nz
+        do y=1, ny
+          do x=1, nx
+            mol%part(x,y,z) = mol%irwin_partf(temp(x,y,z))
+          end do
+        end do
+      end do
+      call mol%get_dis(temp, teta, e_kT, mol%dis)
+      ! molecules default to zero; only cells below tmolim get a solved value
+      do z=1, nz
+        do y=1, ny
+          do x=1, nx
+            mol%f(x,y,z) = 0
+          end do
+        end do
+      end do
+    end do
+
+    ! charge extent of the ionization ladders (H- gives qlo = -1)
+    qlo = 0
+    qhi = 0
+    do i=1, nions
+      k = 0
+      pt => ions(i)%p
+      do while (associated(pt%above))
+        k = k + 1
+        pt => pt%above
+      end do
+      qhi = max(qhi, k)
+      k = 0
+      pt => ions(i)%p
+      do while (associated(pt%below))
+        k = k - 1
+        pt => pt%below
+      end do
+      qlo = min(qlo, k)
+    end do
+
+    ! stoichiometry, resolved once: every constituent is mapped to its
+    ! neutral root (solve index) and the charge it carries relative to it
+    mxc = 0
+    do m=1, nmol
+      mxc = max(mxc, molecules(m)%nions)
+    end do
+    allocate(ncons(nmol), nele(nmol), nm1(nmol), qmol(nmol))
+    allocate(cidx(mxc,nmol), cq(mxc,nmol), eidx(mxc,nmol), enu(mxc,nmol))
+    do m=1, nmol
+      mol => molecules(m)
+      ncons(m) = mol%nions
+      nm1(m)   = mol%nions - 1
+      qmol(m)  = 0
+      nele(m)  = 0
+      do j=1, mol%nions
+        call constituent_root(mol%ions(j)%p, i, iq)
+        cidx(j,m) = i
+        cq(j,m)   = iq
+        qmol(m)   = qmol(m) + iq
+        do k=1, nele(m)
+          if (eidx(k,m) == i) exit
+        end do
+        if (k > nele(m)) then
+          nele(m)   = k
+          eidx(k,m) = i
+          enu(k,m)  = 1
+        else
+          enu(k,m)  = enu(k,m) + 1
+        endif
+      end do
+    end do
+
+    ! H and H2 drive the initial guess (harmless to skip if absent)
+    iH = 0
+    iH2 = 0
+    do i=1, nions
+      if (trim(ions(i)%p%id) == 'H I') iH = i
+    end do
+    do m=1, nmol
+      if (trim(molecules(m)%id) == 'H2') iH2 = m
+    end do
+
+    allocate(rat(qlo:qhi, nions), fil(nions), ce(nions), abund(nions), Cm(nmol))
+    allocate(yv(np1), yt(np1), Fv(np1), Ft(np1), stp(np1))
+    allocate(fi(nions), fit(nions), fm(nmol), fmt(nmol), Amat(np1,np1))
+
+    do i=1, nions
+      abund(i) = ions(i)%p%abund
+    end do
+
+    nfail = 0
+    worst = 0
+
+    do z=1, nz
+      do y=1, ny
+        do x=1, nx
+          if (temp(x,y,z) >= tmolim) cycle ! molecules frozen out (=0)
+
+          pe_c  = pe(x,y,z)
+          xne_c = xnecno(x,y,z)
+          fe_c  = fe(x,y,z)
+          lnpe  = log(pe_c)
+
+          ! --- fixed per-cell data --------------------------------------
+          ! stage/neutral ratios from the Saha ladder, then
+          ! phi_i = sum_q rat_q  and  q_i = sum_q q*rat_q
+          do i=1, nions
+            do k=qlo, qhi
+              rat(k,i) = 0
+            end do
+            rat(0,i) = 1
+            k = 0
+            pt => ions(i)%p
+            do while (associated(pt%above))
+              rat(k+1,i) = rat(k,i) * pt%saha(x,y,z)
+              k = k + 1
+              pt => pt%above
+            end do
+            k = 0
+            pt => ions(i)%p
+            do while (associated(pt%below))
+              rat(k-1,i) = rat(k,i) / pt%below%saha(x,y,z)
+              k = k - 1
+              pt => pt%below
+            end do
+            fil(i) = 0
+            ce(i)  = 0
+            do k=qlo, qhi
+              fil(i) = fil(i) + rat(k,i)
+              ce(i)  = ce(i)  + k*rat(k,i)
+            end do
+          end do
+
+          ! ln K of each molecule in f-units, up to the -(n-1)*ye term
+          do m=1, nmol
+            b = molecules(m)%dis(x,y,z) + nm1(m)*lnpe
+            do j=1, ncons(m)
+              if (cq(j,m) /= 0) b = b + log(rat(cq(j,m), cidx(j,m)))
+            end do
+            Cm(m) = b
+          end do
+
+          ! --- initial guess ----------------------------------------------
+          ! Saha neutral fractions, refined for H by solving the H/H2
+          ! quadratic  phi_H*f_H + 2K*f_H^2 = A_H  (stable root), with the
+          ! electron budget adjusted for the hydrogen thus removed
+          do i=1, nions
+            yv(i) = log(abund(i)/fil(i))
+          end do
+          yv(np1) = log(fe_c)
+          if (iH > 0 .and. iH2 > 0) then
+            b  = exp(min(Cm(iH2) - yv(np1), 600d0)) ! K = f_H2/f_H^2
+            s  = sqrt(fil(iH)**2 + 8d0*b*abund(iH))
+            fH = 2d0*abund(iH) / (fil(iH) + s)
+            fe_c = fe_c + (fH - abund(iH)/fil(iH))*ce(iH)
+            fe_c = max(fe_c, 1d-3*xne_c, tiny(1d0))
+            yv(iH)  = log(fH)
+            yv(np1) = log(fe_c)
+          endif
+
+          ! --- damped Newton to convergence -------------------------------
+          call eval(yv, fi, fm, Fv, norm2)
+          converged = .false.
+
+          do iter=1, niter_max
+            errf = abs(Fv(np1)) / max(fe_c, xne_c)
+            do i=1, nions
+              errf = max(errf, abs(Fv(i))/abund(i))
+            end do
+            if (errf < tol) then
+              converged = .true.
+              exit
+            endif
+
+            ! analytic Jacobian dF/d(ln f) at the current state
+            do j=1, np1
+              do i=1, np1
+                Amat(i,j) = 0
+              end do
+            end do
+            do i=1, nions
+              Amat(i,i)   = fi(i)*fil(i)
+              Amat(np1,i) = fi(i)*ce(i)
+            end do
+            Amat(np1,np1) = -fe_c
+            do m=1, nmol
+              do k=1, nele(m)
+                i = eidx(k,m)
+                Amat(i,np1) = Amat(i,np1) - (enu(k,m)*nm1(m))*fm(m)
+                do j=1, nele(m)
+                  Amat(i,eidx(j,m)) = Amat(i,eidx(j,m)) + (enu(k,m)*enu(j,m))*fm(m)
+                end do
+              end do
+              if (qmol(m) /= 0) then
+                Amat(np1,np1) = Amat(np1,np1) - (qmol(m)*nm1(m))*fm(m)
+                do k=1, nele(m)
+                  Amat(np1,eidx(k,m)) = Amat(np1,eidx(k,m)) + (qmol(m)*enu(k,m))*fm(m)
+                end do
+              endif
+            end do
+
+            ! Newton step, capped in ln f to stay in the basin
+            do i=1, np1
+              stp(i) = Fv(i)
+            end do
+            call lineq(Amat, stp, np1)
+            smax = 0
+            do i=1, np1
+              smax = max(smax, abs(stp(i)))
+            end do
+            if (smax > step_max) then
+              b = step_max/smax
+              do i=1, np1
+                stp(i) = stp(i)*b
+              end do
+            endif
+
+            ! Armijo backtracking on |F|^2
+            lam = 1
+            do
+              do i=1, np1
+                yt(i) = yv(i) - lam*stp(i)
+              end do
+              call eval(yt, fit, fmt, Ft, norm2t)
+              if (norm2t <= (1d0 - 1d-4*lam)*norm2 .or. lam <= lam_min) exit
+              lam = 0.5d0*lam
+            end do
+
+            ! accept the (possibly damped) step
+            smax = 0
+            do i=1, np1
+              smax = max(smax, abs(yt(i) - yv(i)))
+              yv(i) = yt(i)
+              Fv(i) = Ft(i)
+            end do
+            do i=1, nions
+              fi(i) = fit(i)
+            end do
+            do m=1, nmol
+              fm(m) = fmt(m)
+            end do
+            norm2 = norm2t
+
+            ! no movement in ln f: rounding level reached, stop iterating
+            if (smax < 1d-13) exit
+          end do
+
+          if (.not. converged) then
+            errf = abs(Fv(np1)) / max(fe_c, xne_c)
+            do i=1, nions
+              errf = max(errf, abs(Fv(i))/abund(i))
+            end do
+            converged = errf < tol_stall
+          endif
+          if (.not. converged) then
+            nfail = nfail + 1
+            worst = max(worst, errf)
+          endif
+
+          ! --- write back: fe, every ladder stage, molecular fractions ----
+          fe(x,y,z) = fe_c
+          do i=1, nions
+            pt => ions(i)%p
+            pt%f(x,y,z) = fi(i)
+            k = 0
+            do while (associated(pt%above))
+              k = k + 1
+              pt%above%f(x,y,z) = fi(i)*rat(k,i)
+              pt => pt%above
+            end do
+            k = 0
+            pt => ions(i)%p
+            do while (associated(pt%below))
+              k = k - 1
+              pt%below%f(x,y,z) = fi(i)*rat(k,i)
+              pt => pt%below
+            end do
+          end do
+          do m=1, nmol
+            molecules(m)%f(x,y,z) = fm(m)
+          end do
+        end do
+      end do
+    end do
+
+    if (nfail > 0) then
+      print *, 'molecular_equilibrium: ', nfail, ' points not converged after', &
+        niter_max, ' iterations; worst scaled residual:', worst
+    endif
+
+    call trace%end(itimer)
+
+  contains
+    !---------------------------------------------------------------------------
+    ! Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
+    ! Also updates the host fe_c to exp(yy(np1)), so that after the accepted
+    ! line-search evaluation fe_c always matches the current state.
+    !---------------------------------------------------------------------------
+    subroutine eval(yy, fatom, fmol, resid, nrm)
+      real(dp), intent(in)  :: yy(:)
+      real(dp), intent(out) :: fatom(:), fmol(:), resid(:), nrm
+      real(dp) :: a
+      integer  :: ii, mm, kk
+      !-------------------------------------------------------------------------
+      fe_c = exp(yy(np1))
+      do ii=1, nions
+        fatom(ii) = exp(yy(ii))
+        resid(ii) = fatom(ii)*fil(ii) - abund(ii)
+      end do
+      resid(np1) = xne_c - fe_c
+      do ii=1, nions
+        resid(np1) = resid(np1) + fatom(ii)*ce(ii)
+      end do
+      do mm=1, nmol
+        a = Cm(mm) - nm1(mm)*yy(np1)
+        do kk=1, nele(mm)
+          a = a + enu(kk,mm)*yy(eidx(kk,mm))
+        end do
+        fmol(mm) = exp(min(a, 0d0)) ! f_mol <= 1 by construction
+        do kk=1, nele(mm)
+          resid(eidx(kk,mm)) = resid(eidx(kk,mm)) + enu(kk,mm)*fmol(mm)
+        end do
+        resid(np1) = resid(np1) + qmol(mm)*fmol(mm)
+      end do
+      nrm = 0
+      do ii=1, np1
+        nrm = nrm + resid(ii)**2
+      end do
+    end subroutine eval
+
+    !---------------------------------------------------------------------------
+    ! Find the solve-list index of the neutral root of constituent ion c, and
+    ! the charge that c carries relative to it
+    !---------------------------------------------------------------------------
+    subroutine constituent_root(c, idx, charge)
+      type(ion_type), pointer, intent(in) :: c
+      integer, intent(out) :: idx, charge
+      type(ion_type), pointer :: p2
+      !-------------------------------------------------------------------------
+      p2 => c
+      charge = 0
+      do ! search downwards, covering neutral and positive-ion constituents
+        idx = solve_index(p2)
+        if (idx > 0) return
+        if (.not. associated(p2%below)) exit
+        p2 => p2%below
+        charge = charge + 1
+      end do
+      p2 => c
+      charge = 0
+      do while (associated(p2%above)) ! covers negative-ion constituents
+        p2 => p2%above
+        charge = charge - 1
+        idx = solve_index(p2)
+        if (idx > 0) return
+      end do
+      print *, 'molecular_equilibrium: no solve element for constituent ', c%id
+      stop
+    end subroutine constituent_root
+
+    !---------------------------------------------------------------------------
+    function solve_index(p2) result(idx)
+      type(ion_type), pointer, intent(in) :: p2
+      integer :: idx, ii
+      !-------------------------------------------------------------------------
+      do ii=1, nions
+        if (associated(ions(ii)%p, p2)) then
+          idx = ii
+          return
+        endif
+      end do
+      idx = 0
+    end function solve_index
+  END SUBROUTINE molecular_equilibrium
 
   !===============================================================================
   SUBROUTINE allocate_molec (self, m)

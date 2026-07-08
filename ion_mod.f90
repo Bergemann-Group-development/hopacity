@@ -56,7 +56,6 @@ MODULE ion_mod
     real(dp), pointer :: abund => null()
     real(dp) :: acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c
     real(dp), dimension(:,:,:), allocatable :: saha
-    real(dp), dimension(:,:,:), allocatable :: fil, ne
     logical :: fixed_part = .false.
   contains
     procedure :: molecules_with

@@ -9,7 +9,7 @@ MODULE composition_mod
   USE level_mod, only: level_type, wcalc
   USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
-  USE molecule_mod, only:molec_type, irwin_dis
+  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE linelist_mod, only: linelist_type, build_linelist, finalize_linelist, &
                           ll_add_opacity => add_opacity, &
@@ -45,7 +45,6 @@ MODULE composition_mod
     procedure :: thermal_equilibrium
     procedure :: compute_energy_and_gas_pressure
     procedure :: set_aux_data
-    procedure :: molecular_equilibrium
     procedure :: init_H_levels
     procedure :: Hoccupation_partition
     procedure :: molecule_by_id
@@ -1828,7 +1827,8 @@ contains
     real(dp), intent(in),  dimension(:,:,:) :: temp, ne
     real(dp), intent(out), dimension(:,:,:) :: rho
     real(dp), dimension(:,:,:), allocatable :: fe, xnen, xnecno, toth, dxi, hpart
-    integer :: i, j, itimer=0, itimer2=0, itimer3=0, x, y, z
+    type(ion_pointer_t), dimension(:), allocatable :: mions
+    integer :: i, j, nions, itimer=0, itimer2=0, itimer3=0, x, y, z
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%thermal_equilibrium', itimer=itimer)
     allocate(fe, xnen, xnecno, toth, mold=temp)
@@ -1878,7 +1878,21 @@ contains
     ! endif
 
     if (self%nmolec > 0) then
-      call self%molecular_equilibrium(self%temp, self%teta, self%pe, xnecno, fe)
+      ! solve elements: the neutral root of every molecule-forming element
+      nions = 0
+      do i=1, self%nel
+        if (self%elements(i)%ions(1)%nmolec > 0) nions = nions + 1
+      end do
+      allocate(mions(nions))
+      nions = 0
+      do i=1, self%nel
+        if (self%elements(i)%ions(1)%nmolec > 0) then
+          nions = nions + 1
+          mions(nions)%p => self%elements(i)%ions(1)
+        endif
+      end do
+      call molecular_equilibrium(self%molecules, mions, self%tmolim, self%temp, &
+                                 self%teta, self%e_kT, self%pe, xnecno, fe)
     endif
 
     ! total hydrogen number density, computed from scratch
@@ -2339,343 +2353,6 @@ contains
     endif
     call trace%end ()
   END SUBROUTINE get_totn
-
-  !===============================================================================
-  SUBROUTINE molecular_equilibrium(self, temp, teta, pe, xnecno, fe)
-    class(composition_type), target :: self
-    real(dp), dimension(:,:,:), intent(in) :: temp, pe, teta, xnecno
-    real(dp), dimension(:,:,:), intent(inout) :: fe
-    real(dp), dimension(:,:,:), allocatable :: s, b, fepe
-    class(molec_type), pointer :: molecules(:), mol
-    class(molec_type), pointer :: H2
-    type(ion_pointer_t), dimension(:), allocatable :: ions
-    class(ion_type), pointer :: HI, Hm
-    class(ion_type), pointer :: ion, ioni
-    integer :: i, j, m, iq, nx, ny, nz, x,y,z, np1, iter, nions, nfail
-    real(dp) :: max_step, scale_factor, fmin_new, errf
-    real(dp), dimension(:,:,:), allocatable :: diff, fmin, alam
-    real(dp), dimension(:,:,:,:)  , allocatable, target :: Fvec, step
-    real(dp), dimension(:,:,:,:,:), allocatable, target :: Amat
-    logical, dimension(:,:,:), allocatable :: tmolim, act, frozen
-    integer, dimension(:,:), allocatable :: nu
-    integer, dimension(:),   allocatable :: qmol, nm1
-    integer,  parameter :: niter_max = 100
-    real(dp), parameter :: alam_min = 1.d0/1024.d0
-    integer :: itimer=0
-    !---------------------------------------------------------------------------
-    call trace%begin ('composition_type%molecular_equilibrium', itimer=itimer)
-
-    nx = size(temp, 1)
-    ny = size(temp, 2)
-    nz = size(temp, 3)
-
-    do i=1, self%nmolec
-      mol => self%molecules(i)
-      call mol%allocate(shape(temp))
-      mol%part = mol%irwin_partf(self%temp)
-      call mol%get_dis(self%temp, self%teta, self%e_kT, mol%dis)
-    end do
-
-    call self%ion_by_id('H I', HI)
-    Hm => HI%below
-
-    molecules => self%molecules
-    call self%molecule_by_id('H2' , H2)
-
-    nions = 0
-    do i=1, self%nel
-      ion => self%elements(i)%ions(1) ! only consider neutral atoms
-      if (ion%nmolec > 0) nions = nions + 1
-    end do
-
-    np1 = nions + 1
-    allocate(ions(nions))
-    allocate(s, b, fepe, diff, fmin, alam, mold=temp)
-    allocate(Fvec(np1, nx, ny, nz))
-    allocate(step(np1, nx, ny, nz))
-    allocate(Amat(np1, np1, nx, ny, nz))
-    allocate(tmolim(nx,ny,nz), act(nx,ny,nz), frozen(nx,ny,nz))
-
-    tmolim = temp < self%tmolim
-
-    nions = 0
-    do i=1, self%nel
-      associate(elm => self%elements(i), ion => self%elements(i)%ions(1))
-        if (ion%nmolec > 0) then
-          nions = nions + 1
-          ions(nions)%p => ion
-          allocate(ion%fil, ion%ne, source=self%zero)
-          do j=lbound(elm%ions,1), ubound(elm%ions,1)
-            ion%ne = ion%ne + (j-1)*elm%ions(j)%f
-          end do
-          ! ion%fil is the neutral fraction of the element if there are no molecules
-          ion%fil = ion%abund / ion%f
-          ! ion%ne is the number of electrons per neutral atom from the element if there are no molecules
-          ion%ne = ion%ne / ion%f
-        endif
-      end associate
-    end do
-
-    ! integer stoichiometry: nu(i,m) = number of nuclei of solve element i in
-    ! molecule m, qmol = net molecular charge, nm1 = (number of atoms) - 1
-    allocate(nu(nions, self%nmolec), qmol(self%nmolec), nm1(self%nmolec))
-    nu = 0
-    qmol = 0
-    do m=1, self%nmolec
-      mol => self%molecules(m)
-      nm1(m) = mol%nions - 1
-      do j=1, mol%nions
-        call constituent_root(mol%ions(j)%p, i, iq)
-        nu(i,m) = nu(i,m) + 1
-        qmol(m) = qmol(m) + iq
-      end do
-    end do
-
-    ! the incoming fe is the full Saha electron fraction, which keeps the
-    ! electrons donated by the molecule-forming metals (Mg, Si, Fe, ...) in the
-    ! initial guess; only the hydrogen contribution is adjusted for H2 formation
-    fepe = log(fe) - log(pe)
-
-    where (tmolim)
-      ! K = f_H2 / f_H^2  in f-units
-      b = exp(H2%dis - fepe)
-      ! discriminant of  2K f_H^2 + fil_H f_H - abund_H = 0
-      s = sqrt(HI%fil**2 + 8.0*b*HI%abund)
-      ! stable root (avoids cancellation when K is small)
-      HI%f = 2.0*HI%abund / (HI%fil + s)
-      H2%f = 0.5*(HI%abund - HI%fil*HI%f)
-      fe = fe + (HI%f - HI%abund/HI%fil) * HI%ne
-      fepe = log(fe) - log(pe)
-    end where
-
-    ! bring the other ionization stages in line with the initial guess; the
-    ! stage ratios are fixed by Saha at the given Pe, and molecules with
-    ! ionized constituents (H2+) read those f's directly in calc_f
-    do i=1, nions
-      ion => ions(i)%p
-      do while (associated(ion%above))
-        where (tmolim) ion%above%f = ion%f * ion%saha
-        ion => ion%above
-      end do
-      ion => ions(i)%p
-      do while (associated(ion%below))
-        where (tmolim) ion%below%f = ion%f / ion%below%saha
-        ion => ion%below
-      end do
-    end do
-
-    diff = 0
-    fmin = huge(0.d0)
-    alam = 1
-    frozen = .not. tmolim
-
-    do iter=1, niter_max
-      if (all(frozen)) exit
-      act = .not. frozen
-
-      ! residuals Fvec and Jacobian Amat = dFvec/dln(f) at the current state;
-      ! the molecular fractions follow algebraically from the atomic ones
-      do m=1, self%nmolec
-        where (act) molecules(m)%f = molecules(m)%calc_f(fepe)
-      end do
-
-      Amat = 0
-      Amat(np1, np1,:,:,:) = - fe
-      Fvec(np1,:,:,:) = xnecno - fe
-
-      do i=1, nions
-        ioni => ions(i)%p
-        where (act)
-          Amat(i,  i,:,:,:) = ioni%f * ioni%fil
-          Amat(np1,i,:,:,:) = ioni%f * ioni%ne
-          ! number conservation
-          Fvec(i,:,:,:) = ioni%f*ioni%fil - ioni%abund
-          ! charge conservation
-          Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + ioni%f*ioni%ne
-        end where
-      end do
-
-      do m=1, self%nmolec
-        mol => molecules(m)
-        do i=1, nions
-          if (nu(i,m) == 0) cycle
-          where (act)
-            Fvec(i,:,:,:) = Fvec(i,:,:,:) + nu(i,m)*mol%f
-            ! coupling to fe from the pressure-to-f conversion of mol%f
-            Amat(i,np1,:,:,:) = Amat(i,np1,:,:,:) - (nu(i,m)*nm1(m))*mol%f
-          end where
-          do j=1, nions
-            if (nu(j,m) == 0) cycle
-            where (act) Amat(i,j,:,:,:) = Amat(i,j,:,:,:) + (nu(i,m)*nu(j,m))*mol%f
-          end do
-        end do
-        if (qmol(m) /= 0) then
-          where (act)
-            Fvec(np1,:,:,:) = Fvec(np1,:,:,:) + qmol(m)*mol%f
-            Amat(np1,np1,:,:,:) = Amat(np1,np1,:,:,:) - (qmol(m)*nm1(m))*mol%f
-          end where
-          do j=1, nions
-            if (nu(j,m) == 0) cycle
-            where (act) Amat(np1,j,:,:,:) = Amat(np1,j,:,:,:) + (qmol(m)*nu(j,m))*mol%f
-          end do
-        endif
-      end do
-
-      do z=1, nz
-        do y=1, ny
-          do x=1, nx
-            if (frozen(x,y,z)) cycle
-
-            ! residual-based convergence, relative to each element abundance
-            errf = abs(Fvec(np1,x,y,z)) / fe(x,y,z)
-            do i=1, nions
-              errf = max(errf, abs(Fvec(i,x,y,z)) / ions(i)%p%abund)
-            end do
-            if (errf < 1d-10) then
-              frozen(x,y,z) = .true.
-              cycle
-            endif
-
-            fmin_new = 0.5d0 * sum(Fvec(:,x,y,z)**2)
-            if (iter > 1 .and. fmin_new > fmin(x,y,z) .and. alam(x,y,z) > alam_min) then
-              ! the last step increased the residual norm: backtrack to half
-              ! the step length instead of solving at the rejected state
-              alam(x,y,z) = 0.5d0 * alam(x,y,z)
-              call apply_step(x, y, z, +alam(x,y,z))
-              cycle
-            endif
-            fmin(x,y,z) = fmin_new
-
-            ! step-based convergence, guarded by a residual check so that a
-            ! stalled iteration is not mistaken for a converged one
-            if (iter > 2 .and. diff(x,y,z) < 0.001 .and. errf < 0.001) then
-              frozen(x,y,z) = .true.
-              cycle
-            endif
-
-            call lineq(Amat(:,:,x,y,z), Fvec(:,x,y,z), np1)
-
-            ! limit the maximum step requested by any variable to 3 in ln f
-            max_step = maxval(abs(Fvec(1:np1, x,y,z)))
-            scale_factor = min(1.0, 3.0 / max_step)
-            step(:,x,y,z) = Fvec(:,x,y,z) * scale_factor
-
-            alam(x,y,z) = 1
-            call apply_step(x, y, z, -1.d0)
-          end do
-        end do
-      end do
-    end do
-
-    Hm%f = HI%f / Hm%saha
-    do i=1, nions
-      ion => ions(i)%p
-      do while (associated(ion%above))
-        ion%above%f = ion%f * ion%saha
-        ion => ion%above
-      end do
-    end do
-    do i=1, self%nmolec
-      where (tmolim)
-        molecules(i)%f = molecules(i)%calc_f(fepe)
-      elsewhere
-        molecules(i)%f = 0
-      end where
-    end do
-
-    nfail = count(.not. frozen)
-    if (nfail > 0) then
-      print *, 'molecular_equilibrium: ', nfail, ' points not converged after', &
-        niter_max, ' iterations; worst residual norm:', &
-        sqrt(2.d0*maxval(fmin, mask=.not. frozen))
-    endif
-
-    do i=1, nions
-      ion => ions(i)%p
-      deallocate(ion%fil, ion%ne)
-    end do
-
-    call trace%end(itimer)
-
-  contains
-    !---------------------------------------------------------------------------
-    ! Find the solve-list index of the neutral root of constituent ion c, and
-    ! the charge that c carries relative to it
-    !---------------------------------------------------------------------------
-    subroutine constituent_root(c, idx, charge)
-      type(ion_type), pointer, intent(in) :: c
-      integer, intent(out) :: idx, charge
-      type(ion_type), pointer :: pt
-      !-------------------------------------------------------------------------
-      pt => c
-      charge = 0
-      do ! search downwards, covering neutral and positive-ion constituents
-        idx = solve_index(pt)
-        if (idx > 0) return
-        if (.not. associated(pt%below)) exit
-        pt => pt%below
-        charge = charge + 1
-      end do
-      pt => c
-      charge = 0
-      do while (associated(pt%above)) ! covers negative-ion constituents
-        pt => pt%above
-        charge = charge - 1
-        idx = solve_index(pt)
-        if (idx > 0) return
-      end do
-      print *, 'molecular_equilibrium: no solve element for constituent ', c%id
-      stop
-    end subroutine constituent_root
-
-    !---------------------------------------------------------------------------
-    function solve_index(pt) result(idx)
-      type(ion_type), pointer, intent(in) :: pt
-      integer :: idx, ii
-      !-------------------------------------------------------------------------
-      do ii=1, nions
-        if (associated(ions(ii)%p, pt)) then
-          idx = ii
-          return
-        endif
-      end do
-      idx = 0
-    end function solve_index
-
-    !---------------------------------------------------------------------------
-    ! Move the state of point (x,y,z) by exp(fac*step) and keep the dependent
-    ! quantities (ionization stages, fe, fepe) in sync; fac=-1 takes a full
-    ! Newton step, positive fractions undo part of the previous one
-    !---------------------------------------------------------------------------
-    subroutine apply_step(x, y, z, fac)
-      integer,  intent(in) :: x, y, z
-      real(dp), intent(in) :: fac
-      type(ion_type), pointer :: pt
-      real(dp) :: fnew
-      integer :: ii
-      !-------------------------------------------------------------------------
-      diff(x,y,z) = 0
-      do ii=1, nions
-        pt => ions(ii)%p
-        fnew = pt%f(x,y,z) * exp(fac * step(ii,x,y,z))
-        diff(x,y,z) = max(diff(x,y,z), abs(1 - pt%f(x,y,z)/fnew))
-        pt%f(x,y,z) = fnew
-        do while (associated(pt%above))
-          pt%above%f(x,y,z) = pt%f(x,y,z) * pt%saha(x,y,z)
-          pt => pt%above
-        end do
-        pt => ions(ii)%p
-        do while (associated(pt%below))
-          pt%below%f(x,y,z) = pt%f(x,y,z) / pt%below%saha(x,y,z)
-          pt => pt%below
-        end do
-      end do
-      fnew = fe(x,y,z) * exp(fac * step(np1,x,y,z))
-      diff(x,y,z) = max(diff(x,y,z), abs(1 - fe(x,y,z)/fnew))
-      fe(x,y,z) = fnew
-      fepe(x,y,z) = log(fnew) - log(pe(x,y,z))
-    end subroutine apply_step
-  END SUBROUTINE molecular_equilibrium
 
   !===============================================================================
   SUBROUTINE compute_energy_and_gas_pressure(self, eh, e, pg)
