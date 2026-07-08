@@ -209,10 +209,10 @@ contains
       do_exp = .false.
       do_log = .false.
       if (self%ilogt) then
-        pvt_xkap = self%log_xkap
+        allocate(pvt_xkap, source=self%log_xkap)
         do_exp = .not. self%ilogl
       else
-        pvt_xkap = self%xkap
+        allocate(pvt_xkap, source=self%xkap)
         do_log = self%ilogl
       endif
 
