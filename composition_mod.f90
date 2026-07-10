@@ -1949,16 +1949,16 @@ contains
     real(dp), dimension(:,:,:), intent(out) :: ne
     real(dp), intent(in) :: tol ! stop criterion
     logical, dimension(:,:,:), allocatable :: ne_converged
-    real(dp), dimension(:,:,:), allocatable :: a, b, c, x, xold, fx, fa, fb, ro, pg
+    real(dp), dimension(:,:,:), allocatable :: a, b, c, x, xold, xprev2, xprev3, fx, fa, fb, ro, pg
     real(dp), dimension(:,:,:), allocatable :: lrho
     integer :: i, nconverged, arr_size, m(3), ix, iy, iz
-    integer, parameter :: nmax = 20 ! max number of iteration
+    integer, parameter :: nmax = 40 ! max number of iteration
     !---------------------------------------------------------------------------
     m = shape(temp)
     arr_size = size(temp)
 
     allocate(ne_converged(m(1),m(2),m(3)), source=.false.) ! cant use mold= on different kinds
-    allocate(x, xold, a, b, c, fx, fa, fb, ro, pg, lrho, mold=temp)
+    allocate(x, xold, xprev2, xprev3, a, b, c, fx, fa, fb, ro, pg, lrho, mold=temp)
 
     if (ne(1,1,1) == 0.0d0) then
       ! Saha approximation for pure atomic hydrogen
@@ -1970,7 +1970,8 @@ contains
 
     call self%thermal_equilibrium(temp, ne, ro)
 
-    where (ro==ro) ! we skip NaN values
+    where (ro==ro .and. ro>0) ! we skip NaN and non-positive values (log() would turn the
+                               ! latter into NaN one step later, uncaught by ro==ro alone)
       fa = log(ro) - lrho
       ne_converged = abs(fa) < tol
       a = log(ne)
@@ -1980,7 +1981,7 @@ contains
 
     call self%thermal_equilibrium(temp, ne, ro)
 
-    where(ro==ro) ! we skip NaN values
+    where(ro==ro .and. ro>0) ! we skip NaN and non-positive values
       fb = log(ro) - lrho
       ne_converged = abs(fb) < tol
     end where
@@ -1989,17 +1990,33 @@ contains
 
     i = 0
     x = b
+    xprev2 = -huge(1d0) ! sentinels: no cycle possible against these on the first checks
+    xprev3 = -huge(1d0)
     !write(*,fmt="(5x,'it [',I2.2,']',1x,'n-converged:',1x,I8,1X,'/ total size: ',I8)") i, nconverged, arr_size
 
     do while (nconverged < arr_size .and. i <= nmax)
       xold = x
-      where (.not. ne_converged .and. ro==ro)
+      where (.not. ne_converged .and. ro==ro .and. ro>0)
         c = fb-fa ! log(ro2) - log(ro1)
         c = (b-a)/c
         x = a - c*fa
         x = max(x, min(a,b)-2.d0)
         x = min(x, max(a,b)+2.d0)
       end where
+
+      ! The secant step above, once clamped to +-2 around the bracket, can
+      ! fall into an exact repeating cycle when f is nearly flat locally
+      ! (fb-fa tiny): the clamp keeps landing back on a value from one of
+      ! the last few iterations instead of narrowing in (observed both
+      ! period-2 and period-3 cycles in practice). Detect either per cell
+      ! and fall back to bisection, which is guaranteed to shrink the
+      ! bracket regardless of which endpoint ends up updated below.
+      where (.not. ne_converged .and. ro==ro .and. ro>0 .and. &
+             (abs(x-xprev2) < tol .or. abs(x-xprev3) < tol))
+        x = 0.5d0*(a+b)
+      end where
+      xprev3 = xprev2
+      xprev2 = xold
 
       ne_converged = abs(x-xold) < tol
       nconverged = count(ne_converged)
@@ -2010,7 +2027,7 @@ contains
       endwhere
 
       call self%thermal_equilibrium(temp, ne, ro)
-      where (ro==ro) ! we skip NaN values
+      where (ro==ro .and. ro>0) ! we skip NaN and non-positive values
         fx = log(ro) - lrho
         where (abs(a-x) < abs(b-x))
           b = x

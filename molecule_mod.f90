@@ -186,7 +186,7 @@ contains
     real(dp), dimension(:,:), allocatable :: rat        ! stage/neutral ratios
     real(dp), dimension(:),   allocatable :: fil, ce    ! phi_i, q_i
     real(dp), dimension(:),   allocatable :: abund, Cm
-    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, fH
+    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, fH, amax
     ! Newton state
     real(dp), dimension(:),   allocatable :: yv, yt, Fv, Ft, stp
     real(dp), dimension(:),   allocatable :: fi, fit, fm, fmt
@@ -312,7 +312,13 @@ contains
 
           pe_c  = pe(x,y,z)
           xne_c = xnecno(x,y,z)
-          fe_c  = fe(x,y,z)
+          ! fe(x,y,z) is a fresh Saha sum every call, but in very cold/thin
+          ! cells an ionization-ladder ratio upstream can underflow/round to
+          ! something non-positive; log() of that is NaN, which this routine
+          ! writes straight back into fe(x,y,z), permanently poisoning every
+          ! later outer iteration for the same cell. Floor it here so a
+          ! single bad upstream sample can't cascade.
+          fe_c  = max(fe(x,y,z), tiny(1d0))
           lnpe  = log(pe_c)
 
           ! --- fixed per-cell data --------------------------------------
@@ -372,6 +378,44 @@ contains
             yv(np1) = log(fe_c)
           endif
 
+          ! Beyond H2, the "assume everything stays atomic" guess can be
+          ! wildly wrong in cold/thin cells where a molecule's equilibrium
+          ! constant so overwhelmingly favors association that its implied
+          ! ln(f_mol) is already deep positive (>>300) before Newton takes a
+          ! single step: the resulting f_mol saturates at the exp() overflow
+          ! guard, its Jacobian entries dwarf every physically-relevant one
+          ! (which span only ~1e-12 to 1), and the linear solve's precision
+          ! is destroyed for every other element from iteration one. A few
+          ! Gauss-Seidel sweeps redistribute each over-saturated molecule's
+          ! excess back onto its constituent elements' guesses (minimal-norm
+          ! correction, weighted by stoichiometry), capping ln(f_mol) at what
+          ! its scarcest constituent could actually supply -- not at 0 (i.e.
+          ! f_mol<=1), which is no tighter than the old, already-rejected
+          ! "f_mol<=1 by construction" cap and just as unphysical for trace
+          ! elements -- so the starting point lands in a regime the damped
+          ! Newton loop can actually refine.
+          do iter=1, 5
+            do m=1, nmol
+              b = Cm(m) - nm1(m)*yv(np1)
+              do k=1, nele(m)
+                b = b + enu(k,m)*yv(eidx(k,m))
+              end do
+              amax = huge(1d0)
+              do k=1, nele(m)
+                amax = min(amax, log(abund(eidx(k,m))) - log(dble(enu(k,m))))
+              end do
+              if (b > amax) then
+                s = 0
+                do k=1, nele(m)
+                  s = s + enu(k,m)**2
+                end do
+                do k=1, nele(m)
+                  yv(eidx(k,m)) = yv(eidx(k,m)) - (b-amax)*enu(k,m)/s
+                end do
+              endif
+            end do
+          end do
+
           ! --- damped Newton to convergence -------------------------------
           call eval(yv, fi, fm, Fv, norm2)
           converged = .false.
@@ -413,7 +457,18 @@ contains
               endif
             end do
 
-            ! Newton step, capped in ln f to stay in the basin
+            ! Newton step, capped in ln f to stay in the basin. Also cap the
+            ! implied step in each molecule's ln(f_mol) argument 'a': a
+            ! molecule couples several elements (nu up to ~4), so its 'a' can
+            ! swing far more per iteration than any single y component does,
+            ! even though every component individually respects step_max.
+            ! Left unchecked, that let a handful of very cold/thin cells
+            ! (M-dwarf-like) run 'a' up past +300 in a couple of iterations,
+            ! saturating f_mol at an astronomically unphysical value whose
+            ! Jacobian entries then swamped the physically-relevant ones
+            ! (spanning only ~1e-12 to 1) in the linear solve, wrecking its
+            ! conditioning so badly that Newton stopped making any progress
+            ! at all on the unrelated elements.
             do i=1, np1
               stp(i) = Fv(i)
             end do
@@ -421,6 +476,13 @@ contains
             smax = 0
             do i=1, np1
               smax = max(smax, abs(stp(i)))
+            end do
+            do m=1, nmol
+              s = nm1(m)*stp(np1)
+              do k=1, nele(m)
+                s = s - enu(k,m)*stp(eidx(k,m))
+              end do
+              smax = max(smax, abs(s))
             end do
             if (smax > step_max) then
               b = step_max/smax
