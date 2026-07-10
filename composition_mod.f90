@@ -1752,7 +1752,7 @@ contains
     endif
 
     allocate(self%temp, self%ne, self%rho, self%pe, self%pg, self%E, self%eh, mold=temp)
-    allocate(self%toth, self%teta, self%dxi, self%lsaha, mold=temp)
+    allocate(self%toth, self%teta, self%dxi, self%lsaha, self%fo, self%vbarh, self%t3nhe, mold=temp)
     allocate(self%e_kT, self%p6, ro, self%stark_pe, self%tothi, self%zero, mold=temp)
     if (present(vmic)) allocate(self%vmic, source=vmic)
 
