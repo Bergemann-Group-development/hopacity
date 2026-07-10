@@ -38,6 +38,8 @@ MODULE composition_mod
     real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
     real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
+    ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid
+    real(dp) :: pca_mu(2)=0, pca_rot(2,2)=0, pca_c0(2)=0, pca_dc(2)=1
   contains
     procedure :: init => injon
     procedure :: load_state_variables
@@ -1480,7 +1482,7 @@ contains
     nf = sp%nnu
     allocate(tothi(m(1),m(2),m(3)))
     allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
-             ni, nj, mold=tothi)
+             ni, nj, idf3, vb3, mold=tothi)
     allocate(lnbase(m(1),m(2),m(3),1))
     allocate(chi_l, eta_l, mold=all_chi)
     allocate(dummy_dep(m(1),m(2),m(3),1), source=0.)
