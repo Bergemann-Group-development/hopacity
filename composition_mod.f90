@@ -16,6 +16,7 @@ MODULE composition_mod
                           ll_add_opacity_equi => add_opacity_equi, voigt_peak, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type
+  USE optab_mod, only: pca_transform_type
   USE osmet_mod, only:osmet
   USE omp_lib
   USE os_mod
@@ -38,8 +39,9 @@ MODULE composition_mod
     real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
     real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
-    ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid
-    real(dp) :: pca_mu(2)=0, pca_rot(2,2)=0, pca_c0(2)=0, pca_dc(2)=1
+    ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
+    ! ferried from init_tabulated_comp down to each rt_patch's opac table
+    type(pca_transform_type) :: pca
   contains
     procedure :: init => injon
     procedure :: load_state_variables

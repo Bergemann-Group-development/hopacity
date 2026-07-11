@@ -3,7 +3,7 @@ MODULE optab_mod
   USE prec_mod
   USE const_mod
   USE spectrum_mod, only: spectrum_type
-  USE op_math_mod, only: searchsorted, pchip_mono
+  USE op_math_mod, only: searchsorted, pchip_mono, pca_grid_2d
   implicit none
 
   !=============================================================================
@@ -26,6 +26,21 @@ MODULE optab_mod
   end type
 
   !=============================================================================
+  ! Orthogonal PCA coordinate transform of (lnT, lnNe):
+  !   c = rot^T ((lnT,lnNe) - mu),   coord_k(i) = c0(k) + (i-1)*dc(k)
+  ! Ties a sampled opacity table's (temp, ne) node grid to the physical
+  ! coordinates it was built from, so a query point can be rotated into the
+  ! same node-index space (see sample_interpolate). Built once, in
+  ! pca_opac_grid, and carried from the composition patch that owns the grid
+  ! down to every rt_patch that samples it (composition_type%pca).
+  !=============================================================================
+  type :: pca_transform_type
+    real(8) :: mu(2)=0            ! mean of (lnT, lnNe)
+    real(8) :: rot(2,2)=0          ! PC directions (unit eigenvectors as columns)
+    real(8) :: c0(2)=0, dc(2)=1    ! min coordinate & spacing along each PC axis
+  end type
+
+  !=============================================================================
   ! Runtime background-opacity sampling table: 3D (wavelength, temp, log ne).
   ! The temp axis is regularly spaced (linear) and the ne axis is regularly
   ! spaced in log(ne); the wavelength axis is irregular. Monotone PCHIP node
@@ -34,12 +49,7 @@ MODULE optab_mod
   !=============================================================================
   type :: sample_optab_type
     integer :: nnu=0, ntemp=0, nne=0
-    ! Table axes are the orthogonal PCA coordinates of (lnT, lnNe):
-    !   c = rot^T ((lnT,lnNe) - mu),   coord_k(i) = c0(k) + (i-1)*dc(k)
-    ! ntemp/nne are the node counts along PC axis 1/2 respectively.
-    real(8) :: mu(2)              ! mean of (lnT, lnNe)
-    real(8) :: rot(2,2)          ! PC directions (unit eigenvectors as columns)
-    real(8) :: c0(2), dc(2)       ! min coordinate & spacing along each PC axis
+    type(pca_transform_type) :: pca       ! (lnT, lnNe) -> table-axis coordinates
     real(8), dimension(:), allocatable :: lam                 ! (nnu) irregular wavelength nodes
     real(4), dimension(:,:,:), allocatable :: val             ! (nnu,ntemp,nne) chi/chi500
     real(4), dimension(:,:,:), allocatable :: dl, dt, de      ! precomputed node slopes
@@ -175,8 +185,8 @@ contains
 
     allocate(lam4(self%nnu), taxis(self%ntemp), eaxis(self%nne))
     lam4  = real(self%lam)
-    taxis = [(real(self%c0(1) + (i-1)*self%dc(1)), i=1, self%ntemp)]
-    eaxis = [(real(self%c0(2) + (i-1)*self%dc(2)), i=1, self%nne)]
+    taxis = [(real(self%pca%c0(1) + (i-1)*self%pca%dc(1)), i=1, self%ntemp)]
+    eaxis = [(real(self%pca%c0(2) + (i-1)*self%pca%dc(2)), i=1, self%nne)]
 
     call node_slopes_dim(lam4 , self%val, 1, self%dl)
     call node_slopes_dim(taxis, self%val, 2, self%dt)
@@ -208,10 +218,10 @@ contains
     integer :: nx, ny, nz, x, y, z, f, k, k1, it, je
     !---------------------------------------------------------------------------
     nx = size(chi500,1); ny = size(chi500,2); nz = size(chi500,3)
-    rd1   = 1.d0 / self%dc(1)
-    rd2   = 1.d0 / self%dc(2)
-    dc1_4 = real(self%dc(1))
-    dc2_4 = real(self%dc(2))
+    rd1   = 1.d0 / self%pca%dc(1)
+    rd2   = 1.d0 / self%pca%dc(2)
+    dc1_4 = real(self%pca%dc(1))
+    dc2_4 = real(self%pca%dc(2))
 
     ! per-frequency wavelength bracket and Hermite value coefficients (once)
     allocate(kl(fs:fe), pl(fs:fe), wc0(fs:fe), wc1(fs:fe), wcm0(fs:fe), wcm1(fs:fe))
@@ -227,17 +237,17 @@ contains
       do y=1, ny
         do x=1, nx
           ! rotate (lnT, lnNe) into PC coordinates, then index each regular PC axis
-          d1 = log(temp(x,y,z)) - self%mu(1)
-          d2 = log(ne(x,y,z))   - self%mu(2)
-          p1 = self%rot(1,1)*d1 + self%rot(2,1)*d2
-          p2 = self%rot(1,2)*d1 + self%rot(2,2)*d2
+          d1 = log(temp(x,y,z)) - self%pca%mu(1)
+          d2 = log(ne(x,y,z))   - self%pca%mu(2)
+          p1 = self%pca%rot(1,1)*d1 + self%pca%rot(2,1)*d2
+          p2 = self%pca%rot(1,2)*d1 + self%pca%rot(2,2)*d2
           ! PC axis 1: direct index + Hermite coefficients (per cell)
-          ft = (p1 - self%c0(1)) * rd1 + 1.d0
+          ft = (p1 - self%pca%c0(1)) * rd1 + 1.d0
           it = min(max(floor(ft), 1), self%ntemp-1)
           tt = real(ft - it)
           call hermite_coefs(tt, dc1_4, pt, tc0, tc1, tcm0, tcm1)
           ! PC axis 2
-          fe_ = (p2 - self%c0(2)) * rd2 + 1.d0
+          fe_ = (p2 - self%pca%c0(2)) * rd2 + 1.d0
           je = min(max(floor(fe_), 1), self%nne-1)
           te = real(fe_ - je)
           call hermite_coefs(te, dc2_4, pe, nc0, nc1, ncm0, ncm1)
@@ -328,6 +338,50 @@ contains
       end do
     end select
   END SUBROUTINE node_slopes_dim
+
+  !===============================================================================
+  ! Build the node grid for the 3D sampling table (sample_optab_type) in the
+  ! orthogonal PCA basis of (lnT, lnNe) over all cells, rather than an
+  ! axis-aligned box in (T, lnNe). Since T and Ne are strongly correlated the
+  ! atmosphere hugs a thin locus; a PC-rotated grid tracks it, dropping the
+  ! unphysical off-diagonal corners that crash the EOS and cutting the node
+  ! count. ldtemp/ldne are the requested lnT/lnNe resolutions, projected onto
+  ! the PC axes for spacing. Callers pass temp/ne as read (real4, any shape)
+  ! and get back ready-to-use (T, ne) node tables plus the transform needed
+  ! later to rotate a query point into table coordinates (see sample_interpolate).
+  !===============================================================================
+  SUBROUTINE pca_opac_grid(temp, ne, ldtemp, ldne, npad, tab_temp, tab_ne, pca, n1, n2)
+    real(4), dimension(:,:,:,:), intent(in) :: temp, ne
+    real(8), intent(in) :: ldtemp, ldne
+    integer, intent(in) :: npad
+    real(8), dimension(:,:,:), allocatable, intent(out) :: tab_temp, tab_ne
+    type(pca_transform_type), intent(out) :: pca
+    integer, intent(out) :: n1, n2
+    real(8), dimension(:), allocatable :: lnT, lnNe
+    real(8) :: p1, p2
+    integer :: i, j, ncell
+    !---------------------------------------------------------------------------
+    ! ---- lnT, lnNe computed once and reused for the whole PCA fit -------------
+    ncell = size(temp)
+    allocate(lnT(ncell), lnNe(ncell))
+    lnT  = reshape(log(dble(temp)), [ncell])
+    lnNe = reshape(log(dble(ne)),   [ncell])
+
+    ! ---- PCA-rotated grid over (lnT, lnNe), npad nodes past the data hull ------
+    call pca_grid_2d(lnT, lnNe, ldtemp, ldne, npad, pca%mu, pca%rot, pca%c0, pca%dc, n1, n2)
+    deallocate(lnT, lnNe)
+
+    ! ---- build the node grid in PC space, map back to (T, ne) -----------------
+    allocate(tab_temp(n1, n2, 1), tab_ne(n1, n2, 1))
+    do j=1, n2
+    do i=1, n1
+      p1 = pca%c0(1) + (i-1)*pca%dc(1)
+      p2 = pca%c0(2) + (j-1)*pca%dc(2)
+      tab_temp(i,j,1) = exp(pca%mu(1) + pca%rot(1,1)*p1 + pca%rot(1,2)*p2)   ! exp(lnT)
+      tab_ne  (i,j,1) = exp(pca%mu(2) + pca%rot(2,1)*p1 + pca%rot(2,2)*p2)   ! exp(lnNe)
+    end do
+    end do
+  END SUBROUTINE pca_opac_grid
 
   !===============================================================================
   ! Cubic Hermite basis coefficients for local parameter t in [0,1] on an

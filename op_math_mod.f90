@@ -1168,4 +1168,65 @@ contains
       newy(j) = (1.0 - p)*yy(i1) + p*yy(i2) + (t3 - 2.0*t2 + t1)*dydx(i1) + (t3-t2)*dydx(i2)
     end do
   END SUBROUTINE pchip_mono4_reg_period
+
+  !===============================================================================
+  ! Orthogonal PCA basis of 2D scatter data (x1,x2), e.g. (lnT, lnNe) samples.
+  ! Returns the mean, rotation into principal-axis coordinates, and the origin/
+  ! spacing/node count of a rectangular grid laid out along those axes with
+  ! projected resolution d1,d2 (in x1,x2 units) and npad extra nodes past the
+  ! data hull on each end. Caller passes x1,x2 pre-transformed (e.g. logged)
+  ! so the transform is computed once rather than repeated per moment/extent.
+  !===============================================================================
+  SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2)
+    real(8), intent(in)  :: x1(:), x2(:)     ! sample coordinates, e.g. (lnT, lnNe)
+    real(8), intent(in)  :: d1, d2           ! requested resolution along x1, x2
+    integer, intent(in)  :: npad             ! extra nodes past the data hull, each end
+    real(8), intent(out) :: mu(2), rot(2,2), c0(2), dc(2)
+    integer, intent(out) :: n1, n2
+    real(8) :: a, b, d, tr, disc, l1, l2, tiny_b, vn
+    real(8) :: pmin1, pmax1, pmin2, pmax2
+    real(8), dimension(size(x1)) :: p1, p2
+    integer :: n, np
+    !-------------------------------------------------------------------------
+    n = size(x1)
+
+    ! ---- mean and 2x2 covariance of (x1, x2) ----------------------------------
+    mu(1) = sum(x1) / n
+    mu(2) = sum(x2) / n
+    a = sum((x1 - mu(1))**2) / n                      ! var(x1)
+    d = sum((x2 - mu(2))**2) / n                      ! var(x2)
+    b = sum((x1 - mu(1)) * (x2 - mu(2))) / n          ! cov
+
+    ! ---- closed-form symmetric 2x2 eigendecomposition -------------------------
+    tr   = a + d
+    disc = sqrt(max(((a - d)*0.5d0)**2 + b*b, 0.d0))
+    l1   = tr*0.5d0 + disc                         ! larger eigenvalue -> PC1
+    l2   = tr*0.5d0 - disc
+    tiny_b = 1.d-30 * (abs(a) + abs(d) + 1.d-300)
+    if (abs(b) > tiny_b) then
+      rot(:,1) = [b, l1 - a];  vn = sqrt(sum(rot(:,1)**2));  rot(:,1) = rot(:,1)/vn
+      rot(:,2) = [b, l2 - a];  vn = sqrt(sum(rot(:,2)**2));  rot(:,2) = rot(:,2)/vn
+    else                                           ! already diagonal: axis-aligned
+      if (a >= d) then
+        rot(:,1) = [1.d0, 0.d0];  rot(:,2) = [0.d0, 1.d0]
+      else
+        rot(:,1) = [0.d0, 1.d0];  rot(:,2) = [1.d0, 0.d0]
+      endif
+    endif
+
+    ! ---- spacing (projected resolution) and extent along each PC axis ---------
+    dc(1) = sqrt((rot(1,1)*d1)**2 + (rot(2,1)*d2)**2)
+    dc(2) = sqrt((rot(1,2)*d1)**2 + (rot(2,2)*d2)**2)
+
+    p1 = rot(1,1)*(x1 - mu(1)) + rot(2,1)*(x2 - mu(2))
+    p2 = rot(1,2)*(x1 - mu(1)) + rot(2,2)*(x2 - mu(2))
+    pmin1 = minval(p1);  pmax1 = maxval(p1)
+    pmin2 = minval(p2);  pmax2 = maxval(p2)
+
+    np    = max(npad, 0)                            ! one node past the data hull each end
+    c0(1) = pmin1 - np*dc(1)
+    c0(2) = pmin2 - np*dc(2)
+    n1    = ceiling((pmax1 - pmin1)/dc(1)) + 1 + 2*np
+    n2    = ceiling((pmax2 - pmin2)/dc(2)) + 1 + 2*np
+  END SUBROUTINE pca_grid_2d
 END MODULE op_math_mod
