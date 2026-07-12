@@ -560,7 +560,7 @@ contains
     end do
 
     if (nfail > 0) then
-      print *, 'molecular_equilibrium: ', nfail, ' points not converged after', &
+      print *, 'molecular_equilibrium: ', nfail, '/', nx*ny*nz, ' points not converged after', &
         niter_max, ' iterations; worst scaled residual:', worst
     endif
 

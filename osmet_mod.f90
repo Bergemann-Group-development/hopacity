@@ -4,6 +4,7 @@ MODULE osmet_mod
   USE prec_mod
   USE const_mod
   USE op_math_mod
+  USE interpol_mod, only: pchip_mono
   implicit none
 
   real(dp) :: eosmet=0.5

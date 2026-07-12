@@ -17,6 +17,7 @@ MODULE hvcs_mod
   !  frequency, matching the convention of hvoigt/stark1; the caller applies the
   !  populations (nlo*Bij).
   USE const_mod, only: cc
+  USE interpol_mod, only: pchip_slopes, hermite_value
   implicit none
   private
 
@@ -291,60 +292,33 @@ contains
 
   !====================================================================
   !  Piecewise cubic HERMITE interpolation, C1 continuous. Used for the grid
-  !  axes (NH,T,Ne). Each node k carries a slope d(k) = the derivative at a(k) of
-  !  the quadratic through the three nearest nodes (one-sided at the ends); that
-  !  slope is the SAME whichever of the two bracketing intervals is evaluated, so
-  !  value AND first derivative are continuous at every node. Unlike the 3-point
-  !  qpol or a 4-point Lagrange (whose stencil shifts at each node -> only C0,
-  !  leaving slope kinks that print as wiggly wings), this scheme has no node
-  !  kinks. a(:) ascending; inputs on the grid axes are pre-clamped to
+  !  axes (NH,T,Ne). Node slopes are the canonical monotone (Fritsch-Carlson
+  !  harmonic-mean) rule shared with the rest of the code via interpol_mod
+  !  (pchip_slopes); the slope at each node is single-valued, so value AND first
+  !  derivative are continuous at every node (no wiggly wings from stencil
+  !  shifts). a(:) ascending; inputs on the grid axes are pre-clamped to
   !  [a(1),a(no)] so no extrapolation occurs. Falls back to qpol for <3 nodes.
   REAL(4) FUNCTION qpol4(x, a, f, no) result(res)
     integer, intent(in) :: no
     real(4), intent(in) :: x, a(no), f(no)
     integer :: j, kk
-    real(4) :: h, t, t2, t3, dl, dr, h00, h10, h01, h11
+    real(4) :: h, t, dx(no-1), dy(no-1), dydx(no)
     !------------------------------------------------------------------
     if (no < 3) then
       res = qpol(x, a, f, no)
       return
     endif
+    !  Canonical monotone node slopes over the whole axis, then the cubic
+    !  Hermite basis on t in [0,1] using the two bracketing node slopes.
+    call pchip_slopes(a, f, 1, no, dx, dy, dydx)
     !  Bracketing interval [a(j),a(j+1)] (largest j with a(j) <= x, in [1,no-1]).
     j = 1
     do kk = 1, no-1
       if (x >= a(kk)) j = kk
     enddo
-    !  Node slopes at the two interval ends (shared with the neighbouring
-    !  intervals -> C1), then the cubic Hermite basis on t in [0,1].
-    dl = node_slope(a, f, no, j)
-    dr = node_slope(a, f, no, j+1)
     h  = a(j+1) - a(j)
     t  = (x - a(j)) / h
-    t2 = t*t
-    t3 = t2*t
-    h00 =  2.0*t3 - 3.0*t2 + 1.0
-    h10 =      t3 - 2.0*t2 + t
-    h01 = -2.0*t3 + 3.0*t2
-    h11 =      t3 -     t2
-    res = h00*f(j) + h10*h*dl + h01*f(j+1) + h11*h*dr
+    res = hermite_value(t, h, f(j), f(j+1), dydx(j), dydx(j+1))
   END FUNCTION qpol4
-
-  !====================================================================
-  !  Slope at node k: derivative at a(k) of the quadratic through the three
-  !  nearest nodes (centred for interior nodes, one-sided at the ends). Single-
-  !  valued per node, which is what gives qpol4 its C1 continuity.
-  REAL(4) FUNCTION node_slope(a, f, no, k) result(d)
-    integer, intent(in) :: no, k
-    real(4), intent(in) :: a(no), f(no)
-    integer :: i0
-    real(4) :: d12, d23, d123, xe
-    !------------------------------------------------------------------
-    i0   = min(max(k-1, 1), no-2)              ! left index of the 3-node triplet
-    d12  = (f(i0+1) - f(i0))   / (a(i0+1) - a(i0))
-    d23  = (f(i0+2) - f(i0+1)) / (a(i0+2) - a(i0+1))
-    d123 = (d23 - d12) / (a(i0+2) - a(i0))
-    xe   = a(k)
-    d    = d12 + d123*((xe - a(i0)) + (xe - a(i0+1)))
-  END FUNCTION node_slope
 
 END MODULE hvcs_mod

@@ -2,7 +2,7 @@ MODULE hprofl_mod
   USE bbtrans_mod, only: voigt_function2, bbtrans_type, disable_ga, disable_stark, disable_vdw
   USE prec_mod, only: RYD
   USE const_mod
-  USE op_math_mod, only: interp1d_sorted
+  USE interpol_mod, only: interp1d_sorted
   USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, phi_vcs, ensure_vcs_loaded
   implicit none
 

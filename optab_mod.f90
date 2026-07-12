@@ -3,7 +3,8 @@ MODULE optab_mod
   USE prec_mod
   USE const_mod
   USE spectrum_mod, only: spectrum_type
-  USE op_math_mod, only: searchsorted, pchip_mono, pca_grid_2d
+  USE op_math_mod, only: searchsorted, pca_grid_2d
+  USE interpol_mod, only: hermite_coefs, pchip_mono
   implicit none
 
   !=============================================================================
@@ -382,27 +383,5 @@ contains
     end do
     end do
   END SUBROUTINE pca_opac_grid
-
-  !===============================================================================
-  ! Cubic Hermite basis coefficients for local parameter t in [0,1] on an
-  ! interval of width h. The interpolated value on the interval is
-  !   val = c0*y0 + c1*y1 + cm0*m0 + cm1*m1
-  ! with endpoint values y0,y1 and endpoint slopes m0,m1 (formula as in
-  ! op_math_mod::pchip_mono4). p = 3t^2 - 2t^3 is also returned for value-basis
-  ! carrying of auxiliary (cross-axis) slope fields: g = (1-p)*g0 + p*g1.
-  !===============================================================================
-  PURE SUBROUTINE hermite_coefs (t, h, p, c0, c1, cm0, cm1)
-    real(4), intent(in) :: t, h
-    real(4), intent(out) :: p, c0, c1, cm0, cm1
-    real(4) :: t2, t3
-    !---------------------------------------------------------------------------
-    t2 = t*t
-    t3 = t2*t
-    p   = 3.0*t2 - 2.0*t3
-    c0  = 1.0 - p
-    c1  = p
-    cm0 = h*(t3 - 2.0*t2 + t)
-    cm1 = h*(t3 - t2)
-  END SUBROUTINE hermite_coefs
 
 END MODULE optab_mod

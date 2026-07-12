@@ -1,5 +1,6 @@
 MODULE handyfuncs_mod
   USE op_math_mod
+  USE interpol_mod, only: interp1d
   USE os_mod
   implicit none
 

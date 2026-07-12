@@ -2,7 +2,7 @@ MODULE trans_mod
   USE const_mod
   USE bbtrans_mod
   USE op_math_mod, only: searchsorted
-  USE mmath_mod, only: hermite_interpolation, hermite_derivative
+  USE interpol_mod, only: hermite_interpolation, hermite_derivative
   USE handyfuncs_mod, only: symmetric_log_grid
   ! *******************************************************************
   !
