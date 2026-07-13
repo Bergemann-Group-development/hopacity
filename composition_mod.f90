@@ -5,7 +5,7 @@ MODULE composition_mod
   USE mmath_mod, only: refsor
   USE handyfuncs_mod
   USE element_mod
-  USE ion_mod, only: ion_type, debye_shield
+  USE ion_mod, only: ion_type, particle_type, debye_shield
   USE level_mod, only: level_type, wcalc
   USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
@@ -79,10 +79,14 @@ MODULE composition_mod
   end type
 
   type, public :: departure_pointer_t
-    character(len=6) :: key=''
+    character(len=6) :: key=''  ! species key: element symbol ('Mg') or molecule formula ('H2O')
+    logical :: is_set=.false.   ! an unset key must never match anything
     real(4), pointer :: mem(:,:,:,:) => null()
     real(8), allocatable :: ev(:)
     integer :: nlevel=0
+  contains
+    procedure :: set_key => departure_set_key
+    procedure :: matches => departure_matches
   end type departure_pointer_t
 
   character(128), public, save :: exclude_elements='', only_elements=''
@@ -119,6 +123,39 @@ MODULE composition_mod
     ' VI  ', ' VII ', ' VIII', ' IX  ', ' X   ' ]
 
 contains
+
+  !===============================================================================
+  ! Set the species key of a departure set.  An empty id leaves the set unmatched.
+  !-------------------------------------------------------------------------------
+  SUBROUTINE departure_set_key(self, id)
+    class(departure_pointer_t) :: self
+    character(len=*), intent(in) :: id
+    !---------------------------------------------------------------------------
+    self%key = adjustl(id)
+    self%is_set = len_trim(self%key) > 0
+  END SUBROUTINE departure_set_key
+
+  !===============================================================================
+  ! True when this departure set belongs to the species of ptc.  Ion ids are
+  ! '<Sym> <ROMAN>' (H- is 'H -', so it too carries the blank) while molecule ids
+  ! never contain a blank, so the token before the first blank is the element
+  ! symbol and a blank-free id is a whole molecule.  The match is at species level:
+  ! key 'Mg' covers Mg I, Mg II, ... -- dep%ev spans every stage, tagged 100*stage --
+  ! but never MgH or Mn I.
+  !-------------------------------------------------------------------------------
+  LOGICAL FUNCTION departure_matches(self, ptc) RESULT(hit)
+    class(departure_pointer_t), intent(in) :: self
+    class(particle_type), intent(in) :: ptc
+    character(len=6) :: pid
+    integer :: ib
+    !---------------------------------------------------------------------------
+    hit = .false.
+    if (.not. self%is_set) return
+    pid = adjustl(ptc%id)
+    ib = index(trim(pid), ' ')
+    if (ib > 0) pid = pid(1:ib-1)
+    hit = uppercase(trim(pid)) == uppercase(trim(self%key))
+  END FUNCTION departure_matches
 
   !===============================================================================
   SUBROUTINE injon(self, absdat_file, abund_file, FeH, &
@@ -1107,10 +1144,12 @@ contains
       dep => null()
       if (.not. departures_present) return
 
-      di = findloc([(index(ptc%id, trim(departures(i)%key))>0, i=1, size(departures))], .true., 1)
-      if (di > 0) then
-        dep => departures(di)
-      endif
+      do di=1, size(departures)
+        if (departures(di)%matches(ptc)) then
+          dep => departures(di)
+          exit
+        endif
+      end do
     end subroutine get_departure_coefficients
 
     ! --------------------------------------------------------------------------
@@ -1139,7 +1178,7 @@ contains
       ! ptc%part is actually the log partition
       inv_part = ptc%n * exp(-ptc%part)
       dxij = real(self%dxi) * (ptc%j-1)
-      call get_departure_coefficients(ion, dep)
+      call get_departure_coefficients(ptc, dep)
 
       do l=1, ptc%nline
         line => ptc%line(l)
@@ -1147,10 +1186,9 @@ contains
         call line%get_center(sp%lam, dlam, f0)
         if (f0 == 0) cycle
 
-        if (associated(dep) .and. .true.) then
-          line%i = find_closest(dep%ev, line%lower_ev)
-          line%j = find_closest(dep%ev, line%lower_ev + H_E*line%nu0)
-          !print *, 'attached line to levels ', line%lower_ev, dep%ev(line%i), line%lower_ev + H_E*line%nu0, dep%ev(line%j)
+        if (associated(dep)) then
+          line%i = find_closest(dep%ev, 100*ptc%j + line%lower_ev)
+          line%j = find_closest(dep%ev, 100*ptc%j + line%lower_ev + H_E*line%nu0)
         endif
 
         do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
@@ -1593,8 +1631,13 @@ contains
       !-------------------------------------------------------------------------
       dep => null()
       if (.not. departures_present) return
-      di = findloc([(index(ptc%id, trim(departures(i)%key))>0, i=1, size(departures))], .true., 1)
-      if (di > 0) dep => departures(di)
+
+      do di=1, size(departures)
+        if (departures(di)%matches(ptc)) then
+          dep => departures(di)
+          exit
+        endif
+      end do
     end subroutine get_departure_coefficients
 
     ! --------------------------------------------------------------------------
@@ -1635,8 +1678,8 @@ contains
 
           if (associated(dep)) then
             do l=1, ll_n
-              sll%lev_i(l) = find_closest(dep%ev, real(sll%lower_ev(l), 8))
-              sll%lev_j(l) = find_closest(dep%ev, real(sll%lower_ev(l), 8) + H_E*sll%nu0(l))
+              sll%lev_i(l) = find_closest(dep%ev, 100*ptc%j + real(sll%lower_ev(l), 8))
+              sll%lev_j(l) = find_closest(dep%ev, 100*ptc%j + real(sll%lower_ev(l), 8) + H_E*sll%nu0(l))
             end do
             ! arithmetic kernel on a uniform log(lambda) grid, else the general march
             if (sp%equidistant) then
