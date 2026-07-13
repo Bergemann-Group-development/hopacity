@@ -177,23 +177,31 @@ contains
     class(molec_type), pointer :: mol
     type(ion_type), pointer :: pt
     integer :: i, j, k, m, iq, nx, ny, nz, np1, nions, nmol, mxc
-    integer :: x, y, z, iter, nfail, iH, iH2, qlo, qhi
+    integer :: x, y, z, iter, nfail, qlo, qhi
     ! fixed stoichiometry: per-constituent root index / charge offset, and
     ! per-molecule lists of distinct solve elements with their multiplicity
     integer, dimension(:),   allocatable :: ncons, nele, nm1, qmol
     integer, dimension(:,:), allocatable :: cidx, cq, eidx, enu
+    ! transpose of the molecule->element map, for the scalar init solves
+    integer, dimension(:),   allocatable :: nmele
+    integer, dimension(:,:), allocatable :: meli, melnu
     ! per-cell constants
     real(dp), dimension(:,:), allocatable :: rat        ! stage/neutral ratios
     real(dp), dimension(:),   allocatable :: fil, ce    ! phi_i, q_i
-    real(dp), dimension(:),   allocatable :: abund, Cm
-    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, fH, amax
+    real(dp), dimension(:),   allocatable :: abund, Cm, avail, lockf, yprev
+    integer,  dimension(:),   allocatable :: limel, limnu, plim
+    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, flock
     ! Newton state
     real(dp), dimension(:),   allocatable :: yv, yt, Fv, Ft, stp
     real(dp), dimension(:),   allocatable :: fi, fit, fm, fmt
     real(dp), dimension(:,:), allocatable :: Amat
     real(dp) :: norm2, norm2t, errf, lam, smax, worst
-    logical  :: converged
+    real(dp) :: y1, worsty
+    integer  :: sweep
+    logical  :: converged, badstep
     integer,  parameter :: niter_max = 100
+    integer,  parameter :: nround    = 2          ! allocation auction rounds
+    integer,  parameter :: nsweep    = 32         ! Gauss-Seidel sweeps/round
     real(dp), parameter :: tol       = 1d-10      ! scaled residual target
     real(dp), parameter :: tol_stall = 1d-6       ! acceptable when stalled
     real(dp), parameter :: step_max  = 3d0        ! cap on |d ln f| per step
@@ -284,17 +292,25 @@ contains
       end do
     end do
 
-    ! H and H2 drive the initial guess (harmless to skip if absent)
-    iH = 0
-    iH2 = 0
+    ! transpose of the molecule->element map: for every solve element the
+    ! molecules that contain it, and with which multiplicity (used by the
+    ! scalar Gauss-Seidel solves of the initial guess)
+    allocate(nmele(nions), meli(nmol,nions), melnu(nmol,nions))
     do i=1, nions
-      if (trim(ions(i)%p%id) == 'H I') iH = i
+      nmele(i) = 0
     end do
     do m=1, nmol
-      if (trim(molecules(m)%id) == 'H2') iH2 = m
+      do k=1, nele(m)
+        i = eidx(k,m)
+        nmele(i) = nmele(i) + 1
+        meli(nmele(i), i)  = m
+        melnu(nmele(i), i) = enu(k,m)
+      end do
     end do
 
     allocate(rat(qlo:qhi, nions), fil(nions), ce(nions), abund(nions), Cm(nmol))
+    allocate(avail(nions), lockf(nmol), limel(nmol), limnu(nmol), plim(nmol))
+    allocate(yprev(np1))
     allocate(yv(np1), yt(np1), Fv(np1), Ft(np1), stp(np1))
     allocate(fi(nions), fit(nions), fm(nmol), fmt(nmol), Amat(np1,np1))
 
@@ -351,68 +367,209 @@ contains
             end do
           end do
 
-          ! ln K of each molecule in f-units, up to the -(n-1)*ye term
+          ! ln K of each molecule in f-units, up to the -(n-1)*ye term.
+          ! A charged constituent's ladder ratio can underflow to exactly 0
+          ! in extreme cells; the floor keeps log() finite (the molecule
+          ! then simply drops out) instead of injecting -Inf into Cm.
           do m=1, nmol
             b = molecules(m)%dis(x,y,z) + nm1(m)*lnpe
             do j=1, ncons(m)
-              if (cq(j,m) /= 0) b = b + log(rat(cq(j,m), cidx(j,m)))
+              if (cq(j,m) /= 0) b = b + log(max(rat(cq(j,m), cidx(j,m)), 1d-300))
             end do
             Cm(m) = b
           end do
 
           ! --- initial guess ----------------------------------------------
-          ! Saha neutral fractions, refined for H by solving the H/H2
-          ! quadratic  phi_H*f_H + 2K*f_H^2 = A_H  (stable root), with the
-          ! electron budget adjusted for the hydrogen thus removed
-          do i=1, nions
-            yv(i) = log(abund(i)/fil(i))
+          ! Stoichiometric allocation of super-saturated molecules.  In
+          ! cold cells a molecule's equilibrium so overwhelmingly favors
+          ! association (dissociation energies of 100..500 kT) that
+          ! essentially all of its scarcest constituent ends up bound.
+          ! Which molecule binds which element is a branch choice that
+          ! neither relaxation nor the damped Newton below can repair once
+          ! it is made wrongly: with the atomic fractions underflowed,
+          ! moving budget from one molecule to another passes through
+          ! states of larger |F| (a genuine non-monotone barrier), so an
+          ! Armijo-damped iteration can never cross it -- it stalls with
+          ! some residual pinned at a finite fraction of an abundance.
+          !
+          ! The allocation is found as a small auction, run in nround
+          ! rounds.  Within a round, molecules repeatedly bid for their
+          ! constituents: a molecule's bid is the excess of its ln f_mol --
+          ! evaluated at the current element depths -- over what its
+          ! scarcest remaining budget could supply.  The highest bidder
+          ! locks (1 - 1e-3 of, so budgets stay positive) the scarcest
+          ! remaining budget; its abundant constituents are re-seeded from
+          ! their leftover budgets, while the limiting element is seeded by
+          ! inverting ln f_lock = c_m + sum_k nu_k y_k, which is essential:
+          ! seeded from its 1e-3 leftover instead, the first sweep below
+          ! would solve the molecule's abundant partner against a molecule
+          ! term that is orders of magnitude too large and re-pin the wrong
+          ! branch (the classic f_CO = A_C / f_CO = A_O seesaw).
+          !
+          ! One round is not enough, because early bids are evaluated
+          ! against not-yet-deepened partners: SiO outbids H2O for O while
+          ! H is still at full atomic strength, steals Si's budget, and
+          ! starves SiS even though S has nowhere else to go.  The second
+          ! round therefore re-ranks all bids using each element's depth
+          ! from the end of the previous round (excluding, for each
+          ! molecule, the element it locked itself, whose depth it caused).
+          ! Crucially the carried depths are the ones refined by the
+          ! Gauss-Seidel sweeps below, not the raw auction seeds: an
+          ! auction-internal inversion can be badly stale (computed before
+          ! a partner deepened) or reflect a starved crumb of a leftover
+          ! budget, and one such fake price handed to the next round makes
+          ! the wrong molecule win an element outright.  The sweeps produce
+          ! self-consistent depths for whatever allocation the round chose,
+          ! which is exactly what a price should be.
+          do m=1, nmol
+            plim(m) = 0
+          end do
+          do i=1, np1
+            yprev(i) = huge(1d0)
           end do
           yv(np1) = log(fe_c)
-          if (iH > 0 .and. iH2 > 0) then
-            b  = exp(min(Cm(iH2) - yv(np1), 600d0)) ! K = f_H2/f_H^2
-            s  = sqrt(fil(iH)**2 + 8d0*b*abund(iH))
-            fH = 2d0*abund(iH) / (fil(iH) + s)
-            fe_c = fe_c + (fH - abund(iH)/fil(iH))*ce(iH)
-            fe_c = max(fe_c, 1d-3*xne_c, tiny(1d0))
-            yv(iH)  = log(fH)
-            yv(np1) = log(fe_c)
-          endif
 
-          ! Beyond H2, the "assume everything stays atomic" guess can be
-          ! wildly wrong in cold/thin cells where a molecule's equilibrium
-          ! constant so overwhelmingly favors association that its implied
-          ! ln(f_mol) is already deep positive (>>300) before Newton takes a
-          ! single step: the resulting f_mol saturates at the exp() overflow
-          ! guard, its Jacobian entries dwarf every physically-relevant one
-          ! (which span only ~1e-12 to 1), and the linear solve's precision
-          ! is destroyed for every other element from iteration one. A few
-          ! Gauss-Seidel sweeps redistribute each over-saturated molecule's
-          ! excess back onto its constituent elements' guesses (minimal-norm
-          ! correction, weighted by stoichiometry), capping ln(f_mol) at what
-          ! its scarcest constituent could actually supply -- not at 0 (i.e.
-          ! f_mol<=1), which is no tighter than the old, already-rejected
-          ! "f_mol<=1 by construction" cap and just as unphysical for trace
-          ! elements -- so the starting point lands in a regime the damped
-          ! Newton loop can actually refine.
-          do iter=1, 5
+          do iter=1, nround
+            ! fresh budgets and atomic seeds each round (the -600 floor
+            ! covers phi_i overflowing to Inf in many-stage ladders of
+            ! hot, thin cells, where log() would seed y = -Inf and strand
+            ! every refinement below at -Inf as well)
+            do i=1, nions
+              avail(i) = abund(i)
+              yv(i) = max(log(abund(i)/fil(i)), -600d0)
+            end do
             do m=1, nmol
+              lockf(m) = -1d0
+            end do
+
+            do ! auction: highest bidder locks its scarcest budget
+              iq = 0
+              b = 0
+              do m=1, nmol
+                if (lockf(m) >= 0d0) cycle
+                s = Cm(m) - nm1(m)*yv(np1)
+                flock = huge(1d0)
+                do k=1, nele(m)
+                  i = eidx(k,m)
+                  y1 = yv(i)
+                  if (i /= plim(m)) y1 = min(y1, yprev(i))
+                  s = s + enu(k,m)*y1
+                  flock = min(flock, log(avail(i)) - log(dble(enu(k,m))))
+                end do
+                s = s - flock
+                if (s > b) then
+                  iq = m
+                  b = s
+                endif
+              end do
+              if (iq == 0) exit
+
+              flock = huge(1d0)
+              do k=1, nele(iq)
+                if (avail(eidx(k,iq))/enu(k,iq) < flock) then
+                  flock = avail(eidx(k,iq))/enu(k,iq)
+                  limel(iq) = eidx(k,iq)
+                  limnu(iq) = enu(k,iq)
+                endif
+              end do
+              flock = (1d0 - 1d-3)*flock
+              lockf(iq) = flock
+              if (flock <= 0d0) cycle
+              do k=1, nele(iq)
+                i = eidx(k,iq)
+                avail(i) = avail(i) - enu(k,iq)*flock
+                yv(i) = min(yv(i), max(log(avail(i)/fil(i)), -600d0))
+              end do
+              b = Cm(iq) - nm1(iq)*yv(np1)
+              do k=1, nele(iq)
+                if (eidx(k,iq) /= limel(iq)) b = b + enu(k,iq)*yv(eidx(k,iq))
+              end do
+              i = limel(iq)
+              s = (log(lockf(iq)) - b) / limnu(iq)
+              yv(i) = min(yv(i), max(s, -600d0))
+            end do
+
+          ! Refine with Gauss-Seidel sweeps in which every element solves
+          ! its own scalar conservation equation exactly, holding the
+          ! other elements and ye fixed:
+          !
+          !   H(y) = phi_i e^y + sum_m nu_im f_m(y)  =  A_i .
+          !
+          ! Solved as ln H(y) = ln A_i: ln of a positive sum of increasing
+          ! exponentials is increasing and convex with slope in [1, nu_max],
+          ! so undamped Newton converges globally and fast (the step cap
+          ! only guards exp overflow).  An earlier heuristic here only
+          ! redistributed the excess of oversaturated molecules among their
+          ! constituents; with several molecules sharing an element it
+          ! could push that element's y so low that e^y and all its
+          ! molecular terms underflowed to zero, handing the damped Newton
+          ! below an exactly singular Jacobian row and a residual pinned at
+          ! -A_i (the persistent "scaled residual 1.0" stalls).  The exact
+          ! scalar solves cannot underflow that way, because the molecular
+          ! term itself must balance A_i.  Charge conservation updates ye
+          ! once per sweep (damped fixed point, floored like the seed fe).
+          ! Two-element budget exchanges (Si moving between SiO and SiS)
+          ! relax with a contraction factor that can approach 1, hence the
+          ! generous sweep count; each sweep is a handful of scalar ops.
+            do sweep=1, nsweep
+              worsty = 0
+              do i=1, nions
+                y1 = yv(i)
+                call solve_element(i)
+                worsty = max(worsty, abs(yv(i) - y1))
+              end do
+
+              ! Two elements coupled through a molecule are then re-solved
+              ! jointly: single-element relaxation exchanges budget between
+              ! two molecules of a shared element (Si moving between SiO
+              ! and SiS) at under an e-fold per sweep across gaps of
+              ! hundreds, and it is exactly this one-at-a-time structure
+              ! that creates the two locally stable branches of the CO
+              ! seesaw.  The pair subsystem itself has an SPD Jacobian --
+              ! a strictly monotone 2D field -- hence a unique root and no
+              ! branch ambiguity at all; the nested Schur solve below finds
+              ! it from any starting point.
+              do m=1, nmol
+                if (nele(m) /= 2) cycle
+                b = yv(eidx(1,m))
+                s = yv(eidx(2,m))
+                call solve_pair(eidx(1,m), eidx(2,m))
+                worsty = max(worsty, abs(yv(eidx(1,m))-b), abs(yv(eidx(2,m))-s))
+              end do
+
+            ! ye from charge conservation at the current element guesses
+            s = xne_c
+            do i=1, nions
+              s = s + exp(yv(i))*ce(i)
+            end do
+            do m=1, nmol
+              if (qmol(m) == 0) cycle
               b = Cm(m) - nm1(m)*yv(np1)
-              do k=1, nele(m)
-                b = b + enu(k,m)*yv(eidx(k,m))
+              do j=1, nele(m)
+                b = b + enu(j,m)*yv(eidx(j,m))
               end do
-              amax = huge(1d0)
-              do k=1, nele(m)
-                amax = min(amax, log(abund(eidx(k,m))) - log(dble(enu(k,m))))
-              end do
-              if (b > amax) then
-                s = 0
-                do k=1, nele(m)
-                  s = s + enu(k,m)**2
-                end do
-                do k=1, nele(m)
-                  yv(eidx(k,m)) = yv(eidx(k,m)) - (b-amax)*enu(k,m)/s
-                end do
+              s = s + qmol(m)*exp(min(b, 600d0))
+            end do
+            s = max(s, 1d-3*xne_c, tiny(1d0))
+            b = yv(np1)
+            yv(np1) = 0.5d0*(b + log(s))
+            worsty = max(worsty, abs(yv(np1) - b))
+            if (worsty < 1d-10) exit
+            end do
+            fe_c = exp(yv(np1))
+
+            ! remember this round's outcome: sweep-refined depths become
+            ! the prices of the next round's auction, and each molecule is
+            ! exempted from the price of the element it locked itself
+            do m=1, nmol
+              if (lockf(m) >= 0d0) then
+                plim(m) = limel(m)
+              else
+                plim(m) = 0
               endif
+            end do
+            do i=1, np1
+              yprev(i) = yv(i)
             end do
           end do
 
@@ -473,6 +630,16 @@ contains
               stp(i) = Fv(i)
             end do
             call lineq(Amat, stp, np1)
+            ! lineq has no singularity check: a zero pivot yields NaN. Such
+            ! a step must never reach the state (a NaN trial would pass the
+            ! backtracking loop at lam_min and poison yv, and through the
+            ! write-back fe(x,y,z), permanently); keep the last finite
+            ! state and let the stall test below judge it instead.
+            badstep = .false.
+            do i=1, np1
+              if (stp(i) /= stp(i)) badstep = .true.
+            end do
+            if (badstep) exit
             smax = 0
             do i=1, np1
               smax = max(smax, abs(stp(i)))
@@ -501,6 +668,13 @@ contains
               if (norm2t <= (1d0 - 1d-4*lam)*norm2 .or. lam <= lam_min) exit
               lam = 0.5d0*lam
             end do
+
+            ! a non-finite trial slipped through at lam_min: restore fe_c
+            ! (eval clobbered it) and keep the last finite state
+            if (norm2t /= norm2t) then
+              fe_c = exp(yv(np1))
+              exit
+            endif
 
             ! accept the (possibly damped) step
             smax = 0
@@ -567,6 +741,106 @@ contains
     call trace%end(itimer)
 
   contains
+    !---------------------------------------------------------------------------
+    ! Solve element ii's scalar conservation equation over yv(ii), all other
+    ! unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
+    ! Newton on ln H - ln A: ln of a positive sum of increasing exponentials
+    ! is increasing and convex with slope in [1, nu_max], so this converges
+    ! globally; the step cap only guards exp overflow.
+    !---------------------------------------------------------------------------
+    subroutine solve_element(ii)
+      integer, intent(in) :: ii
+      real(dp) :: yy1, HH, dHH, bb, ss, ddy
+      integer  :: kk, mm, jj, itn
+      !-------------------------------------------------------------------------
+      yy1 = yv(ii)
+      do itn=1, 50
+        HH  = fil(ii)*exp(yy1)
+        dHH = HH
+        do kk=1, nmele(ii)
+          mm = meli(kk,ii)
+          bb = Cm(mm) - nm1(mm)*yv(np1)
+          do jj=1, nele(mm)
+            if (eidx(jj,mm) == ii) then
+              bb = bb + enu(jj,mm)*yy1
+            else
+              bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
+            endif
+          end do
+          ss  = exp(min(bb, 600d0))
+          HH  = HH  + melnu(kk,ii)*ss
+          dHH = dHH + melnu(kk,ii)**2*ss
+        end do
+        if (HH < 1d-290) then
+          ddy = -60d0 ! everything underflowed: march up blind
+        else
+          ddy = (log(HH) - log(abund(ii))) * (HH/dHH)
+          ddy = max(min(ddy, 60d0), -60d0)
+        endif
+        yy1 = yy1 - ddy
+        if (abs(ddy) < 1d-12) exit
+      end do
+      yv(ii) = yy1
+    end subroutine solve_element
+
+    !---------------------------------------------------------------------------
+    ! Jointly solve the two conservation equations of elements i1 and i2
+    ! (everything else fixed): the inner loop keeps F_i2 = 0 exactly via
+    ! solve_element, the outer Newton moves yv(i1) along the constraint with
+    ! the Schur-complement slope J11 - J12^2/J22 of the pair's SPD Jacobian.
+    !---------------------------------------------------------------------------
+    subroutine solve_pair(i1, i2)
+      integer, intent(in) :: i1, i2
+      real(dp) :: H1, J11, J12, J22, bb, ss, ddy, slope
+      integer  :: kk, mm, jj, itn
+      !-------------------------------------------------------------------------
+      do itn=1, 40
+        call solve_element(i2)
+
+        H1  = fil(i1)*exp(yv(i1))
+        J11 = H1
+        J12 = 0
+        do kk=1, nmele(i1)
+          mm = meli(kk,i1)
+          bb = Cm(mm) - nm1(mm)*yv(np1)
+          do jj=1, nele(mm)
+            bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
+          end do
+          ss  = exp(min(bb, 600d0))
+          H1  = H1  + melnu(kk,i1)*ss
+          J11 = J11 + melnu(kk,i1)**2*ss
+          do jj=1, nele(mm)
+            if (eidx(jj,mm) == i2) J12 = J12 + melnu(kk,i1)*enu(jj,mm)*ss
+          end do
+        end do
+        J22 = fil(i2)*exp(yv(i2))
+        do kk=1, nmele(i2)
+          mm = meli(kk,i2)
+          bb = Cm(mm) - nm1(mm)*yv(np1)
+          do jj=1, nele(mm)
+            bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
+          end do
+          ss  = exp(min(bb, 600d0))
+          J22 = J22 + melnu(kk,i2)**2*ss
+        end do
+
+        if (H1 < 1d-290) then
+          ddy = -60d0
+        else
+          ! the Schur complement can cancel to roundoff when one shared
+          ! molecule dominates both rows; the floor then just yields a
+          ! large step in the right direction, harmlessly capped
+          slope = J11 - J12*J12/max(J22, 1d-300)
+          slope = max(slope, 1d-12*J11)
+          ddy = (log(H1) - log(abund(i1))) * (H1/slope)
+          ddy = max(min(ddy, 60d0), -60d0)
+        endif
+        yv(i1) = yv(i1) - ddy
+        if (abs(ddy) < 1d-12) exit
+      end do
+      call solve_element(i2)
+    end subroutine solve_pair
+
     !---------------------------------------------------------------------------
     ! Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
     ! Also updates the host fe_c to exp(yy(np1)), so that after the accepted

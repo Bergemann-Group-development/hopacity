@@ -1956,6 +1956,7 @@ contains
     real(dp), dimension(:,:,:), allocatable :: a, b, c, x, xold, xprev2, xprev3, fx, fa, fb, ro, pg
     real(dp), dimension(:,:,:), allocatable :: lrho
     integer :: i, nconverged, arr_size, m(3), ix, iy, iz
+    real(dp) :: nh, tt, sc, nel
     integer, parameter :: nmax = 40 ! max number of iteration
     !---------------------------------------------------------------------------
     m = shape(temp)
@@ -1965,9 +1966,31 @@ contains
     allocate(x, xold, xprev2, xprev3, a, b, c, fx, fa, fb, ro, pg, lrho, mold=temp)
 
     if (ne(1,1,1) == 0.0d0) then
-      ! Saha approximation for pure atomic hydrogen
-      ne = 6.35d-5 * (rho**(-0.5d0)) * (temp**0.75d0) * exp(-7.89d4 / temp)
-      ne = (rho / self%grph) * min(1.0d-1, max(tiny(1.d0), ne))
+      ! Charge-neutrality guess from independent Saha quadratics
+      ! ne^2/(n_donor - ne) = S(T) for the three donor channels that take
+      ! over from each other as T drops: hydrogen, the abundant chi~8 eV
+      ! metals (Mg+Si+Fe), and the easily ionized chi~5 eV species
+      ! (Na+Ca+K).  The former hydrogen-only ionization-fraction formula
+      ! underflowed to the tiny() floor below ~2500 K, which put the
+      ! log-space secant start several hundred e-folds from the root and
+      ! made the first thermal_equilibrium evaluations run at absurd
+      ! states; its 0.1 fraction cap also started hot cells a factor ~10
+      ! low.  Effective abundances and ionization energies are lumped;
+      ! summing the channels independently overcounts ne slightly, which
+      ! is harmless in an initial guess.
+      do iz=1, m(3)
+        do iy=1, m(2)
+          do ix=1, m(1)
+            nh = rho(ix,iy,iz) / self%grph
+            tt = temp(ix,iy,iz)
+            sc = op_saha_const * tt*sqrt(tt)
+            nel =       donor_ne(       nh, sc*exp(max(-1.578d5/tt, -600d0)))
+            nel = nel + donor_ne(8.0d-5*nh, sc*exp(max(-0.920d5/tt, -600d0)))
+            nel = nel + donor_ne(7.0d-6*nh, sc*exp(max(-0.580d5/tt, -600d0)))
+            ne(ix,iy,iz) = min(max(nel, 1d-80*nh), 1.5d0*nh)
+          end do
+        end do
+      end do
     endif
 
     lrho = log(rho)
@@ -2056,6 +2079,25 @@ contains
 
     deallocate(ne_converged)
     deallocate(x,xold,a,b,fx,fa,fb)
+
+  contains
+    !---------------------------------------------------------------------------
+    ! Stable root of the Saha quadratic ne^2 = s*(a - ne) for one donor
+    ! species of number density a and Saha function s, branch-selected so
+    ! that neither 4*a/s nor the subtraction can overflow or cancel
+    !---------------------------------------------------------------------------
+    function donor_ne(a, s) result(nel)
+      real(dp), intent(in) :: a, s
+      real(dp) :: nel
+      !-------------------------------------------------------------------------
+      if (s <= 0d0 .or. a <= 0d0) then
+        nel = 0d0
+      else if (a > 1d8*s) then
+        nel = sqrt(a*s)                      ! strongly neutral limit
+      else
+        nel = 2d0*a / (1d0 + sqrt(1d0 + 4d0*a/s))
+      endif
+    end function donor_ne
   END SUBROUTINE iterate_thermal_eq
 
   !===============================================================================
