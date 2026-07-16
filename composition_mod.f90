@@ -39,12 +39,24 @@ MODULE composition_mod
     real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
     real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
+    ! velocities in units of c, already masked by use_vel; the rotated copies each
+    ! carry their own, which is what makes them the right home for the RT Doppler shift
+    real(4), dimension(:,:,:), allocatable :: vx, vy, vz
+    ! partial derivatives of ln(T) and ln(Pe) per code length unit, evaluated on
+    ! the PCHIP interpolant of the input snapshot (set_gradients), plus ln(Pe)
+    ! itself; consumed by the chain-rule 'hermite' RT solvers.  Rotated copies
+    ! carry only the z pair (their columns already run along the ray); only the
+    ! unrotated composition holds the horizontal partials
+    real(4), dimension(:,:,:), allocatable :: dlnt_dx, dlnt_dy, dlnt_dz
+    real(4), dimension(:,:,:), allocatable :: dlnpe_dx, dlnpe_dy, dlnpe_dz
+    real(4), dimension(:,:,:), allocatable :: lnpe
     ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
     ! ferried from init_tabulated_comp down to each rt_patch's opac table
     type(pca_transform_type) :: pca
   contains
     procedure :: init => injon
     procedure :: load_state_variables
+    procedure :: set_gradients
     procedure :: iterate_thermal_eq
     procedure :: thermal_equilibrium
     procedure :: compute_energy_and_gas_pressure
@@ -1763,7 +1775,7 @@ contains
   END SUBROUTINE reassign_pointer
 
   !===============================================================================
-  SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic)
+  SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic, vx, vy, vz)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1771,7 +1783,7 @@ contains
     type(spectrum_type) :: ref_sp
     real(dp), intent(in), dimension(:,:,:) :: temp, ne, rho
     logical, intent(in), optional :: use_rho, use_ne
-    real(4), intent(in), dimension(:,:,:), optional :: vmic
+    real(4), intent(in), dimension(:,:,:), optional :: vmic, vx, vy, vz
     real(dp), dimension(:,:,:), allocatable :: ro, eh, charge
     real(4), dimension(:,:,:,:), pointer :: chi500
     real(dp) :: nu500(1), nudebug(1)
@@ -1796,12 +1808,16 @@ contains
       deallocate(self%toth, self%teta, self%dxi, self%lsaha)
       deallocate(self%e_kT, self%p6, self%stark_pe, self%tothi, self%zero)
       if (allocated(self%vmic)) deallocate(self%vmic)
+      if (allocated(self%vx)) deallocate(self%vx, self%vy, self%vz)
     endif
 
     allocate(self%temp, self%ne, self%rho, self%pe, self%pg, self%E, self%eh, mold=temp)
     allocate(self%toth, self%teta, self%dxi, self%lsaha, self%fo, self%vbar2h, self%t3nhe, mold=temp)
     allocate(self%e_kT, self%p6, ro, self%stark_pe, self%tothi, self%zero, mold=temp)
     if (present(vmic)) allocate(self%vmic, source=vmic)
+    if (present(vx)) allocate(self%vx, source=vx)
+    if (present(vy)) allocate(self%vy, source=vy)
+    if (present(vz)) allocate(self%vz, source=vz)
 
     self%zero = 0.d0
     self%E = 0
@@ -1865,6 +1881,36 @@ contains
     self%loaded = .true.
     call trace%end(itimer)
   END SUBROUTINE load_state_variables
+
+  !=========================================================================
+  !> Store the ln(T)/ln(Pe) gradients captured from the snapshot interpolant
+  !> (per code length unit) and cache ln(Pe) itself, so the chain-rule RT
+  !> solvers never take logs in hot code.  Must be called after
+  !> load_state_variables, which finalizes self%pe.  The horizontal partials
+  !> are optional -- rotated compositions carry only the z pair.
+  !=========================================================================
+  SUBROUTINE set_gradients(self, dlnt_dz, dlnpe_dz, dlnt_dx, dlnt_dy, dlnpe_dx, dlnpe_dy)
+    class(composition_type) :: self
+    real(4), intent(in), dimension(:,:,:) :: dlnt_dz, dlnpe_dz
+    real(4), intent(in), dimension(:,:,:), optional :: dlnt_dx, dlnt_dy, dlnpe_dx, dlnpe_dy
+    !---------------------------------------------------------------------------
+    if (.not. self%loaded) then
+      print *, 'set_gradients must be called after load_state_variables'
+      stop
+    endif
+    if (allocated(self%dlnt_dz))  deallocate(self%dlnt_dz, self%dlnpe_dz)
+    if (allocated(self%dlnt_dx))  deallocate(self%dlnt_dx, self%dlnt_dy)
+    if (allocated(self%dlnpe_dx)) deallocate(self%dlnpe_dx, self%dlnpe_dy)
+    if (allocated(self%lnpe))     deallocate(self%lnpe)
+    allocate(self%dlnt_dz,  source=dlnt_dz)
+    allocate(self%dlnpe_dz, source=dlnpe_dz)
+    if (present(dlnt_dx))  allocate(self%dlnt_dx,  source=dlnt_dx)
+    if (present(dlnt_dy))  allocate(self%dlnt_dy,  source=dlnt_dy)
+    if (present(dlnpe_dx)) allocate(self%dlnpe_dx, source=dlnpe_dx)
+    if (present(dlnpe_dy)) allocate(self%dlnpe_dy, source=dlnpe_dy)
+    allocate(self%lnpe(size(dlnt_dz,1), size(dlnt_dz,2), size(dlnt_dz,3)))
+    self%lnpe = real(log(self%pe), 4)
+  END SUBROUTINE set_gradients
 
   !=========================================================================
   SUBROUTINE thermal_equilibrium(self, temp, ne, rho)
