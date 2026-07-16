@@ -594,12 +594,13 @@ contains
   ! data hull on each end. Caller passes x1,x2 pre-transformed (e.g. logged)
   ! so the transform is computed once rather than repeated per moment/extent.
   !===============================================================================
-  SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2)
+  SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2, use_pca)
     real(8), intent(in)  :: x1(:), x2(:)     ! sample coordinates, e.g. (lnT, lnNe)
     real(8), intent(in)  :: d1, d2           ! requested resolution along x1, x2
     integer, intent(in)  :: npad             ! extra nodes past the data hull, each end
     real(8), intent(out) :: mu(2), rot(2,2), c0(2), dc(2)
     integer, intent(out) :: n1, n2
+    logical, intent(in), optional :: use_pca ! .false. -> axis-aligned (no rotation)
     real(8) :: a, b, d, tr, disc, l1, l2, tiny_b, vn
     real(8) :: pmin1, pmax1, pmin2, pmax2
     real(8), dimension(size(x1)) :: p1, p2
@@ -628,6 +629,15 @@ contains
         rot(:,1) = [1.d0, 0.d0];  rot(:,2) = [0.d0, 1.d0]
       else
         rot(:,1) = [0.d0, 1.d0];  rot(:,2) = [1.d0, 0.d0]
+      endif
+    endif
+
+    ! ---- bypass: force the identity rotation so the grid is an axis-aligned box
+    ! in (x1,x2). PC1->x1 with spacing d1, PC2->x2 with spacing d2. Diagnostic
+    ! switch to confirm the PCA rotation is not the source of interpolation error.
+    if (present(use_pca)) then
+      if (.not. use_pca) then
+        rot(:,1) = [1.d0, 0.d0];  rot(:,2) = [0.d0, 1.d0]
       endif
     endif
 

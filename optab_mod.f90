@@ -351,10 +351,11 @@ contains
   ! and get back ready-to-use (T, ne) node tables plus the transform needed
   ! later to rotate a query point into table coordinates (see sample_interpolate).
   !===============================================================================
-  SUBROUTINE pca_opac_grid(temp, ne, ldtemp, ldne, npad, tab_temp, tab_ne, pca, n1, n2)
+  SUBROUTINE pca_opac_grid(temp, ne, ldtemp, ldne, npad, tab_temp, tab_ne, pca, n1, n2, use_pca)
     real(4), dimension(:,:,:,:), intent(in) :: temp, ne
     real(8), intent(in) :: ldtemp, ldne
     integer, intent(in) :: npad
+    logical, intent(in), optional :: use_pca   ! .false. -> axis-aligned (lnT,lnNe) grid
     real(8), dimension(:,:,:), allocatable, intent(out) :: tab_temp, tab_ne
     type(pca_transform_type), intent(out) :: pca
     integer, intent(out) :: n1, n2
@@ -369,7 +370,8 @@ contains
     lnNe = reshape(log(dble(ne)),   [ncell])
 
     ! ---- PCA-rotated grid over (lnT, lnNe), npad nodes past the data hull ------
-    call pca_grid_2d(lnT, lnNe, ldtemp, ldne, npad, pca%mu, pca%rot, pca%c0, pca%dc, n1, n2)
+    ! (use_pca=.false. bypasses the rotation for an axis-aligned diagnostic grid)
+    call pca_grid_2d(lnT, lnNe, ldtemp, ldne, npad, pca%mu, pca%rot, pca%c0, pca%dc, n1, n2, use_pca)
     deallocate(lnT, lnNe)
 
     ! ---- build the node grid in PC space, map back to (T, ne) -----------------
