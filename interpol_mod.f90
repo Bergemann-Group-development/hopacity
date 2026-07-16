@@ -342,11 +342,12 @@ contains
   ! Monotonic piecewise cubic hermite interpolation on a regular periodic grid
   ! Coded by Richard Hoppe, July 2023
   !===============================================================================
-  SUBROUTINE pchip_mono4_reg_period(yy, new_x0, new_dx, newy)
+  SUBROUTINE pchip_mono4_reg_period(yy, new_x0, new_dx, newy, newdydx)
     real(4), intent(in) :: yy(:)            ! Y values of the data points
     real(8), intent(in) :: new_x0           ! Starting x value in grid units
     real(8), intent(in) :: new_dx           ! Spacing of new x values in grid units
     real(4), intent(out) :: newy(:)         ! Interpolated Y values
+    real(4), intent(out), optional :: newdydx(:) ! Derivative per grid unit at interpolation points
     real(4), save, allocatable :: dydx(:)   ! derivative
     real(4), save, allocatable :: dy(:)
     integer :: n                 ! Number of data points
@@ -355,12 +356,18 @@ contains
     integer :: i, i1, i2         ! Loop index for data points
     real(4) :: t1, t2, t3, p, ratio, newx, x0
     real(8) :: dydx8, d1, d2
+    logical :: get_derivative
     !$omp threadprivate(dydx, dy)
     !-----------------------------------------------------------------------------
     n = size(yy)
     n_interp = size(newy)
+    get_derivative = present(newdydx)
 
-    if (new_x0 == 0 .and. new_dx - nint(new_dx) < 2.0 * epsilon(new_dx)) then
+    ! the grid-aligned copy fast path has no node slopes to hand out, so it is
+    ! bypassed when the derivative is requested; exact node points then fall out
+    ! of the general evaluation with t1=0, giving newy=yy and newdydx=dydx
+    if (.not. get_derivative .and. &
+        new_x0 == 0 .and. new_dx - nint(new_dx) < 2.0 * epsilon(new_dx)) then
       ! newx is on the same grid as xx, just copy the values
       x0 = new_x0 - new_dx
       do j=1, n_interp
@@ -417,6 +424,14 @@ contains
       p = 3.0*t2 - 2.0*t3
 
       newy(j) = (1.0 - p)*yy(i1) + p*yy(i2) + (t3 - 2.0*t2 + t1)*dydx(i1) + (t3-t2)*dydx(i2)
+
+      if (get_derivative) then
+        ! d(newy)/dx per grid unit (interval width h = 1); dy(i1) is the segment
+        ! difference across [i1,i2]
+        newdydx(j) =  6.0*(t1 - t2)          * dy(i1)   &
+                   + (3.0*t2 - 4.0*t1 + 1.0) * dydx(i1) &
+                   + (3.0*t2 - 2.0*t1)       * dydx(i2)
+      end if
     end do
   END SUBROUTINE pchip_mono4_reg_period
 
@@ -699,24 +714,40 @@ contains
   END SUBROUTINE interp1d_reg_period
 
   !===============================================================================
-  SUBROUTINE linterpolate_3d(f, fout, dx, dy, oldz, lower, ds, newz, pchip)
+  !> dfdx/dfdy/dfdz optionally return the partial derivatives of the interpolant
+  !> at the output points, in units of the respective input coordinate (dx, dy,
+  !> oldz).  The horizontal partials are captured in the corresponding pass and
+  !> then carried through the remaining passes as plain value fields; they (and
+  !> dfdz) require pchip interpolation, since the linear branches have no
+  !> continuous derivative to hand out.
+  !===============================================================================
+  SUBROUTINE linterpolate_3d(f, fout, dx, dy, oldz, lower, ds, newz, pchip, dfdx, dfdy, dfdz)
     real(4), intent(in),  dimension(:,:,:) :: f
     real(4), intent(out), dimension(:,:,:) :: fout
     real(8), intent(in) :: dx, dy, lower(2), ds(2)
     real(4), dimension(:), intent(in) :: oldz, newz
     logical, optional, intent(in) :: pchip
+    real(4), intent(out), dimension(:,:,:), optional :: dfdx, dfdy, dfdz
     real(4), dimension(:,:,:), allocatable :: fx
     real(4), dimension(:,:,:), allocatable :: fxy
+    real(4), dimension(:,:,:), allocatable :: gx, gxy, hxy
     real(8) :: df(2), offset(2)
     integer :: i,j,k, nx, ny, nz, ox,oy,oz, zs, ze
-    logical :: do_pchip
+    logical :: do_pchip, get_dx, get_dy, get_dz
     !-----------------------------------------------------------------------------
     ox = size(f,1); nx = size(fout,1)
     oy = size(f,2); ny = size(fout,2)
     oz = size(f,3); nz = size(fout,3)
     do_pchip = option(pchip, .true.)
+    get_dx = present(dfdx)
+    get_dy = present(dfdy)
+    get_dz = present(dfdz)
+    if ((get_dx .or. get_dy .or. get_dz) .and. .not. do_pchip) &
+      stop 'linterpolate_3d: derivative output requires pchip interpolation'
     allocate(fx(nx,oy,oz))
     allocate(fxy(nx,ny,oz))
+    if (get_dx) allocate(gx(nx,oy,oz), gxy(nx,ny,oz))
+    if (get_dy) allocate(hxy(nx,ny,oz))
     df = ds / [dx, dy]
     offset = lower / [dx, dy]
 
@@ -728,7 +759,9 @@ contains
     ! x-dimension interpolation
     do k = zs, ze
       do j = 1, oy
-        if (do_pchip) then
+        if (get_dx) then
+          call pchip_mono4_reg_period(f(:,j,k), offset(1), df(1), fx(:,j,k), newdydx=gx(:,j,k))
+        elseif (do_pchip) then
           call pchip_mono4_reg_period(f(:,j,k), offset(1), df(1), fx(:,j,k))
         else
           call interp1d_reg_period(f(:,j,k), offset(1), df(1), fx(:,j,k))
@@ -737,7 +770,13 @@ contains
       ! y-dimension interpolation
       do i = 1, nx
         if (do_pchip) then
-          call pchip_mono4_reg_period(fx(i,:,k), offset(2), df(2), fxy(i,:,k))
+          if (get_dy) then
+            call pchip_mono4_reg_period(fx(i,:,k), offset(2), df(2), fxy(i,:,k), newdydx=hxy(i,:,k))
+          else
+            call pchip_mono4_reg_period(fx(i,:,k), offset(2), df(2), fxy(i,:,k))
+          endif
+          if (get_dx) &
+            call pchip_mono4_reg_period(gx(i,:,k), offset(2), df(2), gxy(i,:,k))
         else
           call interp1d_reg_period(fx(i,:,k), offset(2), df(2), fxy(i,:,k))
         endif
@@ -747,16 +786,32 @@ contains
     do j = 1, ny
       do i = 1, nx
         if (do_pchip) then
-          call pchip_mono4(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:), sorted=.true.)
+          if (get_dz) then
+            call pchip_mono4(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:), sorted=.true., &
+                             newdydx=dfdz(i,j,:))
+          else
+            call pchip_mono4(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:), sorted=.true.)
+          endif
+          if (get_dx) &
+            call pchip_mono4(oldz(zs:ze), gxy(i,j,zs:ze), newz, dfdx(i,j,:), sorted=.true.)
+          if (get_dy) &
+            call pchip_mono4(oldz(zs:ze), hxy(i,j,zs:ze), newz, dfdy(i,j,:), sorted=.true.)
         else
           call interp1d_sorted(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:))
         endif
       end do
     end do
+    ! grid-unit horizontal derivatives -> per input-coordinate unit
+    if (get_dx) dfdx = dfdx / real(dx)
+    if (get_dy) dfdy = dfdy / real(dy)
   END SUBROUTINE linterpolate_3d
 
   !===============================================================================
-  SUBROUTINE linterpolate_3d_rotated(f, fout, dx, dy, oldz, lower, ds, newz, vec, bot2pivot, pchip)
+  !> The horizontal passes shear per snapshot z-level, so the z-columns of the
+  !> output run along the ray direction vec: the optional dfdz is therefore the
+  !> along-ray derivative of the interpolant, parameterized by z (in oldz units).
+  !===============================================================================
+  SUBROUTINE linterpolate_3d_rotated(f, fout, dx, dy, oldz, lower, ds, newz, vec, bot2pivot, pchip, dfdz)
     real(4), intent(in),  dimension(:,:,:) :: f
     real(4), intent(out), dimension(:,:,:) :: fout
     real(4), dimension(:), intent(in) :: oldz, newz
@@ -764,14 +819,18 @@ contains
     real(8), intent(in) :: dx, dy, lower(2), ds(2)
     real(8), intent(in) :: vec(3), bot2pivot
     logical, optional, intent(in) :: pchip
+    real(4), intent(out), dimension(:,:,:), optional :: dfdz
     real(8) :: delta(2), deltak(2), offset(2), df(2)
     integer :: i,j,k, nx, ny, nz, ox,oy,oz, zs, ze
-    logical :: do_pchip
+    logical :: do_pchip, get_dz
     !-----------------------------------------------------------------------------
     ox = size(f,1); nx = size(fout,1)
     oy = size(f,2); ny = size(fout,2)
     oz = size(f,3); nz = size(fout,3)
     do_pchip = option(pchip, .true.)
+    get_dz = present(dfdz)
+    if (get_dz .and. .not. do_pchip) &
+      stop 'linterpolate_3d_rotated: derivative output requires pchip interpolation'
     allocate(fx(nx,oy,oz))
     allocate(fxy(nx,ny,oz))
     delta = vec(1:2) / (vec(3) * [dx, dy])
@@ -806,7 +865,12 @@ contains
     do j = 1, ny
       do i = 1, nx
         if (do_pchip) then
-          call pchip_mono4(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:), sorted=.true.)
+          if (get_dz) then
+            call pchip_mono4(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:), sorted=.true., &
+                             newdydx=dfdz(i,j,:))
+          else
+            call pchip_mono4(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:), sorted=.true.)
+          endif
         else
           call interp1d_sorted(oldz(zs:ze), fxy(i,j,zs:ze), newz, fout(i,j,:))
         endif

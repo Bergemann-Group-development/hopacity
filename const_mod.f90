@@ -17,6 +17,7 @@ MODULE const_mod
   real(8), parameter :: zero=0.0d0
   real(8), parameter :: one=1.0d0
   real(8), parameter :: half=0.5d0
+  real(8), parameter :: one_twelfth=1.0d0/12.0d0
   real(8), parameter :: one_sixth=1.0d0/6.0d0
   real(8), parameter :: one_third=1.0d0/3.0d0
   real(8), parameter :: two_third=2.0d0/3.0d0
