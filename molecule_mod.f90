@@ -1,6 +1,5 @@
 MODULE molecule_mod
-  USE os_mod
-  USE trace_mod
+  USE hop_env_mod, only: os, trace
   USE prec_mod
   USE op_math_mod
   USE ion_mod
@@ -11,6 +10,17 @@ MODULE molecule_mod
     integer :: nions
     class(ion_pointer_t), allocatable :: ions(:)
     real(dp) :: dc(5) ! dissociation_constants
+    ! Total nuclear spin statistical weight, prod over constituent nuclei of
+    ! (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
+    ! the tabulated partition function counts nuclear spin states, as modern
+    ! molecular line lists do (the BT2/Barber H2O g column carries the 3:1
+    ! ortho/para weight, so its Q must carry the matching factor 4 = 2*2*1).
+    ! The line-opacity path therefore uses %part as-is, while get_dis divides
+    ! it out to reach the nuclear-spin-free convention the atomic partition
+    ! functions use. The factor cancels identically in the equilibrium
+    ! constant anyway (it appears once in Q_mol and once in prod Q_atom), so
+    ! this only keeps the two sides on the same footing; it is never physics.
+    real(dp) :: g_nuclear = 1
     real(dp), dimension(:), allocatable :: de ! dissociation_energies
     real(dp), dimension(:,:,:), allocatable :: dis
   contains
@@ -32,18 +42,28 @@ contains
     class(molec_type), intent(inout) :: self
     integer, intent(in) :: lunit
     integer, intent(out) :: iostat
-    integer :: defix, n_irwin, n_de
-    character(64) :: text
+    integer :: defix, n_irwin, n_de, ios
+    character(256) :: line
     !---------------------------------------------------------------------------
-    read(lunit, *, iostat=iostat) text
-    if (iostat < 0) return
-    do while (text(1:1) == '!')
-      read(lunit, *, iostat=iostat) text
+    ! Pull the header in as a whole record. The trailing nuclear-spin weight is
+    ! optional, and parsing it out of an internal file lets a missing 4th field
+    ! fail cleanly -- a list-directed read straight off the unit would instead
+    ! run on into the next record looking for the item.
+    do
+      read(lunit, '(a)', iostat=iostat) line
+      if (iostat /= 0) return
+      if (len_trim(line) > 0 .and. line(1:1) /= '!') exit
     end do
-    backspace lunit
     if (allocated(self%de)) deallocate(self%de)
     if (allocated(self%irwin)) deallocate(self%irwin)
-    read(lunit, *, iostat=iostat) self%id, defix, n_irwin
+    read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear
+    if (ios /= 0) then
+      ! 3-field header: partition function is in the nuclear-spin-free
+      ! convention, so nothing to divide out
+      self%g_nuclear = 1
+      read(line, *, iostat=iostat) self%id, defix, n_irwin
+      if (iostat /= 0) return
+    endif
     n_de = merge(6, 1, defix==0)
     allocate(self%de(n_de))
     allocate(self%irwin(n_irwin))
@@ -76,7 +96,10 @@ contains
         end associate
       end do
 
-      scalar = const_term + 1.5*log(self%awgt)
+      ! %part may count nuclear spin states (see g_nuclear); the constituent
+      ! ion%part above never do, so drop the factor here to put both sides of
+      ! the equilibrium constant in the same convention
+      scalar = const_term + 1.5*log(self%awgt) - log(self%g_nuclear)
       dis = dis + scalar
       dis = dis + self%part + self%de(1)*e_kT - (2.5*nm1)*log(temp)
     else
@@ -168,12 +191,19 @@ contains
   ! iteration, and the working set is O((nions+1)^2) scalars.
   !=========================================================================
   SUBROUTINE molecular_equilibrium(molecules, ions, tmolim, temp, teta, e_kT, &
-                                   pe, xnecno, fe)
+                                   pe, xnecno, fe, ysave, same_state)
     class(molec_type), target, intent(inout) :: molecules(:)
     type(ion_pointer_t), intent(in) :: ions(:)
     real(dp), intent(in) :: tmolim
     real(dp), dimension(:,:,:), intent(in) :: temp, teta, e_kT, pe, xnecno
     real(dp), dimension(:,:,:), intent(inout) :: fe
+    ! caller-owned per-cell seeds, carried across calls: the ne iteration
+    ! re-solves the same cells at nearly the same state, so each cell's own
+    ! previous solution is the best possible Newton start
+    real(dp), dimension(:,:,:,:), allocatable, intent(inout), optional :: ysave
+    ! temp (and hence teta, e_kT) is identical to the previous call's, so
+    ! temp-only setup (mol%part, mol%dis) may be reused where valid
+    logical, intent(in), optional :: same_state
     class(molec_type), pointer :: mol
     type(ion_type), pointer :: pt
     integer :: i, j, k, m, iq, nx, ny, nz, np1, nions, nmol, mxc
@@ -190,11 +220,23 @@ contains
     real(dp), dimension(:),   allocatable :: fil, ce    ! phi_i, q_i
     real(dp), dimension(:),   allocatable :: abund, Cm, avail, lockf, yprev
     integer,  dimension(:),   allocatable :: limel, limnu, plim
-    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, flock
+    real(dp) :: pe_c, lnpe, fe_c, xne_c, b, s, flock, sa, dsy, bb, dy
+    ! scratch for the scalar solves: hoisted per-molecule constants and
+    ! the last d H/d y, shared between solve_element and solve_pair
+    real(dp), dimension(:), allocatable :: bcon, b1c
+    integer,  dimension(:), allocatable :: n2p
+    real(dp) :: dH_last
     ! Newton state
     real(dp), dimension(:),   allocatable :: yv, yt, Fv, Ft, stp
     real(dp), dimension(:),   allocatable :: fi, fit, fm, fmt
     real(dp), dimension(:,:), allocatable :: Amat
+    ! last converged state, seeding the next cell's warm start, and the
+    ! previous row's converged states (the row-below neighbor is closer
+    ! than the row-wrapped previous cell at line starts)
+    real(dp), dimension(:),   allocatable :: ywarm
+    real(dp), dimension(:,:), allocatable :: ywrow
+    logical,  dimension(:),   allocatable :: wrow_ok
+    logical :: have_warm, use_save, have_seed, skip_setup, same_alloc
     real(dp) :: norm2, norm2t, errf, lam, smax, worst
     real(dp) :: y1, worsty
     integer  :: sweep
@@ -208,7 +250,7 @@ contains
     real(dp), parameter :: lam_min   = 1d0/1024d0 ! smallest damping factor
     integer :: itimer=0
     !---------------------------------------------------------------------------
-    call trace%begin ('molecule_mod::molecular_equilibrium', itimer=itimer)
+    call trace%begin ('molecule_mod%molecular_equilibrium', itimer=itimer)
 
     nx = size(temp, 1)
     ny = size(temp, 2)
@@ -217,19 +259,49 @@ contains
     nions = size(ions)
     np1   = nions + 1
 
+    ! mol%part and mol%dis depend only on temp (teta and e_kT are functions
+    ! of it), so when the caller certifies temp is unchanged they can be
+    ! reused from the previous call -- provided every constituent ion's
+    ! partition function is also temp-only (irwin or fixed); ne-dependent
+    ! level dissolution in ion%part voids the cache, which such ions signal
+    ! via state_dependent_part (H I under mhd_eos)
+    skip_setup = .false.
+    if (present(same_state)) then
+      if (same_state) then
+        skip_setup = .true.
+        molcheck: do m=1, nmol
+          mol => molecules(m)
+          if (.not. all(mol%m == shape(temp))) then
+            skip_setup = .false.
+            exit molcheck
+          endif
+          do j=1, mol%nions
+            pt => mol%ions(j)%p
+            if (.not. (pt%fixed_part .or. allocated(pt%irwin)) &
+                .or. pt%state_dependent_part) then
+              skip_setup = .false.
+              exit molcheck
+            endif
+          end do
+        end do molcheck
+      endif
+    endif
+
     ! molecule partition functions and equilibrium constants; the scalar
     ! irwin_partf call keeps the elemental expansion out of the hot files
     do m=1, nmol
       mol => molecules(m)
       call mol%allocate(shape(temp))
-      do z=1, nz
-        do y=1, ny
-          do x=1, nx
-            mol%part(x,y,z) = mol%irwin_partf(temp(x,y,z))
+      if (.not. skip_setup) then
+        do z=1, nz
+          do y=1, ny
+            do x=1, nx
+              mol%part(x,y,z) = mol%irwin_partf(temp(x,y,z))
+            end do
           end do
         end do
-      end do
-      call mol%get_dis(temp, teta, e_kT, mol%dis)
+        call mol%get_dis(temp, teta, e_kT, mol%dis)
+      endif
       ! molecules default to zero; only cells below tmolim get a solved value
       do z=1, nz
         do y=1, ny
@@ -313,6 +385,21 @@ contains
     allocate(yprev(np1))
     allocate(yv(np1), yt(np1), Fv(np1), Ft(np1), stp(np1))
     allocate(fi(nions), fit(nions), fm(nmol), fmt(nmol), Amat(np1,np1))
+    allocate(ywarm(np1), bcon(nmol), b1c(nmol), n2p(nmol))
+    allocate(ywrow(np1,nx), wrow_ok(nx))
+    have_warm = .false.
+    wrow_ok = .false.
+    use_save = present(ysave)
+    if (use_save) then
+      if (allocated(ysave)) then
+        if (size(ysave,1) /= np1 .or. size(ysave,2) /= nx .or. &
+            size(ysave,3) /= ny  .or. size(ysave,4) /= nz) deallocate(ysave)
+      endif
+      if (.not. allocated(ysave)) then
+        allocate(ysave(np1,nx,ny,nz))
+        ysave = huge(1d0) ! sentinel: no seed stored yet
+      endif
+    endif
 
     do i=1, nions
       abund(i) = ions(i)%p%abund
@@ -378,6 +465,42 @@ contains
             end do
             Cm(m) = b
           end do
+
+          ! --- warm start --------------------------------------------------
+          ! In a smooth atmosphere the previous cell's converged state is
+          ! usually already inside Newton's basin, so try the damped Newton
+          ! directly from it, and only fall back to the full auction +
+          ! relaxation seed where that fails (first cold cell, sharp
+          ! fronts, branch flips).  A Newton that reaches tol lands on the
+          ! same root regardless of its seed, so this changes nothing but
+          ! the iteration count.
+          ! one warm attempt from the best available seed: this cell's own
+          ! previous solution, else the row-below neighbor, else the
+          ! previously solved cell
+          converged = .false.
+          have_seed = .false.
+          ! the ysave test must stay nested: Fortran does not short-circuit
+          ! .and., so folding use_save in would touch an unallocated ysave
+          if (use_save) then
+            if (ysave(1,x,y,z) < 0.5d0*huge(1d0)) then
+              yv(1:np1) = ysave(1:np1,x,y,z)
+              have_seed = .true.
+            endif
+          endif
+          if (.not. have_seed .and. wrow_ok(x)) then
+            yv(1:np1) = ywrow(:,x)
+            have_seed = .true.
+          endif
+          if (.not. have_seed .and. have_warm) then
+            yv(1:np1) = ywarm
+            have_seed = .true.
+          endif
+          if (have_seed) call newton_solve(40, converged)
+
+          if (.not. converged) then
+          ! eval() tracks fe_c with the state, so a failed warm start
+          ! leaves it clobbered; re-seed it from the caller's Saha sum
+          fe_c = max(fe(x,y,z), tiny(1d0))
 
           ! --- initial guess ----------------------------------------------
           ! Stoichiometric allocation of super-saturated molecules.  In
@@ -489,6 +612,20 @@ contains
               yv(i) = min(yv(i), max(s, -600d0))
             end do
 
+            ! a re-ranked auction that reproduces the previous round's
+            ! allocation would only re-derive the depths the sweeps below
+            ! already refined for it: restore those and stop instead
+            if (iter > 1) then
+              same_alloc = .true.
+              do m=1, nmol
+                if (alloc_code(m) /= plim(m)) same_alloc = .false.
+              end do
+              if (same_alloc) then
+                yv(1:np1) = yprev
+                exit
+              endif
+            endif
+
           ! Refine with Gauss-Seidel sweeps in which every element solves
           ! its own scalar conservation equation exactly, holding the
           ! other elements and ye fixed:
@@ -506,8 +643,8 @@ contains
           ! below an exactly singular Jacobian row and a residual pinned at
           ! -A_i (the persistent "scaled residual 1.0" stalls).  The exact
           ! scalar solves cannot underflow that way, because the molecular
-          ! term itself must balance A_i.  Charge conservation updates ye
-          ! once per sweep (damped fixed point, floored like the seed fe).
+          ! term itself must balance A_i.  Charge conservation re-solves ye
+          ! once per sweep (scalar Newton, floored like the seed fe).
           ! Two-element budget exchanges (Si moving between SiO and SiS)
           ! relax with a contraction factor that can approach 1, hence the
           ! generous sweep count; each sweep is a handful of scalar ops.
@@ -537,24 +674,51 @@ contains
                 worsty = max(worsty, abs(yv(eidx(1,m))-b), abs(yv(eidx(2,m))-s))
               end do
 
-            ! ye from charge conservation at the current element guesses
-            s = xne_c
+            ! ye from charge conservation at the current element guesses.
+            ! The atomic part is constant in ye and the charged-molecule
+            ! part has a known slope, so the scalar equation ye = ln s(ye)
+            ! is solved exactly with Newton (one step when no molecule is
+            ! charged, since s is then constant).  The former 0.5-damped
+            ! fixed point here only shed half the ye error per sweep, so
+            ! the 1d-10 exit below was gated at ~30 sweeps per round even
+            ! in cells whose element solves had long converged.
+            sa = xne_c
             do i=1, nions
-              s = s + exp(yv(i))*ce(i)
+              sa = sa + exp(yv(i))*ce(i)
             end do
+            ! the ye-independent part of each charged molecule's ln f
+            ! argument, Cm(m) + sum_j enu(j,m)*yv(eidx(j,m)), is constant
+            ! across the ye Newton (only yv(np1) moves below); hoist it out
+            ! of the k-loop, reusing bcon whose contents are dead here
             do m=1, nmol
               if (qmol(m) == 0) cycle
-              b = Cm(m) - nm1(m)*yv(np1)
+              bb = Cm(m)
               do j=1, nele(m)
-                b = b + enu(j,m)*yv(eidx(j,m))
+                bb = bb + enu(j,m)*yv(eidx(j,m))
               end do
-              s = s + qmol(m)*exp(min(b, 600d0))
+              bcon(m) = bb
             end do
-            s = max(s, 1d-3*xne_c, tiny(1d0))
             b = yv(np1)
-            yv(np1) = 0.5d0*(b + log(s))
+            do k=1, 20
+              s   = sa
+              dsy = 0
+              do m=1, nmol
+                if (qmol(m) == 0) cycle
+                bb  = qmol(m)*exp(min(bcon(m) - nm1(m)*yv(np1), 600d0))
+                s   = s   + bb
+                dsy = dsy - nm1(m)*bb
+              end do
+              s = max(s, 1d-3*xne_c, tiny(1d0))
+              ! Newton on g(ye) = ln s(ye) - ye: g' = s'/s - 1 <= -1 for
+              ! positively charged molecules; the min() keeps the slope
+              ! magnitude >= 1 should a negatively charged one ever appear
+              dy = (log(s) - yv(np1)) / (1d0 - min(dsy/s, 0d0))
+              dy = max(min(dy, 60d0), -60d0)
+              yv(np1) = yv(np1) + dy
+              if (abs(dy) < 1d-12) exit
+            end do
             worsty = max(worsty, abs(yv(np1) - b))
-            if (worsty < 1d-10) exit
+            if (worsty < 1d-7) exit
             end do
             fe_c = exp(yv(np1))
 
@@ -562,138 +726,14 @@ contains
             ! the prices of the next round's auction, and each molecule is
             ! exempted from the price of the element it locked itself
             do m=1, nmol
-              if (lockf(m) >= 0d0) then
-                plim(m) = limel(m)
-              else
-                plim(m) = 0
-              endif
+              plim(m) = alloc_code(m)
             end do
-            do i=1, np1
-              yprev(i) = yv(i)
-            end do
+            yprev = yv(1:np1)
           end do
 
           ! --- damped Newton to convergence -------------------------------
-          call eval(yv, fi, fm, Fv, norm2)
-          converged = .false.
-
-          do iter=1, niter_max
-            errf = abs(Fv(np1)) / max(fe_c, xne_c)
-            do i=1, nions
-              errf = max(errf, abs(Fv(i))/abund(i))
-            end do
-            if (errf < tol) then
-              converged = .true.
-              exit
-            endif
-
-            ! analytic Jacobian dF/d(ln f) at the current state
-            do j=1, np1
-              do i=1, np1
-                Amat(i,j) = 0
-              end do
-            end do
-            do i=1, nions
-              Amat(i,i)   = fi(i)*fil(i)
-              Amat(np1,i) = fi(i)*ce(i)
-            end do
-            Amat(np1,np1) = -fe_c
-            do m=1, nmol
-              do k=1, nele(m)
-                i = eidx(k,m)
-                Amat(i,np1) = Amat(i,np1) - (enu(k,m)*nm1(m))*fm(m)
-                do j=1, nele(m)
-                  Amat(i,eidx(j,m)) = Amat(i,eidx(j,m)) + (enu(k,m)*enu(j,m))*fm(m)
-                end do
-              end do
-              if (qmol(m) /= 0) then
-                Amat(np1,np1) = Amat(np1,np1) - (qmol(m)*nm1(m))*fm(m)
-                do k=1, nele(m)
-                  Amat(np1,eidx(k,m)) = Amat(np1,eidx(k,m)) + (qmol(m)*enu(k,m))*fm(m)
-                end do
-              endif
-            end do
-
-            ! Newton step, capped in ln f to stay in the basin. Also cap the
-            ! implied step in each molecule's ln(f_mol) argument 'a': a
-            ! molecule couples several elements (nu up to ~4), so its 'a' can
-            ! swing far more per iteration than any single y component does,
-            ! even though every component individually respects step_max.
-            ! Left unchecked, that let a handful of very cold/thin cells
-            ! (M-dwarf-like) run 'a' up past +300 in a couple of iterations,
-            ! saturating f_mol at an astronomically unphysical value whose
-            ! Jacobian entries then swamped the physically-relevant ones
-            ! (spanning only ~1e-12 to 1) in the linear solve, wrecking its
-            ! conditioning so badly that Newton stopped making any progress
-            ! at all on the unrelated elements.
-            do i=1, np1
-              stp(i) = Fv(i)
-            end do
-            call lineq(Amat, stp, np1)
-            ! lineq has no singularity check: a zero pivot yields NaN. Such
-            ! a step must never reach the state (a NaN trial would pass the
-            ! backtracking loop at lam_min and poison yv, and through the
-            ! write-back fe(x,y,z), permanently); keep the last finite
-            ! state and let the stall test below judge it instead.
-            badstep = .false.
-            do i=1, np1
-              if (stp(i) /= stp(i)) badstep = .true.
-            end do
-            if (badstep) exit
-            smax = 0
-            do i=1, np1
-              smax = max(smax, abs(stp(i)))
-            end do
-            do m=1, nmol
-              s = nm1(m)*stp(np1)
-              do k=1, nele(m)
-                s = s - enu(k,m)*stp(eidx(k,m))
-              end do
-              smax = max(smax, abs(s))
-            end do
-            if (smax > step_max) then
-              b = step_max/smax
-              do i=1, np1
-                stp(i) = stp(i)*b
-              end do
-            endif
-
-            ! Armijo backtracking on |F|^2
-            lam = 1
-            do
-              do i=1, np1
-                yt(i) = yv(i) - lam*stp(i)
-              end do
-              call eval(yt, fit, fmt, Ft, norm2t)
-              if (norm2t <= (1d0 - 1d-4*lam)*norm2 .or. lam <= lam_min) exit
-              lam = 0.5d0*lam
-            end do
-
-            ! a non-finite trial slipped through at lam_min: restore fe_c
-            ! (eval clobbered it) and keep the last finite state
-            if (norm2t /= norm2t) then
-              fe_c = exp(yv(np1))
-              exit
-            endif
-
-            ! accept the (possibly damped) step
-            smax = 0
-            do i=1, np1
-              smax = max(smax, abs(yt(i) - yv(i)))
-              yv(i) = yt(i)
-              Fv(i) = Ft(i)
-            end do
-            do i=1, nions
-              fi(i) = fit(i)
-            end do
-            do m=1, nmol
-              fm(m) = fmt(m)
-            end do
-            norm2 = norm2t
-
-            ! no movement in ln f: rounding level reached, stop iterating
-            if (smax < 1d-13) exit
-          end do
+          call newton_solve(niter_max, converged)
+          endif ! warm start failed
 
           if (.not. converged) then
             errf = abs(Fv(np1)) / max(fe_c, xne_c)
@@ -705,6 +745,16 @@ contains
           if (.not. converged) then
             nfail = nfail + 1
             worst = max(worst, errf)
+            ! don't re-seed the next call/row from a stalled state
+            if (use_save) ysave(1,x,y,z) = huge(1d0)
+            wrow_ok(x) = .false.
+          else
+            ! seed for the next cell's warm start and this cell's next call
+            ywarm      = yv
+            ywrow(:,x) = yv
+            have_warm = .true.
+            wrow_ok(x) = .true.
+            if (use_save) ysave(1:np1,x,y,z) = yv
           endif
 
           ! --- write back: fe, every ladder stage, molecular fractions ----
@@ -742,6 +792,157 @@ contains
 
   contains
     !---------------------------------------------------------------------------
+    ! The molecule's current auction allocation encoded as one integer: the
+    ! element it locked (limel) when it holds a lock, else 0.  Single-sourced
+    ! so the round-to-round comparison and the store into plim cannot drift.
+    !---------------------------------------------------------------------------
+    integer function alloc_code(mm)
+      integer, intent(in) :: mm
+      if (lockf(mm) >= 0d0) then
+        alloc_code = limel(mm)
+      else
+        alloc_code = 0
+      endif
+    end function alloc_code
+
+    !---------------------------------------------------------------------------
+    ! Damped Newton on the full coupled system from the current yv, for at
+    ! most nit iterations: analytic Jacobian, step capped in ln f, Armijo
+    ! backtracking on |F|^2.  Leaves yv, fi, fm, Fv, norm2, fe_c consistent
+    ! with the last accepted state and mutates the shared Newton scratch
+    ! (Amat, stp, yt, fit, fmt, errf, norm2t); ok reports scaled-residual
+    ! convergence.
+    !---------------------------------------------------------------------------
+    subroutine newton_solve(nit, ok)
+      integer, intent(in)  :: nit
+      logical, intent(out) :: ok
+      real(dp) :: ss, smx, lm
+      integer  :: ii, jj, kk, mm, itn
+      logical  :: bad
+      !-------------------------------------------------------------------------
+      call eval(yv, fi, fm, Fv, norm2)
+      ok = .false.
+
+      do itn=1, nit
+        errf = abs(Fv(np1)) / max(fe_c, xne_c)
+        do ii=1, nions
+          errf = max(errf, abs(Fv(ii))/abund(ii))
+        end do
+        if (errf < tol) then
+          ok = .true.
+          exit
+        endif
+
+        ! analytic Jacobian dF/d(ln f) at the current state
+        do jj=1, np1
+          do ii=1, np1
+            Amat(ii,jj) = 0
+          end do
+        end do
+        do ii=1, nions
+          Amat(ii,ii)   = fi(ii)*fil(ii)
+          Amat(np1,ii) = fi(ii)*ce(ii)
+        end do
+        Amat(np1,np1) = -fe_c
+        do mm=1, nmol
+          do kk=1, nele(mm)
+            ii = eidx(kk,mm)
+            Amat(ii,np1) = Amat(ii,np1) - (enu(kk,mm)*nm1(mm))*fm(mm)
+            do jj=1, nele(mm)
+              Amat(ii,eidx(jj,mm)) = Amat(ii,eidx(jj,mm)) + (enu(kk,mm)*enu(jj,mm))*fm(mm)
+            end do
+          end do
+          if (qmol(mm) /= 0) then
+            Amat(np1,np1) = Amat(np1,np1) - (qmol(mm)*nm1(mm))*fm(mm)
+            do kk=1, nele(mm)
+              Amat(np1,eidx(kk,mm)) = Amat(np1,eidx(kk,mm)) + (qmol(mm)*enu(kk,mm))*fm(mm)
+            end do
+          endif
+        end do
+
+        ! Newton step, capped in ln f to stay in the basin. Also cap the
+        ! implied step in each molecule's ln(f_mol) argument 'a': a
+        ! molecule couples several elements (nu up to ~4), so its 'a' can
+        ! swing far more per iteration than any single y component does,
+        ! even though every component individually respects step_max.
+        ! Left unchecked, that let a handful of very cold/thin cells
+        ! (M-dwarf-like) run 'a' up past +300 in a couple of iterations,
+        ! saturating f_mol at an astronomically unphysical value whose
+        ! Jacobian entries then swamped the physically-relevant ones
+        ! (spanning only ~1e-12 to 1) in the linear solve, wrecking its
+        ! conditioning so badly that Newton stopped making any progress
+        ! at all on the unrelated elements.
+        do ii=1, np1
+          stp(ii) = Fv(ii)
+        end do
+        call lineq(Amat, stp, np1)
+        ! lineq has no singularity check: a zero pivot yields NaN. Such
+        ! a step must never reach the state (a NaN trial would pass the
+        ! backtracking loop at lam_min and poison yv, and through the
+        ! write-back fe(x,y,z), permanently); keep the last finite
+        ! state and let the stall test in the caller judge it instead.
+        bad = .false.
+        do ii=1, np1
+          if (stp(ii) /= stp(ii)) bad = .true.
+        end do
+        if (bad) exit
+        smx = 0
+        do ii=1, np1
+          smx = max(smx, abs(stp(ii)))
+        end do
+        do mm=1, nmol
+          ss = nm1(mm)*stp(np1)
+          do kk=1, nele(mm)
+            ss = ss - enu(kk,mm)*stp(eidx(kk,mm))
+          end do
+          smx = max(smx, abs(ss))
+        end do
+        if (smx > step_max) then
+          ss = step_max/smx
+          do ii=1, np1
+            stp(ii) = stp(ii)*ss
+          end do
+        endif
+
+        ! Armijo backtracking on |F|^2
+        lm = 1
+        do
+          do ii=1, np1
+            yt(ii) = yv(ii) - lm*stp(ii)
+          end do
+          call eval(yt, fit, fmt, Ft, norm2t)
+          if (norm2t <= (1d0 - 1d-4*lm)*norm2 .or. lm <= lam_min) exit
+          lm = 0.5d0*lm
+        end do
+
+        ! a non-finite trial slipped through at lam_min: restore fe_c
+        ! (eval clobbered it) and keep the last finite state
+        if (norm2t /= norm2t) then
+          fe_c = exp(yv(np1))
+          exit
+        endif
+
+        ! accept the (possibly damped) step
+        smx = 0
+        do ii=1, np1
+          smx = max(smx, abs(yt(ii) - yv(ii)))
+          yv(ii) = yt(ii)
+          Fv(ii) = Ft(ii)
+        end do
+        do ii=1, nions
+          fi(ii) = fit(ii)
+        end do
+        do mm=1, nmol
+          fm(mm) = fmt(mm)
+        end do
+        norm2 = norm2t
+
+        ! no movement in ln f: rounding level reached, stop iterating
+        if (smx < 1d-13) exit
+      end do
+    end subroutine newton_solve
+
+    !---------------------------------------------------------------------------
     ! Solve element ii's scalar conservation equation over yv(ii), all other
     ! unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
     ! Newton on ln H - ln A: ln of a positive sum of increasing exponentials
@@ -753,21 +954,22 @@ contains
       real(dp) :: yy1, HH, dHH, bb, ss, ddy
       integer  :: kk, mm, jj, itn
       !-------------------------------------------------------------------------
+      ! each containing molecule's ln f_mol argument minus this element's
+      ! own contribution is constant across the Newton iteration
+      do kk=1, nmele(ii)
+        mm = meli(kk,ii)
+        bb = Cm(mm) - nm1(mm)*yv(np1) - melnu(kk,ii)*yv(ii)
+        do jj=1, nele(mm)
+          bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
+        end do
+        bcon(kk) = bb
+      end do
       yy1 = yv(ii)
       do itn=1, 50
         HH  = fil(ii)*exp(yy1)
         dHH = HH
         do kk=1, nmele(ii)
-          mm = meli(kk,ii)
-          bb = Cm(mm) - nm1(mm)*yv(np1)
-          do jj=1, nele(mm)
-            if (eidx(jj,mm) == ii) then
-              bb = bb + enu(jj,mm)*yy1
-            else
-              bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
-            endif
-          end do
-          ss  = exp(min(bb, 600d0))
+          ss  = exp(min(bcon(kk) + melnu(kk,ii)*yy1, 600d0))
           HH  = HH  + melnu(kk,ii)*ss
           dHH = dHH + melnu(kk,ii)**2*ss
         end do
@@ -778,9 +980,10 @@ contains
           ddy = max(min(ddy, 60d0), -60d0)
         endif
         yy1 = yy1 - ddy
-        if (abs(ddy) < 1d-12) exit
+        if (abs(ddy) < 1d-9) exit
       end do
       yv(ii) = yy1
+      dH_last = dHH ! d H/d y at the solution, reused as J22 by solve_pair
     end subroutine solve_element
 
     !---------------------------------------------------------------------------
@@ -794,34 +997,37 @@ contains
       real(dp) :: H1, J11, J12, J22, bb, ss, ddy, slope
       integer  :: kk, mm, jj, itn
       !-------------------------------------------------------------------------
+      ! each of i1's molecules' ln f_mol argument minus the contributions
+      ! of the two solved elements is constant across the outer iteration;
+      ! n2p records i2's multiplicity in it (0 when i2 is not a member)
+      do kk=1, nmele(i1)
+        mm = meli(kk,i1)
+        bb = Cm(mm) - nm1(mm)*yv(np1)
+        n2p(kk) = 0
+        do jj=1, nele(mm)
+          if (eidx(jj,mm) == i1) cycle
+          if (eidx(jj,mm) == i2) then
+            n2p(kk) = enu(jj,mm)
+          else
+            bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
+          endif
+        end do
+        b1c(kk) = bb
+      end do
+
       do itn=1, 40
         call solve_element(i2)
+        ! solve_element left d H2/d y2 at the solution in dH_last
+        J22 = dH_last
 
         H1  = fil(i1)*exp(yv(i1))
         J11 = H1
         J12 = 0
         do kk=1, nmele(i1)
-          mm = meli(kk,i1)
-          bb = Cm(mm) - nm1(mm)*yv(np1)
-          do jj=1, nele(mm)
-            bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
-          end do
-          ss  = exp(min(bb, 600d0))
+          ss  = exp(min(b1c(kk) + melnu(kk,i1)*yv(i1) + n2p(kk)*yv(i2), 600d0))
           H1  = H1  + melnu(kk,i1)*ss
           J11 = J11 + melnu(kk,i1)**2*ss
-          do jj=1, nele(mm)
-            if (eidx(jj,mm) == i2) J12 = J12 + melnu(kk,i1)*enu(jj,mm)*ss
-          end do
-        end do
-        J22 = fil(i2)*exp(yv(i2))
-        do kk=1, nmele(i2)
-          mm = meli(kk,i2)
-          bb = Cm(mm) - nm1(mm)*yv(np1)
-          do jj=1, nele(mm)
-            bb = bb + enu(jj,mm)*yv(eidx(jj,mm))
-          end do
-          ss  = exp(min(bb, 600d0))
-          J22 = J22 + melnu(kk,i2)**2*ss
+          J12 = J12 + melnu(kk,i1)*n2p(kk)*ss
         end do
 
         if (H1 < 1d-290) then
@@ -836,7 +1042,7 @@ contains
           ddy = max(min(ddy, 60d0), -60d0)
         endif
         yv(i1) = yv(i1) - ddy
-        if (abs(ddy) < 1d-12) exit
+        if (abs(ddy) < 1d-9) exit
       end do
       call solve_element(i2)
     end subroutine solve_pair

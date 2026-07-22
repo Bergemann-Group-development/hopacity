@@ -1,5 +1,5 @@
 MODULE composition_mod
-  USE trace_mod
+  USE hop_env_mod, only: io, os, trace
   USE prec_mod
   USE op_math_mod
   USE mmath_mod, only: refsor
@@ -11,16 +11,14 @@ MODULE composition_mod
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
   USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
-  USE linelist_mod, only: linelist_type, build_linelist, finalize_linelist, &
-                          ll_add_opacity => add_opacity, &
-                          ll_add_opacity_equi => add_opacity_equi, voigt_peak, &
+  USE line_types_mod, only: linelist_type
+  USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
+                          voigt_peak, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type
   USE optab_mod, only: pca_transform_type
   USE osmet_mod, only:osmet
   USE omp_lib
-  USE os_mod
-  USE io_mod
   use, intrinsic :: ieee_arithmetic
   implicit none
   private
@@ -37,19 +35,30 @@ MODULE composition_mod
     real(dp), dimension(:,:,:), allocatable :: temp, ne, rho, zero
     real(dp), dimension(:,:,:), allocatable :: e_kT, pe, dxi, toth, tothi
     real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
+    ! per-cell warm-start seeds for molecular_equilibrium, carried across
+    ! calls (the ne iteration re-solves the same cells with nearly the
+    ! same state); allocated and maintained by molecular_equilibrium
+    real(dp), dimension(:,:,:,:), allocatable :: moleq_seed
+    ! set by set_aux_data: temp identical to the previous call's, so
+    ! temp-only derived quantities (molecular part/dis) may be reused
+    logical :: same_temp = .false.
+    ! converged occupation-weighted H I log-partition (mhd_eos), carried
+    ! across thermal_equilibrium calls as a warm start for the inner loop
+    real(dp), dimension(:,:,:), allocatable :: part_hocc
     real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
     ! velocities in units of c, already masked by use_vel; the rotated copies each
     ! carry their own, which is what makes them the right home for the RT Doppler shift
     real(4), dimension(:,:,:), allocatable :: vx, vy, vz
-    ! partial derivatives of ln(T) and ln(Pe) per code length unit, evaluated on
-    ! the PCHIP interpolant of the input snapshot (set_gradients), plus ln(Pe)
-    ! itself; consumed by the chain-rule 'hermite' RT solvers.  Rotated copies
-    ! carry only the z pair (their columns already run along the ray); only the
-    ! unrotated composition holds the horizontal partials
+    ! partial derivatives of ln(T) and of Pe (linear, not log) per code length
+    ! unit, evaluated on the PCHIP interpolant of the input snapshot
+    ! (set_gradients), plus a real(4) copy of Pe itself; consumed by the
+    ! chain-rule 'hermite' RT solvers, which assume chi/Pe linear along the ray.
+    ! Rotated copies carry only the z pair (their columns already run along the
+    ! ray); only the unrotated composition holds the horizontal partials
     real(4), dimension(:,:,:), allocatable :: dlnt_dx, dlnt_dy, dlnt_dz
-    real(4), dimension(:,:,:), allocatable :: dlnpe_dx, dlnpe_dy, dlnpe_dz
-    real(4), dimension(:,:,:), allocatable :: lnpe
+    real(4), dimension(:,:,:), allocatable :: dpe_dx, dpe_dy, dpe_dz
+    real(4), dimension(:,:,:), allocatable :: pe4
     ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
     ! ferried from init_tabulated_comp down to each rt_patch's opac table
     type(pca_transform_type) :: pca
@@ -62,6 +71,7 @@ MODULE composition_mod
     procedure :: compute_energy_and_gas_pressure
     procedure :: set_aux_data
     procedure :: init_H_levels
+    procedure :: compute_shield
     procedure :: Hoccupation_partition
     procedure :: molecule_by_id
     procedure :: element_by_id
@@ -78,10 +88,9 @@ MODULE composition_mod
     procedure :: compute_grams_per_hydrogen
     procedure :: compute_damping_aux
     procedure :: overwrite_abundance
-    procedure :: init_linelist
     procedure :: init_linelist2
     procedure :: mask_linelist
-    procedure :: add_linelist_opacities
+    procedure :: mask_departure_species
     procedure :: add_linelist_opacities2
     procedure :: print_ion_table
     procedure :: read_molec_file
@@ -102,7 +111,11 @@ MODULE composition_mod
   end type departure_pointer_t
 
   character(128), public, save :: exclude_elements='', only_elements=''
-  logical, public :: scattering_absorption=.true., mhd_eos=.false.
+  logical, public :: scattering_absorption=.true.
+  ! feed the Hummer-Mihalas occupation-weighted H I partition function into the
+  ! ionization and molecular equilibrium (pressure ionization consistent with
+  ! the H_occupation_probability opacity treatment)
+  logical, public :: mhd_eos=.true.
   logical, public :: helium_scattering=.true.
   real(dp), public :: debug_opac=0
   integer, public :: switch=1
@@ -110,10 +123,11 @@ MODULE composition_mod
   character(len=1024), public :: abundances
   logical, public :: relative_abundances=.false.
   logical, public :: read_departures=.false., departure_indices=.false.
-  logical, public :: sample_back_opac=.false.
-  logical, public :: sample_back_opac_in_output=.false.
   logical, public :: sample_linelist=.false.
-  logical, public :: use_new_linelist=.true. ! switch to the SoA linelist path (linelist_mod)
+  ! split LTE line-list opacity into true absorption and scattering with the
+  ! stage-correct van Regemorter epsilon (osmet_mod%compute_epsilon_stage);
+  ! NLTE lines are untouched -- their scattering lives in the rate equations
+  logical, public :: line_scattering=.false.
   real(4), public :: opac_table_vmic=-1
 
   character(len=3), save :: &
@@ -292,7 +306,8 @@ contains
           else
             element%abund = abund
           endif
-          print '(A, A, A, F8.3)', 'Changing abundance of ', trim(element%id), ' to ', element%abund
+          if (self%verbose > 0) &
+            print '(A, A, A, F8.3)', 'Changing abundance of ', trim(element%id), ' to ', element%abund
         endif
       end do
     endif
@@ -774,203 +789,6 @@ contains
   END SUBROUTINE injon
 
   !===============================================================================
-  SUBROUTINE init_linelist (self, linelist_file, dlam, lam)
-    class(composition_type) :: self
-    class(ion_type), pointer :: HI
-    class(particle_type), pointer :: particle
-    class(bbtrans_type), dimension(:), allocatable :: lines
-    class(bbtrans_type), pointer :: line
-    character(len=*) :: linelist_file
-    real(dp), intent(in) :: dlam
-    real(dp), intent(in), dimension(:), optional :: lam
-    character(20) :: ion_id, siso
-    character(len=512) :: line_text, prev_line
-    real(dp) :: lam0, ent8, ent9, cnt_ev, lam_vac, vbar2e4
-    real(dp) :: upper_ev, upper_g, lower_g, gij, f
-    real(dp) :: lam_min, lam_max
-    character :: lower_orb, upper_orb
-    character(len=150) :: label
-    character(len=32) :: gq
-    character :: char
-    integer :: iso
-    integer :: lunit, iostat, iostat2, iostat3, nline, i, prev, iso_idx, nkh
-    integer, save :: ntotal, nactive
-    logical :: isotope, ok, skip, lam_mask, hlinedata, is_mol
-    integer :: pos, npost, nskipped
-    integer :: itimer=0
-    real(dp) :: r_i, r_j
-    !-----------------------------------------------------------------------------
-    if (linelist_file == '' .and. .not. self%ll_initialised) return
-    call trace%begin ('composition_type%init_linelist', itimer=itimer)
-    self%ll_initialised = .true.
-    lam_mask = present(lam)
-    ntotal = 0
-    nactive = 0
-    nkh = 0
-    hlinedata = endswith(linelist_file, 'Hlinedata')
-
-    if (lam_mask) then
-      lam_min = lam(1) - dlam
-      lam_max = lam(size(lam)) + dlam
-    endif
-
-    call os%check_file(linelist_file)
-    open(newunit=lunit, file=linelist_file, iostat=iostat)
-    do while (iostat==0)
-      read(lunit, *, iostat=iostat) ion_id
-      if (iostat < 0) exit ! End-of-File
-      call print_failed_line(lunit, iostat)
-      read(lunit, *, iostat=iostat) siso, nline
-      call print_failed_line(lunit, iostat)
-      read(siso, *) iso
-      isotope = iso > 0
-      ion_id = trim_between_words(ion_id)
-      nullify(particle)
-      call self%particle_by_id(ion_id(1:6), particle, verbose=.true., is_molecule=is_mol)
-      ok = associated(particle)
-      ntotal = ntotal + nline
-
-      if (ok .and. isotope) then
-        if (associated(particle%isotope)) then
-          iso_idx = findloc(particle%isotope%iso, iso, 1)
-          ok = iso_idx > 0
-        else
-          ok = iso == nint(particle%awgt)
-          isotope = .not. ok
-        endif
-      endif
-
-      if (.not. ok) then
-        if (isotope) then
-          print *, ion_id(1:6), ' isotope ', iso, ' not found!'
-        endif
-        do i=1, nline
-          read(lunit, *, iostat=iostat) ! skipping this ion
-          call print_failed_line(lunit, iostat)
-        end do
-        cycle
-      endif
-
-      npost = 0
-      nskipped = 0
-      if (lam_mask) then
-        pos = nline+1
-        do i=1, nline
-          ! check if line is outside of range
-          read(lunit, *, iostat=iostat2) lam0
-          skip = lam0 < lam_min .or. lam0 > lam_max
-          if (skip) then
-            if (pos<=nline) then
-              ! we are past the lines within range
-              npost = nline - i + 1
-              exit
-            endif
-            nskipped = nskipped + 1
-          elseif (pos>nline) then
-            ! first line in range has been found
-            pos = i
-          endif
-        end do
-        ! jump back to the first line within range
-        do i=pos, min(i, nline)
-          backspace(lunit)
-        end do
-        nskipped = nskipped + npost
-        nline = nline - nskipped
-      endif
-
-      if (nline == 0) cycle
-      particle%in_linelist = .true.
-
-      if (particle%nline == 0) then
-        allocate(particle%line(nline))
-        particle%nline = nline
-        prev = 0
-      else
-        allocate(lines(nline))
-        lines = particle%line
-        deallocate(particle%line)
-        prev = particle%nline
-        particle%nline = particle%nline + nline
-        allocate(particle%line(particle%nline))
-        particle%line(1:prev) = lines
-        deallocate(lines)
-      endif
-
-      if (isotope) then
-        vbar2e4 = particle%isotope(iso_idx)%compute_vbar2(10000.)
-      else
-        vbar2e4 = particle%compute_vbar2(10000.)
-      endif
-
-      do i=1, nline
-        line => particle%line(prev+i)
-        read(lunit, '(A)', iostat=iostat) line_text
-
-        if (hlinedata) then
-          ! this is a specific Hlinedata format
-          read(line_text, *, iostat=iostat2) line%lam_air, line%i, line%j, line%lower_ev, upper_ev, line%loggf, label, line%ga_in
-        else
-          ! It will try to read as many of these parameters as possible,
-          ! but only lam0 lower_ev and loggf are required.
-          ! Broadening parameters are zero by default if not overwritten here.
-          r_i = 0
-          r_j = 0
-          read(line_text, *, iostat=iostat2) line%lam_air, line%lower_ev, line%loggf, &
-            line%gv_in, line%ga_in, line%gq_in, r_i, r_j
-          line%i = nint(r_i)
-          line%j = nint(r_j)
-          departure_indices = departure_indices .or. line%i>0 .or. line%j>0
-        endif
-        call print_failed_line(lunit, iostat2, line_text)
-
-        line%lam0 = air2vac(line%lam_air)
-        line%nu0 = HZ_TO_AA / line%lam0
-
-        if (particle%id == 'H I') then
-          if (.not. hlinedata) then
-            upper_ev = line%lower_ev + H_E*line%nu0
-            line%i = nint(sqrt(RydV / (RydV-line%lower_ev)))
-            line%j = nint(sqrt(RydV / (RydV-upper_ev)))
-          endif
-          lower_g = 2 * line%i**2
-          line%upper_g = 2 * line%j**2
-          gij = lower_g / line%upper_g
-          f = 10**line%loggf / lower_g
-          call line%init_einstein_coefficients(f, gij)
-          call prepare_hydrogen_damping(line) ! ga is overwritten
-          nkh = max(line%j, nkh)
-        else
-          f = 10**line%loggf
-          if (isotope) then
-            line%iso_idx = iso_idx
-            f = f * particle%isotope(iso_idx)%frac
-          endif
-
-          call line%init_einstein_coefficients(f, 1.d0)
-          call line%prepare_Radiative(line%ga_in)
-          call line%prepare_Stark(line%gq_in, particle%j, particle%xion)
-          call line%prepare_VanderWaals(line%gv_in, particle%j, particle%xion, vbar2e4, is_mol)
-        endif
-        allocate(line%used, source=.false.)
-        allocate(line%strength, source=0.d0)
-        if (line%active) nactive = nactive + 1
-      end do
-      ! skip the rest of the lines outside of range
-      do i=i, nline+npost
-        read(lunit, *)
-      end do
-    end do
-    close(lunit)
-    print '(I12, a, I12, a, a)', nactive, ' of ', ntotal, ' lines read from linelist ', trim(linelist_file)
-    self%nline = nactive
-    call self%ion_by_id('H I', HI)
-    HI%nk = max(HI%nk, nkh)
-    call self%mask_linelist()
-    call trace%end(itimer)
-  END SUBROUTINE init_linelist
-
-  !===============================================================================
   SUBROUTINE mask_linelist (self)
     class(composition_type), target :: self
     class(element_type), pointer :: element
@@ -1009,232 +827,58 @@ contains
   END SUBROUTINE mask_linelist
 
   !===============================================================================
-  SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures)
+  ! Disable the line list for every species named in ids (element symbol or
+  ! molecule formula), at the same per-element / per-molecule granularity as the
+  ! departure_matches association (an element key covers all its ion stages).
+  ! Used to strip the departure-carrying (NLTE) species out of tab_comp before
+  ! building the sampled LTE line-list table, so those lines are instead handled
+  ! in detail per cell with their departure coefficients.
+  !===============================================================================
+  SUBROUTINE mask_departure_species (self, ids)
     class(composition_type), target :: self
+    character(len=*), intent(in), dimension(:) :: ids
     class(element_type), pointer :: element
-    class(ion_type), pointer :: ion, HeI
     class(molec_type), pointer :: mol
-    class(departure_pointer_t), pointer :: dep
-    class(bbtrans_type), pointer :: line
-    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
-    class(spectrum_type) :: sp
-    real(4), intent(inout), dimension(:,:,:,:) :: all_chi
-    real(8), intent(in) :: dlam
-    real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
-    real(4), intent(inout), dimension(:,:,:,:) :: all_eta
-    real(4), dimension(:,:,:), allocatable :: tothi, adamp, stark_pe, ne, temp, e_kT, dxij, chi_fac, unsold
-    real(4), dimension(:,:,:), allocatable, target :: inv_part, vbar2, inv_df, iso_vbar2, iso_inv_df
-    real(4), dimension(:,:,:), pointer, contiguous :: ipart, vpr, fo, t3nhe, ni, nj
-    real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
-    real(4), dimension(:,:,:), pointer :: bi, bj
-    integer :: i, j, k, l, f, f0, nactive, m(3), nf
-    real(8) :: cnt_ev, gf, awgt, iso_awgt, dl
-    real(4) :: scalar, beta, bnu, h_kT, hv_kT, eta, chi
-    logical :: departures_present, do_nlte
-    integer, save:: itimer=0
-    !---------------------------------------------------------------------------
-    call trace%begin ('composition_type%add_linelist_opacities', itimer=itimer)
-    m = shape(self%ne)
-    allocate(tothi(m(1),m(2),m(3)))
-    allocate(adamp,        mold=tothi)
-    allocate(stark_pe,     mold=tothi)
-    allocate(ne,           mold=tothi)
-    allocate(temp,         mold=tothi)
-    allocate(e_kT,         mold=tothi)
-    allocate(inv_df,       mold=tothi)
-    allocate(iso_inv_df,   mold=tothi)
-    allocate(inv_part,     mold=tothi)
-    allocate(vbar2,        mold=tothi)
-    allocate(iso_vbar2,    mold=tothi)
-    allocate(dxij,         mold=tothi)
-    allocate(chi_fac,      mold=tothi)
-    allocate(unsold,       mold=tothi)
-    allocate(fo,           mold=tothi)
-    allocate(t3nhe,        mold=tothi)
-    allocate(ni,           mold=tothi)
-    allocate(nj,           mold=tothi)
-
-    allocate(chi_l, mold=all_chi)
-    allocate(eta_l, mold=all_chi)
-    chi_l = 0.
-    eta_l = 0.
-
-    departures_present = present(departures)
-
-    if (present(vproj)) then
-      vpr => vproj
-    else
-      allocate(vpr, mold=tothi)
-      vpr = 0
-    endif
-
-    ne   = real(self%ne)
-    temp = real(self%temp)
-    e_kT = real(self%e_kT)
-    tothi = real(self%tothi)
-    stark_pe = real(self%stark_pe)
-
-    element => self%elements(1)
-    ion => element%ions(1)
-    if (ion%in_linelist .and. ion%nline > 0) then
-      fo = self%fo
-      vbar2 = self%vbar2h
-      t3nhe = self%t3nhe
-      inv_df = element%inverse_doppler_factor(temp, self%vmic)
-      call get_departure_coefficients(ion, dep)
-
-      do l=1, ion%nline
-        line => ion%line(l)
-        if (.not. line%active) cycle
-        call line%get_center(sp%lam, dlam, f0)
-        if (f0 == 0) cycle
-
-        if (associated(dep) .and. .true.) then
-          line%i = find_closest(dep%ev, 100*ion%j + line%lower_ev)
-          line%j = find_closest(dep%ev, 100*ion%j + line%lower_ev + H_E*line%nu0)
-          !print *, 'attached line to levels ', line%lower_ev, dep%ev(line%i), line%lower_ev + H_E*line%nu0, dep%ev(line%j)
-        endif
-
-        ni = ion%levels(line%i)%n
-        nj = ion%levels(line%j)%n
-
-        if (H_occupation_probability) then
-          ni = ni * ion%levels(line%j)%w
-          nj = nj * ion%levels(line%j)%w
-        endif
-
-        do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
-
-        if (do_nlte) then
-          bi => dep%mem(:,:,:,line%i)
-          bj => dep%mem(:,:,:,line%j)
-        endif
-
-        call add_h_opacities(line, f0, sp%nu, vpr, inv_df, temp, &
-          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte)
-      end do
-    endif
-
-    do i=2, self%nel
+    integer :: i, di
+    logical :: hit
+    ! ----------------------------------------------------------------------------
+    do i=1, self%nel
       element => self%elements(i)
-      if (.not. any(element%ions%in_linelist)) cycle
-      do j=lbound(element%ions,1), ubound(element%ions,1)
-        ion => element%ions(j)
-        call particle_add_opacities(ion, inv_df, vbar2, unsold, inv_part, dxij, &
-          ne, tothi, stark_pe, temp, e_kT, all_chi, chi_l, eta_l)
+      hit = .false.
+      do di=1, size(ids)
+        if (uppercase(trim(element%id)) == uppercase(trim(ids(di)))) then
+          hit = .true.; exit
+        endif
       end do
+      if (hit) then
+        if (sum(element%ions%nline, 1) > 0) &
+          print *, 'sample_linelist: ', trim(element%id), ' has departures -> excluded from LTE table'
+        element%ions%in_linelist = .false.
+      endif
     end do
-
     do i=1, self%nmolec
       mol => self%molecules(i)
-      call particle_add_opacities(mol, inv_df, vbar2, unsold, inv_part, dxij, &
-        ne, tothi, stark_pe, temp, e_kT, all_chi, chi_l, eta_l)
+      hit = .false.
+      do di=1, size(ids)
+        if (uppercase(trim(mol%id)) == uppercase(trim(ids(di)))) then
+          hit = .true.; exit
+        endif
+      end do
+      if (hit) then
+        if (mol%nline > 0) &
+          print *, 'sample_linelist: ', trim(mol%id), ' has departures -> excluded from LTE table'
+        mol%in_linelist = .false.
+      endif
     end do
-
-    nf = sp%nnu
-
-    do k=1, m(3)
-      do j=1, m(2)
-        do i=1, m(1)
-          do f=1, nf
-            all_eta(f,i,j,k) = all_eta(f,i,j,k) + eta_l(f,i,j,k)
-            all_chi(f,i,j,k) = all_chi(f,i,j,k) + chi_l(f,i,j,k)
-          end do
-        end do
-      end do
-    end do
-    if (.not. present(vproj)) deallocate(vpr)
-    call trace%end(itimer)
-
-  contains
-    ! --------------------------------------------------------------------------
-    subroutine get_departure_coefficients(ptc, dep)
-      class(particle_type), target :: ptc
-      class(departure_pointer_t), pointer :: dep
-      integer :: di
-      !---------------------------------------------------------------------------
-      dep => null()
-      if (.not. departures_present) return
-
-      do di=1, size(departures)
-        if (departures(di)%matches(ptc)) then
-          dep => departures(di)
-          exit
-        endif
-      end do
-    end subroutine get_departure_coefficients
-
-    ! --------------------------------------------------------------------------
-    subroutine particle_add_opacities(ptc, inv_df, vbar2, unsold, inv_part, dxij, &
-      ne, tothi, stark_pe, temp, e_kT, all_chi, chi_l, eta_l)
-      class(particle_type), target :: ptc
-      class(bbtrans_type), pointer :: line
-      class(isotope_type), pointer :: iso
-      real(4), dimension(:,:,:), pointer :: beta0
-      real(4), dimension(:,:,:), pointer, contiguous :: vb2, idopf
-      real(4), dimension(:,:,:), contiguous :: inv_part, unsold
-      real(4), dimension(:,:,:), contiguous, target :: vbar2, inv_df
-      real(4), dimension(:,:,:,:), contiguous :: chi_l, eta_l, all_chi
-      real(4), dimension(:,:,:), contiguous :: ne, tothi, stark_pe, temp, e_kT, dxij
-      integer :: prev_iso
-      !---------------------------------------------------------------------------
-      if (.not. ptc%in_linelist) return
-      if (.not. allocated(ptc%n)) stop 'particle density not allocated'
-
-      inv_df = ptc%inverse_doppler_factor(temp, self%vmic)
-      vbar2 = ptc%compute_vbar2(temp)
-      unsold = vbar2**0.3 * tothi
-      prev_iso = 0
-      do_nlte = .true.
-
-      ! ptc%part is actually the log partition
-      inv_part = ptc%n * exp(-ptc%part)
-      dxij = real(self%dxi) * (ptc%j-1)
-      call get_departure_coefficients(ptc, dep)
-
-      do l=1, ptc%nline
-        line => ptc%line(l)
-        if (.not. line%active) cycle
-        call line%get_center(sp%lam, dlam, f0)
-        if (f0 == 0) cycle
-
-        if (associated(dep)) then
-          line%i = find_closest(dep%ev, 100*ptc%j + line%lower_ev)
-          line%j = find_closest(dep%ev, 100*ptc%j + line%lower_ev + H_E*line%nu0)
-        endif
-
-        do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
-
-        if (do_nlte) then
-          bi => dep%mem(:,:,:,line%i)
-          bj => dep%mem(:,:,:,line%j)
-        endif
-
-        if (line%iso_idx == 0) then
-          vb2 => vbar2
-          idopf => inv_df
-        elseif (line%iso_idx /= prev_iso) then
-          iso => ptc%isotope(line%iso_idx)
-          iso_inv_df = iso%inverse_doppler_factor(temp, self%vmic)
-          iso_vbar2 = iso%compute_vbar2(temp)
-          vb2 => iso_vbar2
-          idopf => iso_inv_df
-        endif
-        prev_iso = line%iso_idx
-
-        call add_opacities(line, f0, sp%nu, vpr, idopf, e_kT, dxij, inv_part, ne, tothi, &
-          vb2, stark_pe, unsold, bi, bj, chi_l, eta_l, all_chi, do_nlte)
-      end do
-    end subroutine particle_add_opacities
-  END SUBROUTINE add_linelist_opacities
+  END SUBROUTINE mask_departure_species
 
   !===============================================================================
   ! init_linelist2 -- structure-of-arrays reader for the new linelist path.
   ! Reads the whole file into memory (no backspace), splits it into per-species
   ! blocks, and builds each particle's SoA linelist (particle%ll) via linelist_mod.
-  ! Hydrogen lines are special (Stark profiles); a dedicated 'Hlinedata' file is
-  ! delegated to the original AoS init_linelist, and stray H I blocks in metal
-  ! files are skipped with a warning.
+  ! Hydrogen lines are special (Stark profiles) and kept in the AoS particle%line
+  ! via add_h_block, which handles both the embedded H I block layout and the
+  ! dedicated 'Hlinedata' column layout (selected by the hlinedata flag).
   !-------------------------------------------------------------------------------
   SUBROUTINE init_linelist2 (self, linelist_file, dlam, lam)
     class(composition_type), target :: self
@@ -1250,7 +894,7 @@ contains
     integer :: lunit, iostat, nrec, p, nline, iso, iso_idx, nbefore, nkh, rel
     integer :: i, j, nactive, ntotal, niso
     integer(8) :: fsize, b0, bnl, e
-    logical :: isotope, ok, is_mol, lam_mask
+    logical :: isotope, ok, is_mol, lam_mask, hlinedata
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
     !-----------------------------------------------------------------------------
     if (linelist_file == '' .and. .not. self%ll_initialised) return
@@ -1267,11 +911,9 @@ contains
       call ensure_ll_allocated(self%molecules(i))
     end do
 
-    ! hydrogen lines keep the original (AoS / Stark-profile) treatment
-    if (endswith(linelist_file, 'Hlinedata')) then
-      call self%init_linelist(linelist_file, dlam, lam)
-      return
-    endif
+    ! hydrogen lines keep the AoS / Stark-profile treatment (add_h_block); a
+    ! dedicated 'Hlinedata' file just uses the alternate H column layout there.
+    hlinedata = endswith(linelist_file, 'Hlinedata')
     call trace%begin ('composition_type%init_linelist2', itimer=itimer)
     self%ll_initialised = .true.
 
@@ -1424,7 +1066,15 @@ contains
       allocate(p%ll(0:niso))
     end subroutine ensure_ll_allocated
 
-    ! hydrogen block -> AoS particle%line(:), matching the original init_linelist
+    ! hydrogen block -> AoS particle%line(:) (Stark-profile / add_h_opacities path).
+    ! Two column layouts are accepted, selected by hlinedata:
+    !   hlinedata=.true.  (dedicated 'Hlinedata' file):
+    !       lam_air, i, j, lower_ev, upper_ev, loggf, label, ga_in
+    !     -- principal quantum numbers i,j are read directly from the file.
+    !   hlinedata=.false. (H I block embedded in a metal file):
+    !       lam_air, lower_ev, loggf, gv, ga, gq, i, j
+    !     -- i,j are derived from the level energies.
+    ! The ga/label columns are inert (prepare_hydrogen_damping overwrites ga).
     subroutine add_h_block(particle, buf, lstart, lend, n)
       class(particle_type), pointer :: particle
       character(len=*), intent(in) :: buf
@@ -1432,9 +1082,10 @@ contains
       integer, intent(in) :: n
       class(bbtrans_type), pointer :: lin
       type(bbtrans_type), allocatable :: tmp(:)
-      real(dp) :: lam_air_h, lower_ev_h, loggf_h, gv_h, ga_h, gq_h, r_i, r_j
+      real(dp) :: lam_air_h, lower_ev_h, upper_ev_h, loggf_h, gv_h, ga_h, gq_h, r_i, r_j
       real(dp) :: lam0v, upper_ev, lower_g, gij, fval
-      integer :: ii, ios, prev, nkeep, cnt
+      character(len=150) :: label
+      integer :: ii, ios, prev, nkeep, cnt, i_h, j_h
       logical :: keep
       !-------------------------------------------------------------------------
       ! first pass: count masked-in lines so particle%line is sized exactly
@@ -1459,8 +1110,13 @@ contains
       cnt = prev
       do ii=1, n
         gv_h = 0; ga_h = 0; gq_h = 0; r_i = 0; r_j = 0
-        read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h, lower_ev_h, loggf_h, &
+        if (hlinedata) then
+          read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h, i_h, j_h, &
+                                          lower_ev_h, upper_ev_h, loggf_h, label, ga_h
+        else
+          read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h, lower_ev_h, loggf_h, &
                                           gv_h, ga_h, gq_h, r_i, r_j
+        endif
         lam0v = air2vac(lam_air_h)
         if (lam_mask) then
           if (lam0v < lam_min .or. lam0v > lam_max) cycle
@@ -1471,9 +1127,14 @@ contains
         lin%gv_in = gv_h; lin%ga_in = ga_h; lin%gq_in = gq_h
         lin%lam0 = lam0v
         lin%nu0  = HZ_TO_AA / lin%lam0
-        upper_ev = lin%lower_ev + H_E*lin%nu0
-        lin%i = nint(sqrt(RydV / (RydV-lin%lower_ev)))
-        lin%j = nint(sqrt(RydV / (RydV-upper_ev)))
+        if (hlinedata) then
+          lin%i = i_h
+          lin%j = j_h
+        else
+          upper_ev = lin%lower_ev + H_E*lin%nu0
+          lin%i = nint(sqrt(RydV / (RydV-lin%lower_ev)))
+          lin%j = nint(sqrt(RydV / (RydV-upper_ev)))
+        endif
         lower_g = 2 * lin%i**2
         lin%upper_g = 2 * lin%j**2
         gij  = lower_g / lin%upper_g
@@ -1499,11 +1160,11 @@ contains
   END SUBROUTINE init_linelist2
 
   !===============================================================================
-  ! add_linelist_opacities2 -- SoA opacity orchestrator (drop-in for
-  ! add_linelist_opacities). The hydrogen block is identical to the AoS routine;
-  ! metals and molecules use the linelist_mod kernel.
+  ! add_linelist_opacities2 -- SoA opacity orchestrator. The hydrogen block uses
+  ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
   !-------------------------------------------------------------------------------
-  SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures)
+  SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
+                                     only_departures, one_m_eps, chi_scat)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1511,6 +1172,16 @@ contains
     class(departure_pointer_t), pointer :: dep
     class(bbtrans_type), pointer :: line
     class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
+    ! only_departures=.true. skips every particle that has no matching departure
+    ! set, i.e. processes only NLTE species -- the complement of the masked
+    ! tab_comp used to build the sampled LTE line table (sample_linelist).
+    logical, intent(in), optional :: only_departures
+    ! line_scattering: precomputed scattering fractions 1-eps per stage group
+    ! (last index 1=neutral incl. molecules, 2=ionized) and the accumulator the
+    ! (1-eps)-weighted LTE line opacity is added to; hydrogen (AoS block) stays
+    ! thermal
+    real(4), intent(in),    dimension(:,:,:,:,:), optional :: one_m_eps
+    real(4), intent(inout), dimension(:,:,:,:),   optional :: chi_scat
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
@@ -1519,14 +1190,12 @@ contains
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
     real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
     real(4), dimension(:,:,:,:), allocatable :: dummy_dep, logref
-    real(4), dimension(:,:,:),   allocatable :: idf3, vb3
-    real(4), dimension(:,:,:,:), allocatable :: lnbase
     real(4), dimension(:,:,:), pointer, contiguous :: vpr
     real(4), dimension(:,:,:), pointer :: bi, bj
     real(8), dimension(:), allocatable :: llam
     real(4) :: log_tol_over_voigt_peak
     integer :: i, j, k, l, f, f0, m(3), nf
-    logical :: departures_present, do_nlte
+    logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
     call trace%begin ('composition_type%add_linelist_opacities2', itimer=itimer)
@@ -1534,14 +1203,15 @@ contains
     nf = sp%nnu
     allocate(tothi(m(1),m(2),m(3)))
     allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
-             ni, nj, idf3, vb3, mold=tothi)
-    allocate(lnbase(m(1),m(2),m(3),1))
+             ni, nj, mold=tothi)
     allocate(chi_l, eta_l, mold=all_chi)
     allocate(dummy_dep(m(1),m(2),m(3),1), source=0.)
     chi_l = 0.
     eta_l = 0.
 
     departures_present = present(departures)
+    skip_lte = .false.
+    if (present(only_departures)) skip_lte = only_departures
     if (present(vproj)) then
       vpr => vproj
     else
@@ -1570,12 +1240,13 @@ contains
     ! --- hydrogen: identical to the AoS path (Stark profiles via add_h_opacities) ---
     element => self%elements(1)
     ion => element%ions(1)
-    if (ion%in_linelist .and. ion%nline > 0) then
+    call get_departure_coefficients(ion, dep)
+    if (ion%in_linelist .and. ion%nline > 0 .and. &
+        .not. (skip_lte .and. .not. associated(dep))) then
       fo = self%fo
       vbar2 = self%vbar2h
       t3nhe = self%t3nhe
       inv_df = element%inverse_doppler_factor(temp, self%vmic)
-      call get_departure_coefficients(ion, dep)
 
       do l=1, ion%nline
         line => ion%line(l)
@@ -1655,63 +1326,34 @@ contains
     ! --------------------------------------------------------------------------
     subroutine particle_add_opacities_soa(ptc)
       class(particle_type), target :: ptc
-      integer :: niso, ll_n, kiso
-      real(dp) :: iso_frac
+      real(8) :: no_ev(1)              ! placeholder dep_ev; unused in the LTE call
       !-------------------------------------------------------------------------
       if (.not. ptc%in_linelist) return
       if (.not. allocated(ptc%n)) stop 'particle density not allocated'
-      niso = ubound(ptc%ll, 1)     ! ll(0:niso), index 0 = main isotope
 
       call get_departure_coefficients(ptc, dep)
+      if (skip_lte .and. .not. associated(dep)) return   ! LTE species live in the sampled table
 
-      ! one kernel call per isotope: its own line list ll(kiso), Doppler width,
-      ! mean velocity and isotope fraction (the fraction is applied here, per
-      ! isotope, rather than folded into each line's gpref -- see build_linelist)
-      do kiso=0, niso
-        associate(sll => ptc%ll(kiso))
-          ll_n = sll%nline
-          if (ll_n == 0) cycle
-
-          if (kiso == 0) then
-            idf3 = ptc%inverse_doppler_factor(temp, self%vmic)
-            vb3  = ptc%compute_vbar2(temp)
-            iso_frac = 1
-          else
-            idf3 = ptc%isotope(kiso)%inverse_doppler_factor(temp, self%vmic)
-            vb3  = ptc%isotope(kiso)%compute_vbar2(temp)
-            iso_frac = ptc%isotope(kiso)%frac
-          endif
-
-          ! ptc%part is the log partition function; lnbase carries the density, the
-          ! continuum lowering, this isotope's Doppler factor and its fraction
-          lnbase(:,:,:,1) = log(ptc%n) - ptc%part &
-                          + real(self%dxi) * (ptc%j-1) * e_kT + log(idf3) &
-                          + real(log(iso_frac), 4)
-
-          if (associated(dep)) then
-            do l=1, ll_n
-              sll%lev_i(l) = find_closest(dep%ev, 100*ptc%j + real(sll%lower_ev(l), 8))
-              sll%lev_j(l) = find_closest(dep%ev, 100*ptc%j + real(sll%lower_ev(l), 8) + H_E*sll%nu0(l))
-            end do
-            ! arithmetic kernel on a uniform log(lambda) grid, else the general march
-            if (sp%equidistant) then
-              call ll_add_opacity_equi(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
-                vb3, e_kT, lnbase, ne, tothi, stark_pe, dep%mem, .true.)
-            else
-              call ll_add_opacity(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
-                vb3, e_kT, lnbase, ne, tothi, stark_pe, dep%mem, .true.)
-            endif
-          else
-            if (sp%equidistant) then
-              call ll_add_opacity_equi(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
-                vb3, e_kT, lnbase, ne, tothi, stark_pe, dummy_dep, .false.)
-            else
-              call ll_add_opacity(sll, llam, chi_l, eta_l, all_chi, logref, vpr, idf3, &
-                vb3, e_kT, lnbase, ne, tothi, stark_pe, dummy_dep, .false.)
-            endif
-          endif
-        end associate
-      end do
+      ! the per-isotope population base / Doppler width construction and the kernel
+      ! dispatch now live in linelist_mod (add_particle_opacity); we own only the patch
+      ! work arrays and the departure lookup, and hand the resolved dep arrays in.
+      if (associated(dep)) then
+        ! NLTE species: departure-coefficient source, no scattering split
+        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
+          .true., sp%equidistant)
+      elseif (present(one_m_eps) .and. present(chi_scat)) then
+        ! LTE species with the stage-appropriate scattering fraction
+        ! (molecules keep the default j=1 -> neutral p-function)
+        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
+          .false., sp%equidistant, &
+          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat)
+      else
+        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
+          .false., sp%equidistant)
+      endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2
 
@@ -1802,6 +1444,11 @@ contains
       stop
     endif
 
+    ! NOTE: this cleanup is partial (chi500/fo/vbar2h/t3nhe are not freed, and
+    ! ion_type retains partial state after the deallocate loop below), so a
+    ! second call on the same instance aborts.  Every caller -- dispatch and
+    ! the standalone hop_c_api -- copies a never-loaded composition and loads
+    ! exactly once per copy.
     if (self%loaded) then
       deallocate(self%temp)
       deallocate(self%ne, self%rho, self%pe, self%pg, self%E, self%eh)
@@ -1812,6 +1459,8 @@ contains
     endif
 
     allocate(self%temp, self%ne, self%rho, self%pe, self%pg, self%E, self%eh, mold=temp)
+    self%temp = -1 ! sentinel: never matches a physical temp in same_temp
+    self%same_temp = .false.
     allocate(self%toth, self%teta, self%dxi, self%lsaha, self%fo, self%vbar2h, self%t3nhe, mold=temp)
     allocate(self%e_kT, self%p6, ro, self%stark_pe, self%tothi, self%zero, mold=temp)
     if (present(vmic)) allocate(self%vmic, source=vmic)
@@ -1883,33 +1532,34 @@ contains
   END SUBROUTINE load_state_variables
 
   !=========================================================================
-  !> Store the ln(T)/ln(Pe) gradients captured from the snapshot interpolant
-  !> (per code length unit) and cache ln(Pe) itself, so the chain-rule RT
-  !> solvers never take logs in hot code.  Must be called after
+  !> Store the ln(T) and Pe gradients captured from the snapshot interpolant
+  !> (per code length unit; the Pe gradients are of Pe itself, not its log)
+  !> and cache a real(4) copy of Pe, so the chain-rule RT solvers never
+  !> convert precision in hot code.  Must be called after
   !> load_state_variables, which finalizes self%pe.  The horizontal partials
   !> are optional -- rotated compositions carry only the z pair.
   !=========================================================================
-  SUBROUTINE set_gradients(self, dlnt_dz, dlnpe_dz, dlnt_dx, dlnt_dy, dlnpe_dx, dlnpe_dy)
+  SUBROUTINE set_gradients(self, dlnt_dz, dpe_dz, dlnt_dx, dlnt_dy, dpe_dx, dpe_dy)
     class(composition_type) :: self
-    real(4), intent(in), dimension(:,:,:) :: dlnt_dz, dlnpe_dz
-    real(4), intent(in), dimension(:,:,:), optional :: dlnt_dx, dlnt_dy, dlnpe_dx, dlnpe_dy
+    real(4), intent(in), dimension(:,:,:) :: dlnt_dz, dpe_dz
+    real(4), intent(in), dimension(:,:,:), optional :: dlnt_dx, dlnt_dy, dpe_dx, dpe_dy
     !---------------------------------------------------------------------------
     if (.not. self%loaded) then
       print *, 'set_gradients must be called after load_state_variables'
       stop
     endif
-    if (allocated(self%dlnt_dz))  deallocate(self%dlnt_dz, self%dlnpe_dz)
-    if (allocated(self%dlnt_dx))  deallocate(self%dlnt_dx, self%dlnt_dy)
-    if (allocated(self%dlnpe_dx)) deallocate(self%dlnpe_dx, self%dlnpe_dy)
-    if (allocated(self%lnpe))     deallocate(self%lnpe)
-    allocate(self%dlnt_dz,  source=dlnt_dz)
-    allocate(self%dlnpe_dz, source=dlnpe_dz)
-    if (present(dlnt_dx))  allocate(self%dlnt_dx,  source=dlnt_dx)
-    if (present(dlnt_dy))  allocate(self%dlnt_dy,  source=dlnt_dy)
-    if (present(dlnpe_dx)) allocate(self%dlnpe_dx, source=dlnpe_dx)
-    if (present(dlnpe_dy)) allocate(self%dlnpe_dy, source=dlnpe_dy)
-    allocate(self%lnpe(size(dlnt_dz,1), size(dlnt_dz,2), size(dlnt_dz,3)))
-    self%lnpe = real(log(self%pe), 4)
+    if (allocated(self%dlnt_dz)) deallocate(self%dlnt_dz, self%dpe_dz)
+    if (allocated(self%dlnt_dx)) deallocate(self%dlnt_dx, self%dlnt_dy)
+    if (allocated(self%dpe_dx))  deallocate(self%dpe_dx, self%dpe_dy)
+    if (allocated(self%pe4))     deallocate(self%pe4)
+    allocate(self%dlnt_dz, source=dlnt_dz)
+    allocate(self%dpe_dz,  source=dpe_dz)
+    if (present(dlnt_dx)) allocate(self%dlnt_dx, source=dlnt_dx)
+    if (present(dlnt_dy)) allocate(self%dlnt_dy, source=dlnt_dy)
+    if (present(dpe_dx))  allocate(self%dpe_dx,  source=dpe_dx)
+    if (present(dpe_dy))  allocate(self%dpe_dy,  source=dpe_dy)
+    allocate(self%pe4(size(dlnt_dz,1), size(dlnt_dz,2), size(dlnt_dz,3)))
+    self%pe4 = real(self%pe, 4)
   END SUBROUTINE set_gradients
 
   !=========================================================================
@@ -1919,11 +1569,18 @@ contains
     class(ion_type), pointer :: ion, HI, HeI
     real(dp), intent(in),  dimension(:,:,:) :: temp, ne
     real(dp), intent(out), dimension(:,:,:) :: rho
-    real(dp), dimension(:,:,:), allocatable :: fe, xnen, xnecno, toth, dxi, hpart
+    real(dp), dimension(:,:,:), allocatable :: fe, xnen, xnecno, toth, hpart
     type(ion_pointer_t), dimension(:), allocatable :: mions
     integer :: i, j, nions, itimer=0, itimer2=0, itimer3=0, x, y, z
+    logical :: converged
+    logical, save :: hocc_warned = .false.
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%thermal_equilibrium', itimer=itimer)
+    if ((mhd_eos .neqv. H_occupation_probability) .and. .not. hocc_warned) then
+      hocc_warned = .true.
+      print '(a)', ' WARNING: mhd_eos and H_occupation_probability differ;'// &
+                   ' EOS and opacity treat H level dissolution inconsistently'
+    endif
     allocate(fe, xnen, xnecno, toth, mold=temp)
     call self%set_aux_data(temp, ne)
     call self%ion_by_id('H I', HI)
@@ -1931,6 +1588,15 @@ contains
 
     fe = 0
     xnecno = 0
+    if (mhd_eos) then
+      allocate(hpart, mold=self%temp)
+      HI%state_dependent_part = .true.   ! veto temp-only moleq dis caching
+      ! no Debye lowering on the H I -> H II step: the charged-perturber factor
+      ! in wcalc is itself a continuum-lowering model, and applying both
+      ! double-counts.  H- keeps its Debye term (dxi_fac=2): its binding is not
+      ! described by the H-atom occupation weights.
+      HI%dxi_fac = 0
+    endif
 
     do i=1, self%nel
       element => self%elements(i)
@@ -1939,6 +1605,13 @@ contains
       call trace%end(itimer2)
 
       call trace%begin ('composition_type%ion_equilibrium', itimer=itimer3)
+      if (mhd_eos .and. i == 1) then
+        ! hydrogen: occupation-weighted partition from the previous call as a
+        ! warm start, refined after molecular equilibrium below
+        if (allocated(self%part_hocc)) then
+          if (all(shape(self%part_hocc) == shape(self%temp))) HI%part = self%part_hocc
+        endif
+      endif
       call element%compute_ion_equilibrium(self%e_kT, self%lsaha, self%dxi)
       call trace%end(itimer3)
 
@@ -1956,20 +1629,6 @@ contains
       end do
     end do
 
-    ! if (mhd_eos) then
-    !   allocate(dxi, hpart, mold=self%temp)
-    !   do i=1, 5
-    !     toth = ne / fe
-    !     HI%n = HI%f * toth
-    !     HeI%n = HeI%f * toth
-    !     call self%Hoccupation_partition(HI%n, HeI%n, hpart)
-    !     hpart = max(1e-40, hpart)
-    !     dxi = - log(hpart*HI%part) / self%e_kT
-    !     call self%elements(1)%compute_ion_equilibrium(self%e_kT, self%lsaha, dxi=dxi)
-    !     call self%elements(2)%compute_ion_equilibrium(self%e_kT, self%lsaha, dxi=dxi)
-    !   end do
-    ! endif
-
     if (self%nmolec > 0) then
       ! solve elements: the neutral root of every molecule-forming element
       nions = 0
@@ -1985,13 +1644,60 @@ contains
         endif
       end do
       call molecular_equilibrium(self%molecules, mions, self%tmolim, self%temp, &
-                                 self%teta, self%e_kT, self%pe, xnecno, fe)
+                                 self%teta, self%e_kT, self%pe, xnecno, fe, &
+                                 ysave=self%moleq_seed, same_state=self%same_temp)
     endif
 
     ! total hydrogen number density, computed from scratch
     toth = ne / fe
     ! mass density computed from scratch
     rho = toth * self%grph
+
+    if (mhd_eos) then
+      ! Feed the Hummer-Mihalas occupation-weighted H I partition function into
+      ! the ionization balance.  Overwriting HI%part (rather than a dxi shim)
+      ! makes H-, the Saha ladder, and the molecular equilibrium (get_dis uses
+      ! ion%part) all see the same dissolved partition.  The update is
+      ! evaluated here, after molecular equilibrium, where toth is physical
+      ! (H-, H2 and metal donors balanced; the pre-moleq fe can pass through
+      ! zero at cool dense states).  If the partition moved, hydrogen and the
+      ! molecules are re-solved; with the part_hocc warm start installed in the
+      ! Saha loop above the tolerance is met on the first check in all but the
+      ! first call, so the re-solve is cold-start only.
+      do i=1, 6
+        HI%n  = max(HI%f  * toth, 0d0)
+        HeI%n = max(HeI%f * toth, 0d0)
+        call self%Hoccupation_partition(HI%n, HeI%n, hpart)
+        hpart = log(max(hpart, 1d-40))
+        ! tolerance well below the ne-secant's rho tolerance, so the partition
+        ! lag never limits the rho(T,ne) round-trip fidelity; NaN-safe: cells
+        ! the outer ne iteration has driven to garbage must not keep the loop
+        ! from exiting
+        converged = .not. any(abs(hpart - HI%part) >= 1d-5)
+        HI%part = hpart
+        if (converged) exit
+        ! re-solve hydrogen, tracking its electron contribution
+        ! (H- has j=0 and contributes -f); xnecno excludes H
+        call h_electrons(xnen)
+        fe = fe - xnen
+        call self%elements(1)%compute_ion_equilibrium(self%e_kT, self%lsaha, self%dxi)
+        call h_electrons(xnen)
+        fe = fe + xnen
+        if (self%nmolec > 0) then
+          call molecular_equilibrium(self%molecules, mions, self%tmolim, self%temp, &
+                                     self%teta, self%e_kT, self%pe, xnecno, fe, &
+                                     ysave=self%moleq_seed, same_state=self%same_temp)
+        endif
+        toth = ne / fe
+        rho = toth * self%grph
+      end do
+      if (allocated(self%part_hocc)) then
+        if (.not. all(shape(self%part_hocc) == shape(self%temp))) &
+          deallocate(self%part_hocc)
+      endif
+      if (.not. allocated(self%part_hocc)) allocate(self%part_hocc, mold=self%temp)
+      self%part_hocc = HI%part
+    endif
 
     do z=1, size(rho,3)
       do y=1, size(rho,2)
@@ -2004,6 +1710,19 @@ contains
     end do
 
     call trace%end(itimer)
+
+  contains
+    ! hydrogen's electron contribution per H nucleus (H- has j=0: -f)
+    subroutine h_electrons(s)
+      real(dp), dimension(:,:,:), intent(out) :: s
+      integer :: jj
+      s = 0
+      associate(H_el => self%elements(1))
+        do jj=lbound(H_el%ions,1), ubound(H_el%ions,1)
+          s = s + H_el%ions(jj)%f * (jj-1)
+        end do
+      end associate
+    end subroutine h_electrons
   END SUBROUTINE thermal_equilibrium
 
   !=========================================================================
@@ -2014,6 +1733,11 @@ contains
     real(dp), parameter :: fo_const = 2*PI*(4./15.)**two_third*EC ! 1.25e-9
     real(dp), parameter :: dxi_const = (EC**3 * sqrt(8*PI)) / (temp_to_theta*BK*EE) ! 4.98e-4
     !---------------------------------------------------------------------------
+    if (all(shape(self%temp) == shape(temp))) then
+      self%same_temp = all(self%temp == temp)
+    else
+      self%same_temp = .false.
+    endif
     self%ne = ne
     self%temp = temp
     self%teta = temp_to_theta / temp
@@ -2190,33 +1914,59 @@ contains
   END SUBROUTINE iterate_thermal_eq
 
   !===============================================================================
+  ! Hummer-Mihalas charged-perturber shielding parameter; depends on (temp, ne),
+  ! so it must be refreshed whenever the state changes
+  !-------------------------------------------------------------------------------
+  SUBROUTINE compute_shield(self)
+    class(composition_type), target :: self
+    !---------------------------------------------------------------------------
+    if (allocated(self%shield)) then
+      if (.not. all(shape(self%shield) == shape(self%temp))) deallocate(self%shield)
+    endif
+    if (.not. allocated(self%shield)) allocate(self%shield, mold=self%temp)
+    self%shield = 0.08989 * self%ne**0.16667d0 / sqrt(self%temp) ! the shielding parameter
+    self%shield = (1.d0 + self%shield)**3.15d0 / self%ne
+  END SUBROUTINE compute_shield
+
+  !===============================================================================
+  ! Occupation-weighted H I partition function U_w = sum_i g_i w_i exp(-E_i/kT)
+  ! (linear, not log).  Refreshes the (temp, ne)-dependent inputs itself, so it
+  ! is safe to call at any point of the ne iteration; the Boltzmann factors
+  ! lvl%f are reused when temp is unchanged (same_temp).
+  !-------------------------------------------------------------------------------
   SUBROUTINE Hoccupation_partition(self, nh, nhe, part)
     class(composition_type), target :: self
     real(dp), intent(in), dimension(:,:,:) :: nh, nhe
     real(dp), intent(out), dimension(:,:,:) :: part
     class(ion_type), pointer :: HI
     class(level_type), pointer :: lvl
+    logical :: fresh
     integer :: i, itimer=0, itimer2=0
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%compute_occupation_weights', itimer=itimer)
     call self%ion_by_id('H I', HI)
     if (.not. allocated(HI%levels)) allocate(HI%levels(HI%nk))
-    if (.not. allocated(self%shield)) then
-      allocate(self%shield, mold=self%temp)
-      self%shield = 0.08989 * self%ne**0.16667d0 / sqrt(self%temp) ! the shielding parameter
-      self%shield = (1.d0 + self%shield)**3.15d0 / self%ne
-    endif
+    call self%compute_shield()
 
     part = 0.
     do i=1, HI%nk
       lvl => HI%levels(i)
-      if (.not. allocated(lvl%f)) then
+      if (allocated(lvl%f)) then
+        if (.not. all(shape(lvl%f) == shape(self%temp))) deallocate(lvl%f)
+      endif
+      fresh = .not. allocated(lvl%f)
+      if (fresh) then
         allocate(lvl%f, mold=self%temp)
         call os%mem_register(storage_size(lvl%f), product(HI%m), 'lvl%f')
         lvl%i = i
         lvl%xion = RYD * (1. - 1./i**2)
         lvl%g = 2 * i**2
+      endif
+      if (fresh .or. .not. self%same_temp) then
         lvl%f = lvl%g * exp(-self%e_kT*lvl%xion)
+      endif
+      if (allocated(lvl%w)) then
+        if (.not. all(shape(lvl%w) == shape(self%temp))) deallocate(lvl%w)
       endif
       if (.not. allocated(lvl%w)) then
         allocate(lvl%w, mold=self%temp)
@@ -2243,10 +1993,7 @@ contains
     call self%ion_by_id('H I', HI)
     call self%ion_by_id('HE I', HeI)
 
-    if (allocated(self%shield)) deallocate(self%shield)
-    allocate(self%shield, mold=self%temp)
-    self%shield = 0.08989 * self%ne**0.16667d0 / sqrt(self%temp) ! the shielding parameter
-    self%shield = (1.d0 + self%shield)**3.15d0 / self%ne
+    call self%compute_shield()
 
     !HI%nk = 15
     if (allocated(HI%levels)) deallocate(HI%levels)

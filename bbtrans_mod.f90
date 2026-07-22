@@ -2,7 +2,7 @@ MODULE bbtrans_mod
   USE prec_mod
   USE const_mod
   USE op_math_mod, only: searchsorted, find_closest
-  USE trace_mod
+  USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: find_closest_from_center
   implicit none
 
@@ -544,10 +544,8 @@ contains
       ! the upper statistical weight, but KORG does not. MOOg assumes GF/GU=3 instead.
       ! We cannot reuse Aji at this point, because it may contain isotope fractions.
       self%ga = f_conv * 10**self%loggf * self%nu0**2
-    elseif (ga < 100) then
-      self%ga = ga*1e8
     else
-      self%ga = ga
+      self%ga = ga                    ! radiative damping rate, 1/s
     endif
     self%ga = self%ga * over_4pi / self%nu0
     if (disable_ga) self%ga = 0

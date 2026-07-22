@@ -1,7 +1,7 @@
 MODULE handyfuncs_mod
   USE op_math_mod
   USE interpol_mod, only: interp1d
-  USE os_mod
+  USE hop_env_mod, only: os
   implicit none
 
   interface argsort

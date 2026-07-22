@@ -5,9 +5,8 @@ MODULE bftrans_mod
   USE ion_mod
   USE element_mod
   USE molecule_mod
-  USE os_mod
+  USE hop_env_mod, only: os, trace
   USE handyfuncs_mod
-  USE trace_mod
   implicit none
   private
 

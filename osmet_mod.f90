@@ -1,6 +1,5 @@
 MODULE osmet_mod
-  USE os_mod
-  USE trace_mod
+  USE hop_env_mod, only: os, trace
   USE prec_mod
   USE const_mod
   USE op_math_mod
@@ -213,6 +212,59 @@ contains
       end do
     end do
   END SUBROUTINE compute_epsilon
+
+  !===============================================================================
+  ! Scattering fraction 1-eps of line opacity carried by one ionization stage
+  ! (z=1 neutral p-function, z>=2 charged): the van Regemorter recipe of
+  ! compute_epsilon without the eosmet blend -- the stage of a line-list line
+  ! is known exactly, so no neutral/ion mixing fraction is needed.  Needs no
+  ! absmet table, hence a plain module procedure.
+  !===============================================================================
+  SUBROUTINE compute_epsilon_stage(z, nu, temp, ne, one_m_eps)
+    integer, intent(in) :: z
+    real(8), dimension(:), intent(in) :: nu
+    real(8), dimension(:,:,:), intent(in) :: temp, ne
+    real(4), dimension(:,:,:,:), intent(inout) :: one_m_eps
+    real(8), dimension(:,:,:,:), allocatable, target :: beta
+    real(8), dimension(:), pointer :: vbeta, vpsem
+    real(8), dimension(:,:,:,:), allocatable, target :: psem
+    real(8), dimension(:), allocatable :: wnum3
+    real(8) :: hkt, ecnst1, x
+    integer :: i, j, k, f, nx, ny, nz, nf, n
+    !---------------------------------------------------------------------------
+    nf = size(one_m_eps,1)
+    nx = size(one_m_eps,2)
+    ny = size(one_m_eps,3)
+    nz = size(one_m_eps,4)
+
+    allocate(wnum3, source=(nu/CC)**3 / 20.6D0)
+    allocate(beta(nf, nx, ny, nz))
+    allocate(psem(nf, nx, ny, nz))
+    do k=1, nz
+      do j=1, ny
+        do i=1, nx
+          hkt = h_k / temp(i,j,k)
+          beta(:,i,j,k) = hkt * nu
+        end do
+      end do
+    end do
+    n = nf*nx*ny*nz
+    vbeta(1:n) => beta
+    vpsem(1:n) => psem
+    call psemi(z, vbeta, vpsem)
+
+    do k=1, nz
+      do j=1, ny
+        do i=1, nx
+          ecnst1 = sqrt(temp(i,j,k)) / ne(i,j,k)
+          do f=1, nf
+            x = ecnst1 * wnum3(f) / psem(f,i,j,k)
+            one_m_eps(f,i,j,k) = x / (1 + x)
+          end do
+        end do
+      end do
+    end do
+  END SUBROUTINE compute_epsilon_stage
 
   !===============================================================================
   !  thermal p-FUNCTION for semic empirical collision rates

@@ -2,11 +2,13 @@
 ! linelist_mod -- structure-of-arrays (SoA) bulk linelist handling.
 !
 ! This is a fresh, performance-oriented reimplementation of the bulk metal/molecular
-! linelist opacity that lives, in array-of-structures (AoS) form, as particle%line(:)
-! (bbtrans_type) + composition%add_linelist_opacities. It is intentionally standalone:
-! it only references low-level modules (prec/const/handyfuncs/op_math/bbtrans), never
-! particle_type or composition_type, so that particle_type may hold a linelist_type
-! component without creating a circular module dependency.
+! linelist opacity that lived, in array-of-structures (AoS) form, as particle%line(:)
+! (bbtrans_type); that AoS bb form now survives only for hydrogen (Stark profiles).
+! The plain linelist_type data
+! container lives in the leaf module line_types_mod, so that particle_type (ion_mod) can
+! embed it without depending on this heavy module. That inversion lets linelist_mod, in
+! turn, USE ion_mod and drive the opacity kernels directly from a particle_type (see
+! add_particle_opacity), while the low-level kernels still take plain patch work arrays.
 !
 ! Key differences from the AoS path:
 !   * SoA storage: one linelist_type per particle, parallel arrays over lines.
@@ -18,67 +20,27 @@
 !   * loggf is folded into the Boltzmann exponential, exp(loggf*ln10 - ex), instead of
 !     pre-converting to Einstein Bij.
 !
-! The orchestration that walks elements/ions/molecules and gathers the per-particle
-! thermodynamic arrays stays in composition_mod (add_linelist_opacities2 / init_linelist2);
-! it must, because it needs the composition types.
+! The orchestration that walks elements/ions/molecules stays in composition_mod
+! (add_linelist_opacities2 / init_linelist2), which owns the patch thermodynamic arrays
+! and the departure-coefficient lookup; per particle it now calls add_particle_opacity.
 !=======================================================================================
 MODULE linelist_mod
   USE prec_mod
   USE const_mod
-  USE trace_mod
+  USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: air2vac, vac2air
+  USE op_math_mod, only: find_closest
   USE bbtrans_mod, only: voigt_function2, disable_ga, disable_stark, disable_vdw, &
                          f_conv, tol => tolerance, bbtrans_type
+  USE line_types_mod, only: linelist_type
+  USE ion_mod, only: particle_type
   implicit none
   private
 
-  public :: linelist_type, build_linelist, finalize_linelist, add_opacity, add_opacity_equi, voigt_peak
+  public :: build_linelist, finalize_linelist, add_opacity, add_opacity_equi, voigt_peak
+  public :: add_particle_opacity
   public :: append_line, add_rates, write_ll_header, write_ll_record, bij_const
   public :: reserve_linelist, print_ll_particle, print_ll_atom
-
-  !-------------------------------------------------------------------------------------
-  ! Single precision is sufficient for all line parameters except the log-wavelength
-  ! sort key llam0, which must resolve sub-Doppler-width offsets (~1e-5 relative) used
-  ! by the march and the profile abscissa; lam0 is dropped and reconstructed via exp(llam0).
-  type :: linelist_type
-    integer :: nline = 0
-    real(dp), allocatable :: llam0(:)    ! log(lam0) (natural log) -- sort key for the march
-    real(4),  allocatable :: nu0(:)      ! rest frequency [Hz]
-    real(4),  allocatable :: lower_ev(:) ! lower level energy [eV]
-    ! oscillator strength + Einstein prefactor folded into one log term, so
-    ! Rij = inv_part*idf*exp(gpref - ex), with gpref = loggf*ln10 + log(bij_const/nu0).
-    ! The isotope fraction is NOT folded in here; the caller applies it to the
-    ! per-isotope population base (bulk path) or via append_line's gpref (model atoms).
-    real(4),  allocatable :: gpref(:)
-    ! broadening (already scaled by over_4pi/nu0, exactly as the AoS prepare_* routines)
-    real(4),  allocatable :: ga(:)       ! radiative damping
-    real(4),  allocatable :: gw1(:)      ! van der Waals coefficient
-    real(4),  allocatable :: gw2(:)      ! van der Waals exponent
-    real(4),  allocatable :: gq(:)       ! Stark constant (sign encodes recipe)
-    logical,  allocatable :: unsold(:)   ! .true. -> Unsold vdW, .false. -> Barklem
-    ! bookkeeping
-    integer,  allocatable :: lev_i(:)    ! NLTE lower level index (filled at opacity time)
-    integer,  allocatable :: lev_j(:)    ! NLTE upper level index
-    logical,  allocatable :: active(:)   ! line is active
-    logical,  allocatable :: used(:)     ! diagnostic: line contributed somewhere
-    real(4),  allocatable :: strength(:) ! diagnostic: max peak-opacity/continuum estimate
-    ! raw inputs kept only for the linelist_out.txt diagnostic dump
-    real(4),  allocatable :: loggf(:), gv_in(:), ga_in(:), gq_in(:)
-    ! --- optional extensions, used by model-atom linelists (atom_trans_t%ll) ---------
-    ! ipart selects the 4th dim of the caller's lnbase array (population base per ion
-    ! stage); unallocated means all lines use lnbase(:,:,:,1) (the bulk-linelist case).
-    integer,  allocatable :: ipart(:)
-    ! iws/iwe: per-line frequency window (local, 1-based); allocated -> "windowed" mode
-    ! (the union grid of an NLTE run is per-line ascending but not globally sorted, so
-    ! the marching cursor is replaced by a bisection inside each window).
-    integer,  allocatable :: iws(:), iwe(:)
-    integer,  allocatable :: icen(:)     ! window centre index (f0 seed; grid is symmetric)
-    integer,  allocatable :: itrans(:)   ! target column in gamma_ij/gamma_ji (patch subset)
-    real(4),  allocatable :: wA(:)       ! Einstein Aij (x component weight) for rates
-    real(4),  allocatable :: cwt(:)      ! component weight (wphi measure; 1 for plain lines)
-    real(4),  allocatable :: dej(:)      ! upper_ev - lower_ev = H_E*nu0 [eV] (preconditioning)
-    integer,  allocatable :: iso_out(:)  ! isotope number for the linelist_out.txt grouping
-  end type linelist_type
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
@@ -310,7 +272,8 @@ contains
   ! NLTE iterations); the departures only scale the added chi/eta.
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
-                         lnbase, ne, tothi, stark_pe, dep_mem, do_nlte)
+                         lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+                         one_m_eps, chi_scat, do_scat)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
@@ -320,6 +283,12 @@ contains
     real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
     real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
     logical,  intent(in) :: do_nlte
+    ! line_scattering: precomputed stage-appropriate scattering fraction 1-eps
+    ! on the frequency grid, and the scattering-opacity accumulator (both
+    ! size-0 dummies with do_scat=.false. when disabled)
+    real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
+    logical,  intent(in) :: do_scat
     integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb
     real(8)  :: llc, dl
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
@@ -450,13 +419,25 @@ contains
             end if
             c_voigt = c_voigt + fb - fa + 1
 
-            do f = fa, fb
-              vs   = idf * real(llam(f) - llc)
-              phi  = voigt_function2(a, vs)
-              lte  = phi * Rij
-              chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
-              eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
-            end do
+            if (do_scat .and. .not. nlte) then
+              ! LTE line (bi=bj=1) with the scattering fraction accumulated
+              do f = fa, fb
+                vs   = idf * real(llam(f) - llc)
+                phi  = voigt_function2(a, vs)
+                lte  = phi * Rij
+                chi(f,i,j,k) = chi(f,i,j,k) + lte
+                eta(f,i,j,k) = eta(f,i,j,k) + lte
+                chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
+              end do
+            else
+              do f = fa, fb
+                vs   = idf * real(llam(f) - llc)
+                phi  = voigt_function2(a, vs)
+                lte  = phi * Rij
+                chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
+                eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+              end do
+            end if
           end do
         end do
       end do
@@ -483,7 +464,8 @@ contains
   ! offset via 1/dllam. Windowed (per-line ll%iws/iwe) mode is not supported here.
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
-                              lnbase, ne, tothi, stark_pe, dep_mem, do_nlte)
+                              lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+                              one_m_eps, chi_scat, do_scat)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
@@ -493,6 +475,10 @@ contains
     real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
     real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
     logical,  intent(in) :: do_nlte
+    ! line_scattering: see add_opacity
+    real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
+    logical,  intent(in) :: do_scat
     integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff
     real(8)  :: llc, llam1, dllam, inv_dllam
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
@@ -603,13 +589,25 @@ contains
             fb   = min(nf, f0 + noff)
             c_voigt = c_voigt + fb - fa + 1
 
-            do f = fa, fb
-              vs   = idf * real(llam(f) - llc)
-              phi  = voigt_function2(a, vs)
-              lte  = phi * Rij
-              chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
-              eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
-            end do
+            if (do_scat .and. .not. nlte) then
+              ! LTE line (bi=bj=1) with the scattering fraction accumulated
+              do f = fa, fb
+                vs   = idf * real(llam(f) - llc)
+                phi  = voigt_function2(a, vs)
+                lte  = phi * Rij
+                chi(f,i,j,k) = chi(f,i,j,k) + lte
+                eta(f,i,j,k) = eta(f,i,j,k) + lte
+                chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
+              end do
+            else
+              do f = fa, fb
+                vs   = idf * real(llam(f) - llc)
+                phi  = voigt_function2(a, vs)
+                lte  = phi * Rij
+                chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
+                eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+              end do
+            end if
           end do
         end do
       end do
@@ -623,6 +621,112 @@ contains
       ll_nvoigt = ll_nvoigt + c_voigt
     endif
   END SUBROUTINE add_opacity_equi
+
+  !=====================================================================================
+  ! Per-particle SoA opacity: relocated here (from composition_mod) is the isotope loop
+  ! that turns a particle's thermodynamic state into the kernel's population base and
+  ! Doppler width, then dispatches to add_opacity[_equi]. This is what lets linelist_mod
+  ! consume ion_mod's particle_type directly. The caller (composition_mod) still owns the
+  ! patch thermodynamic arrays and the departure-coefficient lookup, and passes the
+  ! resolved dep_ev/dep_mem in (a size-1 zero dep_mem and do_nlte=.false. in the LTE case).
+  !
+  !   ptc          : the ion or molecule (polymorphic); its ll(0:niso) are the per-isotope
+  !                  SoA line lists (index 0 = main isotope)
+  !   temp, vmic   : (m1,m2,m3) temperature and microturbulence (Doppler width inputs)
+  !   dxi          : (m1,m2,m3) continuum lowering per ion stage
+  !   e_kT,ne,tothi,stark_pe,vproj : (m1,m2,m3) per-cell kernel inputs
+  !   chi, eta     : (nf,m1,m2,m3) accumulated line opacity/emissivity
+  !   cont, logref : (nf,m1,m2,m3) continuum + log-space tolerance reference
+  !   llam         : (nf) log(lambda) grid
+  !   dep_ev       : level energies of the departure set (used only when do_nlte)
+  !   dep_mem      : (m1,m2,m3,nlevel) departure coefficients (dummy (.,.,.,1) when LTE)
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE add_particle_opacity(ptc, temp, vmic, dxi, llam, chi, eta, cont, logref, &
+                                  vproj, e_kT, ne, tothi, stark_pe, dep_ev, dep_mem, &
+                                  do_nlte, equidistant, one_m_eps, chi_scat)
+    class(particle_type), intent(inout) :: ptc
+    real(4),  dimension(:,:,:),   intent(in)    :: temp, vmic, vproj, e_kT, ne, tothi, stark_pe
+    real(dp), dimension(:,:,:),   intent(in)    :: dxi
+    real(dp), dimension(:),       intent(in)    :: llam
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
+    real(8),  dimension(:),       intent(in)    :: dep_ev
+    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
+    logical,  intent(in) :: do_nlte, equidistant
+    ! line_scattering: stage-appropriate scattering fraction (already the slice
+    ! for this particle's stage) and the shared scattering-opacity accumulator
+    real(4), dimension(:,:,:,:), intent(in),    optional :: one_m_eps
+    real(4), dimension(:,:,:,:), intent(inout), optional :: chi_scat
+    real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
+    real(4)  :: eps_dummy(0,0,0,0), scat_dummy(0,0,0,0)
+    real(dp) :: iso_frac
+    integer  :: m(3), kiso, ll_n, l
+    logical  :: do_scat
+    !-----------------------------------------------------------------------------------
+    m = shape(temp)
+    allocate(idf3(m(1),m(2),m(3)), vb3(m(1),m(2),m(3)), lnbase(m(1),m(2),m(3),1))
+    do_scat = present(one_m_eps) .and. present(chi_scat)
+
+    ! one kernel call per isotope: its own line list ll(kiso), Doppler width, mean
+    ! velocity and isotope fraction (the fraction is applied here, per isotope, rather
+    ! than folded into each line's gpref -- see build_linelist)
+    do kiso = 0, ubound(ptc%ll, 1)
+      associate(sll => ptc%ll(kiso))
+        ll_n = sll%nline
+        if (ll_n == 0) cycle
+
+        if (kiso == 0) then
+          idf3 = ptc%inverse_doppler_factor(temp, vmic)
+          vb3  = ptc%compute_vbar2(temp)
+          iso_frac = 1
+        else
+          idf3 = ptc%isotope(kiso)%inverse_doppler_factor(temp, vmic)
+          vb3  = ptc%isotope(kiso)%compute_vbar2(temp)
+          iso_frac = ptc%isotope(kiso)%frac
+        end if
+
+        ! ptc%part is the log partition function; lnbase carries the density, the continuum
+        ! lowering, this isotope's Doppler factor and its fraction. Floor the density before
+        ! the log: molecules are legitimately absent (n==0) where they do not form, and
+        ! log(0)=-Inf raises the divide-by-zero FP trap under full_debug. The floored value
+        ! gives a large negative lnbase -> exp(lnbase)=0 downstream, i.e. no opacity.
+        lnbase(:,:,:,1) = log(max(ptc%n, tiny(1.0_dp))) - ptc%part &
+                        + real(dxi) * (ptc%j-1) * e_kT + log(idf3) &
+                        + real(log(iso_frac), 4)
+
+        if (do_nlte) then
+          do l = 1, ll_n
+            sll%lev_i(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8))
+            sll%lev_j(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8) &
+                                                + H_E*sll%nu0(l))
+          end do
+        end if
+
+        ! arithmetic kernel on a uniform log(lambda) grid, else the general march
+        if (equidistant) then
+          if (do_scat) then
+            call add_opacity_equi(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
+              e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+              one_m_eps, chi_scat, .true.)
+          else
+            call add_opacity_equi(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
+              e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+              eps_dummy, scat_dummy, .false.)
+          end if
+        else
+          if (do_scat) then
+            call add_opacity(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
+              e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+              one_m_eps, chi_scat, .true.)
+          else
+            call add_opacity(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
+              e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+              eps_dummy, scat_dummy, .false.)
+          end if
+        end if
+      end associate
+    end do
+  END SUBROUTINE add_particle_opacity
 
   !=====================================================================================
   ! index of the grid point in llam(ws:we) (ascending) closest to llc
@@ -876,10 +980,8 @@ contains
     !-----------------------------------------------------------------------------------
     if (ga_in == 0) then
       ga = f_conv * 10**loggf * nu0**2
-    elseif (ga_in < 100) then
-      ga = ga_in * 1e8
     else
-      ga = ga_in
+      ga = ga_in                      ! radiative damping rate, 1/s
     end if
     ga = ga * over_4pi / nu0
     if (disable_ga) ga = 0

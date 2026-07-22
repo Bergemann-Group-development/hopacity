@@ -1,9 +1,9 @@
 MODULE ion_mod
-  USE os_mod
+  USE hop_env_mod, only: os
   USE prec_mod
   USE level_mod
   USE bbtrans_mod, only: bbtrans_type
-  USE linelist_mod, only: linelist_type
+  USE line_types_mod, only: linelist_type
   implicit none
 
   type, extends(state_type) :: massive_type
@@ -57,6 +57,9 @@ MODULE ion_mod
     real(dp) :: acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c
     real(dp), dimension(:,:,:), allocatable :: saha
     logical :: fixed_part = .false.
+    ! ion%part depends on more state than temp (H I under mhd_eos carries the
+    ! ne-dependent occupation-weighted partition); vetoes temp-only caching
+    logical :: state_dependent_part = .false.
   contains
     procedure :: molecules_with
     procedure :: f_of_molecules_with

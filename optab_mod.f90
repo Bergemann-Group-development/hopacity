@@ -1,5 +1,5 @@
 MODULE optab_mod
-  USE os_mod
+  USE hop_env_mod, only: os, trace
   USE prec_mod
   USE const_mod
   USE spectrum_mod, only: spectrum_type
@@ -54,10 +54,16 @@ MODULE optab_mod
     real(8), dimension(:), allocatable :: lam                 ! (nnu) irregular wavelength nodes
     real(4), dimension(:,:,:), allocatable :: val             ! (nnu,ntemp,nne) chi/chi500
     real(4), dimension(:,:,:), allocatable :: dl, dt, de      ! precomputed node slopes
+    ! line_scattering: (1-eps)-weighted scattering component of the same table
+    ! (chi_scat/chi500), with its own node slopes; allocated only when line
+    ! scattering is active
+    real(4), dimension(:,:,:), allocatable :: scat
+    real(4), dimension(:,:,:), allocatable :: sl, st, se
     logical :: initialised=.false.
   contains
     procedure :: build_derivatives => sample_build_derivatives
     procedure :: interpolate => sample_interpolate
+    procedure :: interpolate_ll => sample_interpolate_ll
     procedure :: dealloc => sample_dealloc
   end type
 
@@ -129,7 +135,9 @@ contains
     real(4) :: lt, lr, ht, hr, tt, tr, pt, pr
     real(4) :: tc0, tc1, tcm0, tcm1, rc0, rc1, rcm0, rcm1
     real(4) :: v0, v1, g0, g1, cval, sval
+    integer, save :: itimer=0
     !---------------------------------------------------------------------------
+    call trace%begin('optab_mod%interpolate', itimer=itimer)
     temp1(1:size(temp)) => temp(:,:,:)
     rho1 (1:size(rho))  => rho (:,:,:)
     nb = self%nbin
@@ -170,6 +178,7 @@ contains
         etap(f + (c-1)*nb) = sval * cval
       end do
     end do
+    call trace%end(itimer)
   END SUBROUTINE interpolate
 
   !===============================================================================
@@ -192,6 +201,14 @@ contains
     call node_slopes_dim(lam4 , self%val, 1, self%dl)
     call node_slopes_dim(taxis, self%val, 2, self%dt)
     call node_slopes_dim(eaxis, self%val, 3, self%de)
+
+    if (allocated(self%scat)) then
+      allocate(self%sl, self%st, self%se, mold=self%scat)
+      call os%mem_register(storage_size(self%sl), 3*product(shape(self%sl)), 'opac_slopes')
+      call node_slopes_dim(lam4 , self%scat, 1, self%sl)
+      call node_slopes_dim(taxis, self%scat, 2, self%st)
+      call node_slopes_dim(eaxis, self%scat, 3, self%se)
+    endif
   END SUBROUTINE sample_build_derivatives
 
   !===============================================================================
@@ -217,7 +234,9 @@ contains
     real(4) :: ge00, ge10, ge01, ge11, f0, f1, ge0, ge1, kappa
     real(4) :: dc1_4, dc2_4
     integer :: nx, ny, nz, x, y, z, f, k, k1, it, je
+    integer, save :: itimer=0
     !---------------------------------------------------------------------------
+    call trace%begin('optab_mod%sample_interpolate', itimer=itimer)
     nx = size(chi500,1); ny = size(chi500,2); nz = size(chi500,3)
     rd1   = 1.d0 / self%pca%dc(1)
     rd2   = 1.d0 / self%pca%dc(2)
@@ -286,7 +305,126 @@ contains
         end do
       end do
     end do
+    call trace%end(itimer)
   END SUBROUTINE sample_interpolate
+
+  !===============================================================================
+  ! Sample the LTE line-list table into the foreground work arrays, ADDING the
+  ! interpolated value to both xhat (work(...,1)) and ehat (work(...,2)) -- in LTE
+  ! the line's two working forms are identical (val stores chi_line/((1-beta)*chi500)).
+  ! The query wavelength is Doppler-shifted per cell by the projected velocity:
+  ! lam_query = lam_q(f)*(1 - vproj) (equivalently log-lam - vproj, the same sign
+  ! convention as the line kernels' llc = llam0 - vproj_c). Because the shift is
+  ! per cell, the wavelength bracket is computed inside the (x,y,z) loop rather
+  ! than precomputed per frequency. Separable tensor-product cubic Hermite over
+  ! (wavelength -> temp -> log ne), reusing the linear-lambda node slopes dl.
+  !===============================================================================
+  SUBROUTINE sample_interpolate_ll (self, temp, ne, chi500, work, lam_q, vproj, fs, fe, chi_scat)
+    class(sample_optab_type) :: self
+    integer, intent(in) :: fs, fe
+    real(8), dimension(:,:,:), intent(in) :: temp, ne
+    real(4), dimension(:,:,:), intent(in) :: chi500, vproj
+    real(4), dimension(fs:,:,:,:,:), intent(inout) :: work
+    real(8), dimension(:), intent(in) :: lam_q
+    ! line_scattering: accumulate the interpolated scattering component of the
+    ! line opacity here (only when the table carries it)
+    real(4), dimension(fs:,:,:,:), intent(inout), optional :: chi_scat
+    real(8) :: rd1, rd2, ft, fe_, d1, d2, p1, p2, lamq, vf
+    real(4) :: hl, tl, pl, tt, te, pt, pe
+    real(4) :: wc0, wc1, wcm0, wcm1
+    real(4) :: tc0, tc1, tcm0, tcm1, nc0, nc1, ncm0, ncm1
+    real(4) :: v00, v10, v01, v11, gt00, gt10, gt01, gt11
+    real(4) :: ge00, ge10, ge01, ge11, f0, f1, ge0, ge1, kappa, add
+    real(4) :: dc1_4, dc2_4
+    integer :: nx, ny, nz, x, y, z, f, k, k1, it, je
+    logical :: do_scat
+    integer, save :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin('optab_mod%sample_interpolate_ll', itimer=itimer)
+    nx = size(chi500,1); ny = size(chi500,2); nz = size(chi500,3)
+    do_scat = present(chi_scat) .and. allocated(self%scat)
+    rd1   = 1.d0 / self%pca%dc(1)
+    rd2   = 1.d0 / self%pca%dc(2)
+    dc1_4 = real(self%pca%dc(1))
+    dc2_4 = real(self%pca%dc(2))
+
+    do z=1, nz
+      do y=1, ny
+        do x=1, nx
+          ! rotate (lnT, lnNe) into PC coordinates, then index each regular PC axis
+          d1 = log(temp(x,y,z)) - self%pca%mu(1)
+          d2 = log(ne(x,y,z))   - self%pca%mu(2)
+          p1 = self%pca%rot(1,1)*d1 + self%pca%rot(2,1)*d2
+          p2 = self%pca%rot(1,2)*d1 + self%pca%rot(2,2)*d2
+          ! PC axis 1: direct index + Hermite coefficients (per cell)
+          ft = (p1 - self%pca%c0(1)) * rd1 + 1.d0
+          it = min(max(floor(ft), 1), self%ntemp-1)
+          tt = real(ft - it)
+          call hermite_coefs(tt, dc1_4, pt, tc0, tc1, tcm0, tcm1)
+          ! PC axis 2
+          fe_ = (p2 - self%pca%c0(2)) * rd2 + 1.d0
+          je = min(max(floor(fe_), 1), self%nne-1)
+          te = real(fe_ - je)
+          call hermite_coefs(te, dc2_4, pe, nc0, nc1, ncm0, ncm1)
+
+          ! Per-cell Doppler shift. The detailed line kernel places a line at
+          ! observed log-lambda llam0 - vproj (llc = llam0 - vproj), so the rest
+          ! table (built at vproj=0, peak at llam0) must be queried at
+          ! llam(f) + vproj, i.e. lambda*(1 + vproj) to first order.
+          vf = 1.d0 + real(vproj(x,y,z), 8)
+
+          do f=fs, fe
+            lamq = lam_q(f) * vf
+            k  = min(max(searchsorted(self%lam, lamq, outbounds_ok=.true.), 1), self%nnu-1)
+            k1 = k + 1
+            hl = real(self%lam(k1) - self%lam(k))
+            tl = real((lamq - self%lam(k)) / (self%lam(k1) - self%lam(k)))
+            call hermite_coefs(tl, hl, pl, wc0, wc1, wcm0, wcm1)
+            kappa = collapse(self%val, self%dl, self%dt, self%de)
+            add = kappa * chi500(x,y,z)
+            work(f,x,y,z,1) = work(f,x,y,z,1) + add
+            work(f,x,y,z,2) = work(f,x,y,z,2) + add
+            if (do_scat) then
+              kappa = collapse(self%scat, self%sl, self%st, self%se)
+              chi_scat(f,x,y,z) = chi_scat(f,x,y,z) + kappa * chi500(x,y,z)
+            endif
+          end do
+        end do
+      end do
+    end do
+    call trace%end(itimer)
+
+  contains
+    ! separable tensor-product cubic Hermite collapse (wavelength -> temp ->
+    ! log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
+    ! coefficients; one call per table component
+    real(4) function collapse(val, dl, dt, de) result(kap)
+      real(4), dimension(:,:,:), intent(in) :: val, dl, dt, de
+      real(4) :: cv00, cv10, cv01, cv11, cgt00, cgt10, cgt01, cgt11
+      real(4) :: cge00, cge10, cge01, cge11, cf0, cf1, cge0, cge1
+      cv00 = wc0*val(k,it  ,je  ) + wc1*val(k1,it  ,je  ) &
+           + wcm0*dl(k,it  ,je  ) + wcm1*dl(k1,it  ,je  )
+      cv10 = wc0*val(k,it+1,je  ) + wc1*val(k1,it+1,je  ) &
+           + wcm0*dl(k,it+1,je  ) + wcm1*dl(k1,it+1,je  )
+      cv01 = wc0*val(k,it  ,je+1) + wc1*val(k1,it  ,je+1) &
+           + wcm0*dl(k,it  ,je+1) + wcm1*dl(k1,it  ,je+1)
+      cv11 = wc0*val(k,it+1,je+1) + wc1*val(k1,it+1,je+1) &
+           + wcm0*dl(k,it+1,je+1) + wcm1*dl(k1,it+1,je+1)
+      cgt00 = (1.-pl)*dt(k,it  ,je  ) + pl*dt(k1,it  ,je  )
+      cgt10 = (1.-pl)*dt(k,it+1,je  ) + pl*dt(k1,it+1,je  )
+      cgt01 = (1.-pl)*dt(k,it  ,je+1) + pl*dt(k1,it  ,je+1)
+      cgt11 = (1.-pl)*dt(k,it+1,je+1) + pl*dt(k1,it+1,je+1)
+      cge00 = (1.-pl)*de(k,it  ,je  ) + pl*de(k1,it  ,je  )
+      cge10 = (1.-pl)*de(k,it+1,je  ) + pl*de(k1,it+1,je  )
+      cge01 = (1.-pl)*de(k,it  ,je+1) + pl*de(k1,it  ,je+1)
+      cge11 = (1.-pl)*de(k,it+1,je+1) + pl*de(k1,it+1,je+1)
+      cf0  = tc0*cv00 + tc1*cv10 + tcm0*cgt00 + tcm1*cgt10
+      cf1  = tc0*cv01 + tc1*cv11 + tcm0*cgt01 + tcm1*cgt11
+      cge0 = (1.-pt)*cge00 + pt*cge10
+      cge1 = (1.-pt)*cge01 + pt*cge11
+      kap = nc0*cf0 + nc1*cf1 + ncm0*cge0 + ncm1*cge1
+    end function collapse
+  END SUBROUTINE sample_interpolate_ll
 
   !===============================================================================
   SUBROUTINE sample_dealloc (self)
@@ -298,6 +436,11 @@ contains
     if (allocated(self%val)) deallocate(self%val)
     if (allocated(self%lam)) deallocate(self%lam)
     if (allocated(self%dl))  deallocate(self%dl, self%dt, self%de)
+    if (allocated(self%sl)) &
+      call os%mem_register(storage_size(self%sl), -3*product(shape(self%sl)), 'opac_slopes')
+    if (allocated(self%scat)) call os%mem_register(storage_size(self%scat), -product(shape(self%scat)), 'opac_table')
+    if (allocated(self%scat)) deallocate(self%scat)
+    if (allocated(self%sl))   deallocate(self%sl, self%st, self%se)
     self%initialised = .false.
   END SUBROUTINE sample_dealloc
 
