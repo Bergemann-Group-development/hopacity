@@ -202,7 +202,8 @@ contains
         u = 1 / (a2 + v2)
         u2 = 0.5 * u*u
         ! a gt 1.4  or  a + v gt 3.2
-        h = ipi*a*u * (1. + u2*(7.5 - a2 + 3.*v2 - 12*u2*a2**2))
+        ! make sure to never compute a2**2 as this may overflow
+        h = ipi*a*u * (1. + u2*(7.5 - a2 + 3.*v2 - 12*u2*a2*a2))
 
       else
         tav = cmplx(a,-v)
