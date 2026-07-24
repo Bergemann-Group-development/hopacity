@@ -29,6 +29,7 @@ MODULE hop_c_api
   USE osmet_mod,    only: eosmet
   USE handyfuncs_mod, only: lowercase
   USE prec_mod,     only: dp
+  USE const_mod,    only: h_k
   implicit none
   private
 
@@ -39,8 +40,11 @@ MODULE hop_c_api
   type(composition_type), allocatable, save :: master, comp
   logical, save :: abundances_set = .false.
   ! verbose is the one option that must survive being set before hop_init: the
-  ! messages it gates (abundance overrides, ...) are printed *during* injon
-  integer, save :: init_verbose = 0
+  ! messages it gates (abundance overrides, ...) are printed *during* injon.
+  ! The default is -1 rather than dispatch's 0, so that a library driven from
+  ! Python says nothing at all unless asked; 0 restores what a dispatch run
+  ! prints at its own default (the linelist line count), 1 and up add the rest.
+  integer, save :: init_verbose = -1
 
 CONTAINS
 
@@ -275,15 +279,14 @@ CONTAINS
     comp = master
     call comp%reassign_pointer()
 
-    if (vmic >= 0.0) then
-      allocate(vm3(n,1,1))
-      vm3 = vmic
-      call comp%load_state_variables(t3, ne3, rho3, &
-        use_rho = use_rho /= 0, use_ne = use_ne /= 0, vmic = vm3)
-    else
-      call comp%load_state_variables(t3, ne3, rho3, &
-        use_rho = use_rho /= 0, use_ne = use_ne /= 0)
-    end if
+    ! vmic is always passed, negative ("unset") included: dispatch's table paths
+    ! do the same (tab_vmic = opac_table_vmic, which defaults to -1), and the line
+    ! opacity reads comp%vmic unguarded -- leaving it unallocated segfaults there.
+    ! A negative value is thermal-only broadening, see inverse_doppler_factor.
+    allocate(vm3(n,1,1))
+    vm3 = vmic
+    call comp%load_state_variables(t3, ne3, rho3, &
+      use_rho = use_rho /= 0, use_ne = use_ne /= 0, vmic = vm3)
 
     ne(1:n) = comp%ne(:,1,1)
   END FUNCTION hop_load_state
@@ -416,6 +419,94 @@ CONTAINS
     call comp%absorption(sp, chi4, include_absmet = include_absmet /= 0, &
                          sorted = .true.)
   END FUNCTION hop_absorption
+
+  !-----------------------------------------------------------------------------
+  ! Read one line-list file into the master instance, keeping only lines inside
+  ! [lam(1)-dlam, lam(nlam)+dlam] (pass nlam=0 for no wavelength mask).  Mirrors
+  ! the composition%init_linelist2 calls dispatch makes at setup, one per file in
+  ! linelist_folder; repeated calls accumulate.  Must be called after hop_init and
+  ! BEFORE hop_load_state: the solve works on a fresh copy of master, and
+  ! particle%ll is allocatable, so the copy carries the lines along.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_init_linelist(linelist_file, dlam, nlam, lam) RESULT(status) &
+           BIND(c, name='hop_init_linelist')
+    character(kind=c_char), intent(in) :: linelist_file(*)
+    real(c_double), value :: dlam
+    integer(c_int), value :: nlam
+    real(c_double), intent(in) :: lam(*)
+    integer(c_int) :: status
+    real(8), allocatable :: lam8(:)
+    character(len=:), allocatable :: file_f
+    !---------------------------------------------------------------------------
+    status = 0
+    if (.not. allocated(master)) then
+      status = 2   ! hop_init not called
+      return
+    end if
+    if (.not. master%initialised) then
+      status = 2
+      return
+    end if
+    file_f = c2f_string(linelist_file)
+    if (len(file_f) == 0) then
+      status = 3
+      return
+    end if
+    if (nlam > 0) then
+      allocate(lam8(nlam))
+      lam8 = lam(1:nlam)
+      call master%init_linelist2(file_f, dlam, lam8)
+    else
+      call master%init_linelist2(file_f, dlam)
+    end if
+  END FUNCTION hop_init_linelist
+
+  !-----------------------------------------------------------------------------
+  ! Continuum + LTE line-list extinction chi [1/cm], reproducing the make_eos
+  ! table body of rt_patch_mod%generate_opacity_table: the line kernel works in
+  ! the (xhat, ehat) units, so chi is transformed in and back out around it.
+  ! Without a line list loaded this returns exactly hop_absorption.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_line_absorption(nlam, lam, chi, dlam, include_absmet) RESULT(status) &
+           BIND(c, name='hop_line_absorption')
+    integer(c_int), value :: nlam, include_absmet
+    real(c_double), intent(in) :: lam(nlam)
+    real(c_float), intent(inout), target :: chi(*)
+    real(c_double), value :: dlam
+    integer(c_int) :: status
+    type(spectrum_type) :: sp
+    real(4), pointer, contiguous :: chi4(:,:,:,:)
+    real(4), allocatable :: eta4(:,:,:,:), beta4(:,:,:,:)
+    real(8), allocatable :: lam8(:)
+    integer :: i, n
+    !---------------------------------------------------------------------------
+    status = hop_absorption(nlam, lam, chi, include_absmet)
+    if (status /= 0) return
+    if (.not. comp%ll_initialised) return
+
+    n = hop_get_n()
+    allocate(lam8(nlam))
+    lam8 = lam(1:nlam)
+    call sp%reset(lam=lam8)
+    sp%sorted = .true.
+    chi4(1:nlam, 1:n, 1:1, 1:1) => chi(1:nlam*n)
+
+    ! chi -> (xhat, ehat), add the lines, then back to chi = xhat - ehat*beta
+    allocate(eta4, beta4, mold=chi4)
+    do i=1, n
+      associate(c1=>chi4(:,i,1,1), e1=>eta4(:,i,1,1), b1=>beta4(:,i,1,1))
+        b1 = exp(-real(h_k, 4) * real(sp%nu, 4) / real(comp%temp(i,1,1), 4))
+        e1 = c1 / (1 - b1)
+        c1 = c1 + e1*b1
+      end associate
+    end do
+    call comp%add_linelist_opacities2(sp, chi4, eta4, dlam)
+    do i=1, n
+      associate(c1=>chi4(:,i,1,1), e1=>eta4(:,i,1,1), b1=>beta4(:,i,1,1))
+        c1 = c1 - e1*b1
+      end associate
+    end do
+  END FUNCTION hop_line_absorption
 
   FUNCTION hop_scattering(nlam, lam, sig) RESULT(status) &
            BIND(c, name='hop_scattering')

@@ -1046,8 +1046,9 @@ contains
     end do
     call trace%end(it_sort)
 
-    print '(I12, a, I12, a, a)', nactive, ' of ', ntotal, &
-      ' lines read from linelist ', trim(linelist_file)
+    if (self%verbose >= 0) &                ! standalone libhop uses -1 to keep quiet
+      print '(I12, a, I12, a, a)', nactive, ' of ', ntotal, &
+        ' lines read from linelist ', trim(linelist_file)
     self%nline = nactive
     call self%ion_by_id('H I', HI)
     if (associated(HI)) HI%nk = max(HI%nk, nkh)
