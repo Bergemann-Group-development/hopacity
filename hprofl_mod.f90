@@ -3,7 +3,8 @@ MODULE hprofl_mod
   USE prec_mod, only: RYD
   USE const_mod
   USE interpol_mod, only: interp1d_sorted
-  USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, phi_vcs, ensure_vcs_loaded
+  USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, phi_vcs, ensure_vcs_loaded, &
+                      vcs_profile_t, vcs_prepare, vcs_eval
   implicit none
 
   real(4), dimension(4,3), parameter ::  xknmtb = reshape([&
@@ -158,6 +159,10 @@ contains
     real(4), parameter :: tol=1e-7
     integer :: i,j,k,f, nf, m(3), itimer=0
     logical lymanalf, used, use_vcs
+    !  Prepared VCS profile for the current cell. A local (not the module-level
+    !  memo behind phi_vcs) so the frequency loops below touch no threadprivate
+    !  storage: under gfortran that is a pthread_getspecific per reference.
+    type(vcs_profile_t) :: vcsc
     !----------------------------------------------------------------------------------
     ! Lyman alpha wings require special treatment
     lymanalf = (self%i == 1) .and. (self%j == 2)
@@ -207,12 +212,16 @@ contains
           hfwid = max(1/idf, hwlor, hwstk) ! defines where we switch from Voigt to adding
           ref = tol * cont(f0,i,j,k)
 
+          !  The tabulated profile depends on the cell, not the frequency: build
+          !  it once here and let the two scans below just sample it.
+          if (use_vcs) call vcs_prepare(self%i, self%j, self%nu0, t, e, nh1, vcsc)
+
           f = f0
           lchi = ref
           do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
             if (use_vcs) then
-              phi = phi_vcs(self%i, self%j, q, self%nu0, t, e, nh1)
+              phi = vcs_eval(vcsc, q)
             else if (lymanalf) then
               call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
             else
@@ -235,7 +244,7 @@ contains
           do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
             if (use_vcs) then
-              phi = phi_vcs(self%i, self%j, q, self%nu0, t, e, nh1)
+              phi = vcs_eval(vcsc, q)
             else if (lymanalf) then
               call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
             else

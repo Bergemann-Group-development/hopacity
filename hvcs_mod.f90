@@ -29,6 +29,8 @@ MODULE hvcs_mod
   integer, parameter :: NNHH   = 13   ! hydrogen-density (resonance) nodes
   integer, parameter :: NNHMAX = 18   ! max lines per series
   integer, parameter :: NSER   = 3    ! Balmer, Paschen, Brackett
+  !  Longest axis qpol4 is ever handed (NH, T or Ne) -- sizes its scratch.
+  integer, parameter :: NNAXMAX = max(NNHH, max(NNHT, NNHE))
 
   !  Per-series grid + axes (log10 quantities), loaded once at setup.
   real(4), save :: grid_vcs(NNHW,NNHH,NNHT,NNHE,NNHMAX,NSER) = 0.0
@@ -36,6 +38,12 @@ MODULE hvcs_mod
   real(4), save :: nt_vcs(NNHT,NSER) = 0.0   ! log10 T
   real(4), save :: ne_vcs(NNHE,NSER) = 0.0   ! log10 Ne
   real(4), save :: nh_vcs(NNHH,NSER) = 0.0   ! log10 N(HI)
+  !  Derived from nw_vcs at load time, so the frequency scan never pays for them:
+  !  the delta-lambda nodes in linear AA, and the reciprocal of the (uniform)
+  !  log10 node spacing used to bracket without a search.
+  real(4), save :: dw_lin(NNHW,NSER)  = 0.0  ! 10**nw_vcs
+  real(4), save :: nw_invdx(NSER)     = 0.0  ! 1/ddw
+  real(8), save :: dw_first(NSER)     = 0.d0 ! 10**nw_vcs(1,s), the table's inner edge
   integer, save :: nlow(NNHMAX,NSER)  = 0
   integer, save :: nup (NNHMAX,NSER)  = 0
   integer, save :: nhhnr(NNHMAX,NSER) = 0
@@ -47,18 +55,31 @@ MODULE hvcs_mod
   character(len=256), public :: vcs_data_dir = './input/vcs'
 
   real(8), parameter :: AA_PER_S = cc*1.d8   ! speed of light [AA/s]
+  real(8), parameter :: LN10 = 2.30258509299404568402d0
 
-  !  Thread-private single-cell memo: the (NH,T,Ne) interpolation of the grid is
-  !  reused across all frequencies of one cell/line. Safe under OpenMP; degrades
-  !  to a plain cache when OpenMP is off.
-  real(4),    save :: cache_lp(NNHW) = 0.0, cache_lognorm = 0.0
-  integer,    save :: cache_n = -1, cache_m = -1
-  real(4),    save :: cache_t = -1.0, cache_e = -1.0, cache_h = -1.0
-  logical,    save :: cache_ok = .false.
-  !$omp threadprivate(cache_lp, cache_lognorm, cache_n, cache_m, &
-  !$omp               cache_t, cache_e, cache_h, cache_ok)
+  !  One cell's worth of prepared profile: the (NH,T,Ne) interpolation of the
+  !  grid, which is constant over a whole frequency scan. Callers that sweep
+  !  frequency hold one of these as a LOCAL (vcs_prepare once, vcs_eval per
+  !  point) -- keeping it off module scope is what keeps the inner loop clear of
+  !  threadprivate/TLS lookups, which on macOS gfortran cost a
+  !  pthread_getspecific per reference. The (line, cell) stamp makes prepare
+  !  idempotent, so it doubles as the per-cell memo it replaces.
+  type, public :: vcs_profile_t
+    real(4) :: lp(NNHW) = 0.0     ! log10 profile on the delta-lambda grid
+    real(8) :: lognorm  = 0.d0    ! log10 of its area in delta-lambda
+    real(8) :: lam0     = 0.d0    ! line centre wavelength [AA]
+    integer :: n = -1, m = -1     ! stamp: line ...
+    real(8) :: nu0 = -1.d0        ! ...
+    real(4) :: t = -1.0, e = -1.0, h = -1.0   ! ... and cell it was built for
+    logical :: ok = .false.
+  end type
 
-  public :: ensure_vcs_loaded, vcs_supported, phi_vcs
+  !  Thread-private prepared cell backing the scalar phi_vcs entry point (used by
+  !  hprofile, which has no frequency loop to hoist out of).
+  type(vcs_profile_t), save :: cache_cell
+  !$omp threadprivate(cache_cell)
+
+  public :: ensure_vcs_loaded, vcs_supported, phi_vcs, vcs_prepare, vcs_eval
 
 contains
 
@@ -120,6 +141,13 @@ contains
     do kk=1,NNHT; nt_vcs(kk,s) = lgt0 + (kk-1)*dlgt; enddo
     do l=1,NNHE ; ne_vcs(l,s)  = ne0  + (l-1)*dne  ; enddo
     do j=1,NNHH ; nh_vcs(j,s)  = nh0  + (j-1)*dnh  ; enddo
+
+    !  Delta-lambda quantities the hot paths would otherwise recompute: the nodes
+    !  in linear AA (area integral), the table's inner edge (profile clamp) and
+    !  the reciprocal node spacing (bracketing, see qpol_w).
+    do i=1,NNHW ; dw_lin(i,s) = 10.0**nw_vcs(i,s) ; enddo
+    dw_first(s) = 10.d0**nw_vcs(1,s)
+    nw_invdx(s) = 1.0/ddw
   END SUBROUTINE read_vcs_grid
 
   !====================================================================
@@ -164,36 +192,59 @@ contains
     integer, intent(in) :: n, m
     real(8), intent(in) :: q, nu0
     real(4), intent(in) :: temp, ne, nh
-    real(8) :: lam0_AA, dlam_AA, deltaw, p, dwmin
     !------------------------------------------------------------------
-    if (cache_n /= n .or. cache_m /= m .or. temp /= cache_t .or. &
-        ne /= cache_e .or. nh /= cache_h) then
-      call vcs_cell_profile(n, m, temp, ne, nh, cache_lp, cache_lognorm, cache_ok)
-      cache_n = n ; cache_m = m
-      cache_t = temp ; cache_e = ne ; cache_h = nh
-    endif
+    call vcs_prepare(n, m, nu0, temp, ne, nh, cache_cell)
+    phi = vcs_eval(cache_cell, q)
+  END FUNCTION phi_vcs
 
-    if (.not. cache_ok) then
+  !====================================================================
+  !  Build (or reuse) the prepared profile for line (n,m) in one cell. Idempotent
+  !  for a repeated (line, cell) stamp, so callers may call it unconditionally.
+  SUBROUTINE vcs_prepare(n, m, nu0, temp, ne, nh, c)
+    integer, intent(in) :: n, m
+    real(8), intent(in) :: nu0
+    real(4), intent(in) :: temp, ne, nh
+    type(vcs_profile_t), intent(inout) :: c
+    real(4) :: lognorm
+    !------------------------------------------------------------------
+    if (c%n == n .and. c%m == m .and. c%nu0 == nu0 .and. c%t == temp .and. &
+        c%e == ne .and. c%h == nh) return
+    call vcs_cell_profile(n, m, temp, ne, nh, c%lp, lognorm, c%ok)
+    c%lognorm = dble(lognorm)
+    c%lam0 = AA_PER_S / nu0          ! line centre wavelength [AA]
+    c%n = n ; c%m = m ; c%nu0 = nu0
+    c%t = temp ; c%e = ne ; c%h = nh
+  END SUBROUTINE vcs_prepare
+
+  !====================================================================
+  !  Evaluate a prepared profile at fractional frequency detuning q. This is the
+  !  frequency-scan inner loop: everything that does not depend on q lives in
+  !  vcs_prepare, leaving one log10 and one exp per point.
+  PURE REAL(8) FUNCTION vcs_eval(c, q) result(phi)
+    type(vcs_profile_t), intent(in) :: c
+    real(8), intent(in) :: q
+    real(8) :: dlam_AA, deltaw, p
+    !------------------------------------------------------------------
+    if (.not. c%ok) then
       phi = 0.d0
       return
     endif
 
-    !  Line centre wavelength and the requested detuning in Angstrom.
-    lam0_AA = AA_PER_S / nu0
-    dlam_AA = abs(q) * lam0_AA
-    !  delta-lambda grid is identical across series; use Balmer (s=1) axis.
-    dwmin  = 10.d0**nw_vcs(1,1)
-    deltaw = log10(max(dlam_AA, dwmin))
+    !  Requested detuning in Angstrom, clamped to the table's inner edge. The
+    !  delta-lambda grid is identical across series; use the Balmer (s=1) axis.
+    dlam_AA = abs(q) * c%lam0
+    deltaw = log10(max(dlam_AA, dw_first(1)))
     !  Quadratic (qpol) interpolation along the wavelength axis, matching SIU
     !  hydl_ag_con. Beyond the outer table edge (~200 AA) qpol extrapolates
     !  linearly in log-log (its goto-50 branch), continuing the asymptotic Stark
     !  power law without the divergence a cubic extrapolation would introduce.
-    p = qpol(real(deltaw,4), nw_vcs(1,1), cache_lp, NNHW)
+    p = dble(qpol_w(real(deltaw,4), 1, c%lp))
 
-    !  10**(p-lognorm) is phi_lambda [1/AA, unit area in lambda]. The Jacobian
+    !  10**(p-lognorm) is phi_lambda [1/AA, unit area in lambda], written as an
+    !  exp because pow(10,x) is ~45% dearer for the same result. The Jacobian
     !  |dlambda/dq| = lam0 converts to phi_q [unit area in q], matching hvoigt.
-    phi = 10.d0**(dble(p) - dble(cache_lognorm)) * lam0_AA
-  END FUNCTION phi_vcs
+    phi = exp(LN10*(p - c%lognorm)) * c%lam0
+  END FUNCTION vcs_eval
 
   !====================================================================
   !  Interpolate the stored grid over (log NH, log T, log Ne) for one cell,
@@ -205,7 +256,7 @@ contains
     real(4), intent(out) :: lp(NNHW), lognorm
     logical, intent(out) :: ok
     integer :: s, r, i, kk, l, nn
-    real(4) :: tlog, nelog, nhlog, area, dl
+    real(4) :: tlog, nelog, nhlog, area, dl, plin, plin_next
     real(4) :: vt(NNHT), ve(NNHE), vh(NNHH)
     !------------------------------------------------------------------
     ok = .false.
@@ -242,11 +293,16 @@ contains
       lp(i) = qpol4(nelog, ne_vcs(1,s), ve, NNHE)
     enddo
 
-    !  Area under the (symmetric) profile in delta-lambda [AA].
-    area = 10.0**lp(1) * (10.0**nw_vcs(1,s))          ! core [0, first node]
+    !  Area under the (symmetric) profile in delta-lambda [AA]. The nodes in
+    !  linear AA come from dw_lin (built at load), and each 10**lp is carried
+    !  over to the next trapezium rather than raised twice.
+    plin = 10.0**lp(1)
+    area = plin * dw_lin(1,s)                         ! core [0, first node]
     do i=1, NNHW-1
-      dl = 10.0**nw_vcs(i+1,s) - 10.0**nw_vcs(i,s)
-      area = area + 0.5*(10.0**lp(i) + 10.0**lp(i+1))*dl
+      dl = dw_lin(i+1,s) - dw_lin(i,s)
+      plin_next = 10.0**lp(i+1)
+      area = area + 0.5*(plin + plin_next)*dl
+      plin = plin_next
     enddo
     area = 2.0*area                                   ! red + blue wings
     lognorm = log10(area)
@@ -291,31 +347,77 @@ contains
   END FUNCTION qpol
 
   !====================================================================
+  !  qpol specialised to the delta-lambda axis of series s, which read_vcs_grid
+  !  lays down as a UNIFORM log10 ladder (nw_vcs(i,s) = dw0 + (i-1)*ddw). The
+  !  bracketing index is therefore one multiply instead of qpol's binary search
+  !  -- worth having, as this runs once per frequency point. The arithmetic that
+  !  follows is qpol verbatim, and the two bracketings agree: qpol's search
+  !  returns the largest k with a(k) < x, which differs from the truncation only
+  !  when x lands exactly on a node, and there both stencils collapse to f(node).
+  PURE REAL(4) FUNCTION qpol_w(x, s, f) result(res)
+    real(4), intent(in) :: x
+    integer, intent(in) :: s
+    real(4), intent(in) :: f(NNHW)
+    integer :: k
+    real(4) :: u, v, w, y, z
+    !------------------------------------------------------------------
+    if (x > nw_vcs(NNHW,s)) then
+      !  Linear (log-log) extrapolation past the outer edge, qpol's goto-50.
+      k = NNHW-1
+      res = f(k) + (f(k+1)-f(k)) * (x-nw_vcs(k,s)) / (nw_vcs(k+1,s)-nw_vcs(k,s))
+      return
+    else if (x < nw_vcs(1,s)) then
+      k = 1
+      res = f(k) + (f(k+1)-f(k)) * (x-nw_vcs(k,s)) / (nw_vcs(k+1,s)-nw_vcs(k,s))
+      return
+    endif
+
+    k = int((x - nw_vcs(1,s)) * nw_invdx(s)) + 1
+    k = min(max(k, 1), NNHW-2)                        ! qpol's "if (k==no-1) k=k-1"
+    u = x - nw_vcs(k,s)
+    v = x - nw_vcs(k+1,s)
+    w = x - nw_vcs(k+2,s)
+    y = (f(k)   - f(k+1)) / (v-u)
+    z = (f(k+1) - f(k+2)) / (w-v)
+    if (y*z > 0.0) then
+      res = f(k) + u*y / (1.0 - v*(y-z)/(f(k)-f(k+2)))
+    else
+      res = f(k) + u * (y + v*(y-z)/(w-u))
+    endif
+  END FUNCTION qpol_w
+
+  !====================================================================
   !  Piecewise cubic HERMITE interpolation, C1 continuous. Used for the grid
   !  axes (NH,T,Ne). Node slopes are the canonical monotone (Fritsch-Carlson
   !  harmonic-mean) rule shared with the rest of the code via interpol_mod
-  !  (pchip_slopes); the slope at each node is single-valued, so value AND first
-  !  derivative are continuous at every node (no wiggly wings from stencil
+  !  (pchip_slopes), of which only the two bracketing ones are actually computed;
+  !  the slope at each node is single-valued, so value AND first derivative are
+  !  continuous at every node (no wiggly wings from stencil
   !  shifts). a(:) ascending; inputs on the grid axes are pre-clamped to
   !  [a(1),a(no)] so no extrapolation occurs. Falls back to qpol for <3 nodes.
   REAL(4) FUNCTION qpol4(x, a, f, no) result(res)
     integer, intent(in) :: no
     real(4), intent(in) :: x, a(no), f(no)
     integer :: j, kk
-    real(4) :: h, t, dx(no-1), dy(no-1), dydx(no)
+    !  Fixed-size scratch: automatic arrays here would be a malloc/free pair per
+    !  call, and vcs_cell_profile makes thousands of calls per cell.
+    real(4) :: h, t, dx(NNAXMAX), dy(NNAXMAX), dydx(NNAXMAX)
     !------------------------------------------------------------------
     if (no < 3) then
       res = qpol(x, a, f, no)
       return
     endif
-    !  Canonical monotone node slopes over the whole axis, then the cubic
-    !  Hermite basis on t in [0,1] using the two bracketing node slopes.
-    call pchip_slopes(a, f, 1, no, dx, dy, dydx)
     !  Bracketing interval [a(j),a(j+1)] (largest j with a(j) <= x, in [1,no-1]).
     j = 1
     do kk = 1, no-1
       if (x >= a(kk)) j = kk
     enddo
+    !  Canonical monotone node slopes, then the cubic Hermite basis on t in [0,1]
+    !  using the two bracketing node slopes. Only those two are asked for, via
+    !  pchip_slopes' imin/imax window: a node slope is a local quantity, so the
+    !  window changes what is computed but not the values, and this is the
+    !  innermost call of the grid interpolation below.
+    call pchip_slopes(a, f, j, j+1, dx(1:no-1), dy(1:no-1), dydx(1:no))
     h  = a(j+1) - a(j)
     t  = (x - a(j)) / h
     res = hermite_value(t, h, f(j), f(j+1), dydx(j), dydx(j+1))
