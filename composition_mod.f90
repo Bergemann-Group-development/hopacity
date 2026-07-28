@@ -2,7 +2,6 @@ MODULE composition_mod
   USE hop_env_mod, only: io, os, trace
   USE prec_mod
   USE op_math_mod
-  USE mmath_mod, only: refsor
   USE handyfuncs_mod
   USE element_mod
   USE ion_mod, only: ion_type, particle_type, debye_shield
@@ -2959,7 +2958,7 @@ contains
       end associate
     end do
     tab_lam = max(1d0, tab_lam) ! remove zero values
-    call refsor(tab_lam)
+    call sort_asc(tab_lam)
     call remove_close_entries(tab_lam, threshold=0.5d0)
     nnu = size(tab_lam)
     allocate(needed(nnu), source=.false.)

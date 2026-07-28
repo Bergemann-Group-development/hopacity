@@ -315,6 +315,38 @@ contains
   END SUBROUTINE argsort_r8
 
   !===============================================================================
+  ! In-place ascending sort (recursive quicksort, middle-element pivot).  Replaces
+  ! the ORDERPACK refsor that HOP used to pull in from SRC/refsor_mod.f90 via
+  ! mmath_mod; both call sites (spectrum_mod%sort, composition_mod) are one-time
+  ! setup sorts, not hot loops.  The middle-element pivot keeps the already-sorted
+  ! and concatenated-sorted-runs inputs they pass off the O(n^2) path.
+  RECURSIVE SUBROUTINE sort_asc(a)
+    real(8), intent(inout) :: a(:)
+    !-----------------------------------------------------------------------------
+    call qs(1, size(a))
+  contains
+    recursive subroutine qs(lo, hi)
+      integer, intent(in) :: lo, hi
+      integer  :: i, j
+      real(8)  :: pivot, t
+      if (lo >= hi) return
+      pivot = a((lo+hi)/2)
+      i = lo; j = hi
+      do
+        do while (a(i) < pivot); i = i + 1; end do
+        do while (a(j) > pivot); j = j - 1; end do
+        if (i <= j) then
+          t = a(i); a(i) = a(j); a(j) = t
+          i = i + 1; j = j - 1
+        end if
+        if (i > j) exit
+      end do
+      if (lo < j) call qs(lo, j)
+      if (i < hi) call qs(i, hi)
+    end subroutine qs
+  END SUBROUTINE sort_asc
+
+  !===============================================================================
   FUNCTION thread2place(thread, ncores, nthreads) result(place)
     integer, intent(in) :: thread, ncores, nthreads
     integer :: place

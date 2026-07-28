@@ -1,8 +1,9 @@
 # Build HOP as a standalone shared library (libhop.so) with no DISPATCH
 # framework dependencies.  The framework singletons (io, os, trace) are
-# replaced by the -DHOP_STANDALONE branch of ../hop_env_mod.f90; refsor,
-# mmath and spectrum come from ../../SRC.  This directory is invisible to
-# the main experiment build (its wildcard only scans SRC/*.f90 HOP/*.f90).
+# replaced by the -DHOP_STANDALONE branch of ../hop_env_mod.f90, and every
+# source below lives under HOP/ -- nothing is pulled in from ../../SRC, so
+# the package is self-contained.  This directory is invisible to the main
+# experiment build (its wildcard only scans SRC/*.f90 HOP/*.f90).
 #
 # Usage:  make [-j N] [OPT=-O2]
 BUILD := build
@@ -15,17 +16,16 @@ FFLAGS = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
 
 # Topologically ordered source list (verified USE graph)
 SRCS = ../hop_env_mod.f90 ../const_mod.f90 ../prec_mod.f90 ../op_math_mod.f90 \
-       ../interpol_mod.f90 ../../SRC/refsor_mod.f90 ../../SRC/mmath_mod.f90 \
-       ../handyfuncs_mod.f90 ../hvcs_mod.f90 ../level_mod.f90 \
-       ../line_types_mod.f90 ../bbtrans_mod.f90 ../ion_mod.f90 \
-       ../element_mod.f90 ../molecule_mod.f90 ../hprofl_mod.f90 \
-       ../linelist_mod.f90 ../bftrans_mod.f90 ../trans_mod.f90 \
-       ../../SRC/spectrum_mod.f90 ../optab_mod.f90 ../osmet_mod.f90 \
-       ../composition_mod.f90 hop_c_api.f90
+       ../interpol_mod.f90 ../handyfuncs_mod.f90 ../hvcs_mod.f90 \
+       ../level_mod.f90 ../line_types_mod.f90 ../bbtrans_mod.f90 \
+       ../ion_mod.f90 ../element_mod.f90 ../molecule_mod.f90 \
+       ../hprofl_mod.f90 ../voigt_av_mod.f90 ../linelist_mod.f90 \
+       ../bftrans_mod.f90 ../trans_mod.f90 ../spectrum_mod.f90 \
+       ../optab_mod.f90 ../osmet_mod.f90 ../composition_mod.f90 hop_c_api.f90
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.f90=.o)))
 
-vpath %.f90 . .. ../../SRC
+vpath %.f90 . ..
 
 all: $(LIB)
 

@@ -15,6 +15,9 @@ gfortran only (the framework singletons are replaced by the `-DHOP_STANDALONE` b
 `hop_env_mod.f90`). `OPT=-O2` overrides the default `-O1`. The Python side finds the
 library at `HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points.
 
+Every source the library compiles lives under `HOP/` — nothing is pulled in from the
+experiment's `SRC/`, so the directory can be copied or vendored on its own.
+
 Check it loads:
 
 ```bash
