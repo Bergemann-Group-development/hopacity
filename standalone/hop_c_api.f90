@@ -492,53 +492,6 @@ CONTAINS
     end if
   END FUNCTION hop_init_linelist
 
-  !-----------------------------------------------------------------------------
-  ! Continuum + LTE line-list extinction chi [1/cm], reproducing the make_eos
-  ! table body of rt_patch_mod%generate_opacity_table: the line kernel works in
-  ! the (xhat, ehat) units, so chi is transformed in and back out around it.
-  ! Without a line list loaded this returns exactly hop_absorption.
-  !-----------------------------------------------------------------------------
-  FUNCTION hop_line_absorption(nlam, lam, chi, dlam, include_absmet) RESULT(status) &
-           BIND(c, name='hop_line_absorption')
-    integer(c_int), value :: nlam, include_absmet
-    real(c_double), intent(in) :: lam(nlam)
-    real(c_float), intent(inout), target :: chi(*)
-    real(c_double), value :: dlam
-    integer(c_int) :: status
-    type(spectrum_type) :: sp
-    real(4), pointer, contiguous :: chi4(:,:,:,:)
-    real(4), allocatable :: eta4(:,:,:,:), beta4(:,:,:,:)
-    real(8), allocatable :: lam8(:)
-    integer :: i, n
-    !---------------------------------------------------------------------------
-    status = hop_absorption(nlam, lam, chi, include_absmet)
-    if (status /= 0) return
-    if (.not. comp%ll_initialised) return
-
-    n = hop_get_n()
-    allocate(lam8(nlam))
-    lam8 = lam(1:nlam)
-    call sp%reset(lam=lam8)
-    sp%sorted = .true.
-    chi4(1:nlam, 1:n, 1:1, 1:1) => chi(1:nlam*n)
-
-    ! chi -> (xhat, ehat), add the lines, then back to chi = xhat - ehat*beta
-    allocate(eta4, beta4, mold=chi4)
-    do i=1, n
-      associate(c1=>chi4(:,i,1,1), e1=>eta4(:,i,1,1), b1=>beta4(:,i,1,1))
-        b1 = exp(-real(h_k, 4) * real(sp%nu, 4) / real(comp%temp(i,1,1), 4))
-        e1 = c1 / (1 - b1)
-        c1 = c1 + e1*b1
-      end associate
-    end do
-    call comp%add_linelist_opacities2(sp, chi4, eta4, dlam)
-    do i=1, n
-      associate(c1=>chi4(:,i,1,1), e1=>eta4(:,i,1,1), b1=>beta4(:,i,1,1))
-        c1 = c1 - e1*b1
-      end associate
-    end do
-  END FUNCTION hop_line_absorption
-
   FUNCTION hop_scattering(nlam, lam, sig) RESULT(status) &
            BIND(c, name='hop_scattering')
     integer(c_int), value :: nlam
