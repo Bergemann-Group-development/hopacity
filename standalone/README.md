@@ -1,8 +1,8 @@
-# Standalone HOP: EOS and opacity tables from Python
+# Standalone HOP: EOS and opacity from Python
 
 `libhop.so` is the HOP opacity/EOS engine built without the DISPATCH framework, driven
-from Python through `tumult.hop`. It produces the same tables a `make_eos=.true.` run of
-`dispatch.x` writes — `eos`, `opa`, `scat` — without launching dispatch at all.
+from Python through `tumult.hop`. It computes the same EOS state and the same opacities a
+`make_eos=.true.` run of `dispatch.x` tabulates — without launching dispatch at all.
 
 ## Build
 
@@ -21,62 +21,77 @@ Check it loads:
 python -c "import tumult; print(tumult.HopEOS(feh=0.0).load_state([5777.], rho=[2.5e-7]).ne)"
 ```
 
-## EOS table
+## The EOS
 
-`make_eos_table` solves the EOS on a set of `(T, rho)` points and returns the six planes
-`(temp, rho, ne, pg, E, chi500)` as float32 `(6,) + temp.shape`.
+`load_state` solves the EOS on a set of `(T, rho)` points — any shape, as long as they
+share it, since the cells are independent — and the state is then readable as the
+properties `temp`, `rho`, `ne`, `pe`, `pg`, `energy`, `eh` and `chi500`, each in the shape
+you passed in.
 
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
-from tumult.hop import HopEOS, logstep, make_eos_table
+from tumult.hop import HopEOS, logstep
+
+fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), constrained_layout=True)
 
 tab_temp = logstep(2500.0, 40000.0, 0.05)  # ln-space node spacing
 tab_rho = logstep(1e-12, 1e-5, 0.25)  # ln-space node spacing
 temp, rho = np.meshgrid(tab_temp, tab_rho, indexing='ij')         # both (ntemp, nrho)
 
 with HopEOS(feh=0.0) as hop:                     # one instance per process
-    eos = make_eos_table(hop, temp, rho)
-_, _, ne, pg, energy, chi500 = eos
+    hop.load_state(temp, rho)
 
-fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), constrained_layout=True)
-for ax, plane, label in zip(axes, (ne, pg, chi500),
-                            (r'$\log n_e$ [cm$^{-3}$]', r'$\log P_g$ [dyn cm$^{-2}$]',
-                             r'$\log \chi_{500}$ [cm$^{-1}$]')):
-    m = ax.pcolormesh(np.log10(tab_temp), np.log10(tab_rho), np.log10(plane).T,
-                      shading='nearest', cmap='magma', edgecolors='face')
-    fig.colorbar(m, ax=ax, label=label)
-    ax.set(xlabel=r'$\log T$ [K]', ylabel=r'$\log \rho$ [g cm$^{-3}$]')
+    for ax, plane, label in zip(axes, (hop.ne, hop.pg, hop.chi500),
+                                (r'$\log n_e$ [cm$^{-3}$]', r'$\log P_g$ [dyn cm$^{-2}$]',
+                                r'$\log \chi_{500}$ [cm$^{-1}$]')):
+        m = ax.pcolormesh(np.log10(tab_temp), np.log10(tab_rho), np.log10(plane).T,
+                          shading='nearest', cmap='magma', edgecolors='face')
+        fig.colorbar(m, ax=ax, label=label)
+        ax.set(xlabel=r'$\log T$ [K]', ylabel=r'$\log \rho$ [g cm$^{-3}$]')
 ```
 
 `HopEOS(...)` takes the `&composition_params` settings: `feh`, `abund_file`,
 `absdat_file`, `molec_file`, `tmolim`, `alpha_enhancement`, and any module option as a
 keyword (`mhd_eos=False`, `ref_lam=5000.0`, `abundances='Fe 7.5'`, ...).
 
-## Opacity table
+## Opacity
 
-`make_opac_table` reproduces `generate_opacity_table` + `save_opac_table` on the same
-`temp`/`rho` points: `opa` is the total absorption chi/rho [cm^2/g], `scat` is
-(Thomson + Rayleigh)/rho, both float32 `(nlam,) + temp.shape`. It also returns the EOS
-table, so this one call replaces the whole dispatch run.
+`opacity` is the one entry point for all of it — continuum, sampled metal-line background
+and line list — and returns two float32 arrays of shape `<state shape> + (nlam,)`, in
+1/cm:
+
+- `chi`, the total extinction: continuum with Thomson + Rayleigh scattering folded in (as
+  HOP's `scattering_absorption` does), plus the absmet background with `include_absmet`,
+  plus the LTE line list with `linelist`;
+- `scat`, the scattering part of it: Thomson + Rayleigh, and with `line_scattering=True`
+  also the (1-eps)-weighted absmet and line-list opacity (the van Regemorter split
+  `composition_type%opacity` applies).
+
+Divide by `hop.rho[..., None]` for the per-gram opacity a dispatch `opa`/`scat` table
+holds.
 
 ```python
-from tumult.hop import make_opac_table, wavelength_grid
+from tumult.hop import wavelength_grid
 
 def main():
-    lam = wavelength_grid(3000.0, 20000.0, R=300)   # &spectrum_params; air -> vacuum
-    out = make_opac_table(temp, rho, lam, nchunks=8, nprocs=8, feh=0.0)
-    opa, scat, eos = out['opa'], out['scat'], out['eos']
+    lam = wavelength_grid(3000.0, 3100.0, R=1000)   # &spectrum_params; air -> vacuum
+
+    with HopEOS(feh=0.0) as hop:
+        hop.load_state(temp, rho)
+        chi, scat = hop.opacity(lam, linelist='input/linelists/master_line.txt',
+                                nchunks=8, nprocs=8, line_scattering=True)
+        over_rho = 1 / hop.rho[..., None]
+        opa = chi * over_rho # (nlam, ntemp, nrho), cm^2/g
+        sca = scat * over_rho
 
     fig, ax = plt.subplots(figsize=(7, 4.2), constrained_layout=True)
-    j = np.argmin(np.abs(tab_rho - 1e-7))
-    for t in (4000, 6000, 10000):
-        i = np.argmin(np.abs(tab_temp - t))
-        ax.loglog(lam, opa[:, i, j], label=f'absorption, T = {tab_temp[i]:.0f} K')
-    ax.loglog(lam, scat[:, i, j], 'k--', lw=1,
-              label=f'scattering, T = {tab_temp[i]:.0f} K')
+    i = 20
+    j = 0
+    ax.loglog(lam, opa[i, j], label=f'absorption')
+    ax.loglog(lam, sca[i, j], label=f'scattering')
     ax.set(xlabel=r'$\lambda_{\rm vac}$ [AA]', ylabel=r'$\chi/\rho$ [cm$^2$ g$^{-1}$]',
-           title=rf'$\rho$ = {tab_rho[j]:.1e} g cm$^{{-3}}$')
+            title=rf'T = {tab_temp[i]:.0f} K, $\rho$ = {tab_rho[j]:.1e} g cm$^{{-3}}$')
     ax.legend()
 
 if __name__ == '__main__':       # required: the workers are spawned, see below
@@ -105,7 +120,7 @@ Two things to get right:
   to -1 (thermal broadening only), but `read_external_mod` overwrites `opac_table_vmic`
   with the mean of the atmosphere's own vmic whenever any of it is positive. Getting this
   wrong leaves the line opacity up to an order of magnitude off in the cool, dense corner.
-  It does not affect the EOS or the continuum.
+  It does not affect the EOS or the continuum, and is applied without re-solving the state.
 
 ### Line-list opacity
 
@@ -113,23 +128,15 @@ Give `linelist` a file, a list of files, or a folder (the `&linelist_params`
 `linelist_file` / `linelist_folder`), and `dlam` [AA] as the line-wing search radius:
 
 ```python
-out = make_opac_table(temp, rho, lam, linelist='input/linelists/master_line.txt',
-                      dlam=100.0, vmic=1.0, nchunks=8, nprocs=8)
+chi, scat = hop.opacity(lam, linelist='input/linelists/master_line.txt',
+                        dlam=100.0, vmic=1.0, line_scattering=True,
+                        nchunks=8, nprocs=8)
 ```
 
-For a single state rather than a table, `HopEOS.init_linelist(...)` then
-`hop.absorption(lam, include_linelist=True, dlam=...)` gives chi [1/cm] per cell.
-
-## Writing dispatch-layout files
-
-With `folder=`, the chunks go straight to disk in the dispatch save layout
-(`opa_<iz><chunk>.bin` + `opa_meta.txt`, likewise `scat` and `eos`), so the parent never
-holds the whole table and the usual readers work unchanged:
-
-```python
-make_opac_table(temp, rho, lam, folder='data/my_table/save', nprocs=8)
-
-from tumult.io_binary import load_patch_files, concat_patches
-dct, _ = load_patch_files('data/my_table/save', 'opa')
-opa = concat_patches(dct, n_nu=8, fdim=0, zdim=2, lazy=False)[0]   # (nlam, ntemp, nrho)
-```
+Only the lines within `dlam` of the requested wavelengths are read. A line list can only
+ever be *added* to a HOP instance, so calling `opacity` with a different one (or over a
+wider window than before) rebuilds the instance and re-solves the state — repeated calls
+with the same list and window cost nothing extra. Note that chunking is therefore not
+quite neutral for line opacity: a chunk sees only the lines within `dlam` of its own
+wavelengths, so a far Lorentz wing reaching in from outside that window is missing —
+exactly as it is in a dispatch run, where each rt_patch reads its own chunk.
