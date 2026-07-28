@@ -79,6 +79,7 @@ MODULE composition_mod
     procedure :: trans_by_id
     procedure :: ion_by_id
     procedure :: absorption
+    procedure :: opacity
     procedure :: add_hrest
     procedure :: electron_scattering
     procedure :: rayleigh_scattering
