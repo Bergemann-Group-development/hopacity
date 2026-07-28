@@ -34,6 +34,7 @@ MODULE linelist_mod
                          f_conv, tol => tolerance, bbtrans_type
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
+  USE voigt_av_mod, only: voigt_av_t, voigt_av_setup, voigt_av_block
   implicit none
   private
 
@@ -48,6 +49,14 @@ MODULE linelist_mod
   real(4),  parameter :: over_pi   = 0.3183098862
   real(dp), parameter :: ex_cutoff = -85.0_dp  ! skip lines whose log(Rij) underflows
   real(4), parameter  :: voigt_peak = 0.5641895835 ! 1/sqrt(pi): max of voigt_function2
+
+  ! --- Voigt kernel selection (add_opacity_equi only) ---------------------------------
+  ! 0 = voigt_function2 (bbtrans_mod, Traving/Eriksson; the historical default)
+  ! 1 = voigt_av        (voigt_av_mod, branchless fp32; vectorises, and is the more
+  !                      accurate of the two for damped lines -- see voigt_av_mod header)
+  ! Selecting 1 shifts spectra by ~2e-4 in the weak-line regime and by up to a few
+  ! percent for a > 0.2 lines, where voigt_function2 is the one that was wrong.
+  integer, public :: voigt_kernel = 0
 
   ! --- profiling work counters (add_opacity); cheap integer increments ----------------
   logical,    public :: ll_profile = .false.   ! enable counting
@@ -479,7 +488,7 @@ contains
     real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
-    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff
+    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw
     real(8)  :: llc, llam1, dllam, inv_dllam
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
     real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
@@ -487,6 +496,11 @@ contains
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
     integer(8) :: c_visit, c_pass, c_voigt
+    ! voigt_kernel==1 scratch: per-line profile state, the window's K values, and the
+    ! fp32 abscissa ramp. Kbuf is an automatic array (stack) but only [1:nw] is ever
+    ! touched, and windows average ~8 points, so it stays L1-resident.
+    type(voigt_av_t) :: vst
+    real(4)  :: Kbuf(size(llam)), v0, dv, Rn
     !-----------------------------------------------------------------------------------
     m  = shape(vproj)
     nf = size(llam)
@@ -589,7 +603,35 @@ contains
             fb   = min(nf, f0 + noff)
             c_voigt = c_voigt + fb - fa + 1
 
-            if (do_scat .and. .not. nlte) then
+            if (voigt_kernel == 1) then
+              ! Branchless fp32 kernel. The whole window is evaluated first, so the
+              ! profile loop and the accumulation loop each vectorise; K stays in L1.
+              ! The abscissa is a pure fp32 ramp -- on a uniform log(lambda) grid
+              ! llam(f) - llc = (llam(fa) - llc) + (f-fa)*dllam exactly, so the real(8)
+              ! llam stream drops out of the inner loop altogether.
+              nw = fb - fa + 1
+              v0 = idf * real(llam(fa) - llc)
+              dv = idf * real(dllam)
+              call voigt_av_setup (a, vst)
+              call voigt_av_block (vst, v0, dv, nw, Kbuf)
+              ! voigt_av returns K = H(a,v); voigt_function2 returns H(a,v)/sqrt(pi)
+              Rn = Rij * voigt_peak
+              if (do_scat .and. .not. nlte) then
+                do f = fa, fb
+                  lte = Kbuf(f-fa+1) * Rn
+                  chi(f,i,j,k) = chi(f,i,j,k) + lte
+                  eta(f,i,j,k) = eta(f,i,j,k) + lte
+                  chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
+                end do
+              else
+                do f = fa, fb
+                  lte = Kbuf(f-fa+1) * Rn
+                  chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
+                  eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+                end do
+              end if
+
+            else if (do_scat .and. .not. nlte) then
               ! LTE line (bi=bj=1) with the scattering fraction accumulated
               do f = fa, fb
                 vs   = idf * real(llam(f) - llc)

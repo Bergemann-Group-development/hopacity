@@ -26,6 +26,7 @@ MODULE hop_c_api
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
+  USE linelist_mod, only: ll_profile, voigt_kernel
   USE osmet_mod,    only: eosmet
   USE handyfuncs_mod, only: lowercase
   USE prec_mod,     only: dp
@@ -231,6 +232,10 @@ CONTAINS
       hydrogen_BPO = value /= 0
     case ('hydrogen_vcs_table')
       hydrogen_vcs_table = value /= 0
+    case ('ll_profile')
+      ll_profile = value /= 0
+    case ('voigt_kernel')
+      voigt_kernel = value
     case ('switch')
       switch = value
     case ('verbose')
