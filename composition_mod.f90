@@ -17,7 +17,7 @@ MODULE composition_mod
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type
   USE optab_mod, only: pca_transform_type
-  USE osmet_mod, only:osmet
+  USE osmet_mod, only:osmet, compute_epsilon_stage
   USE omp_lib
   use, intrinsic :: ieee_arithmetic
   implicit none
@@ -2172,6 +2172,141 @@ contains
 
     call trace%end(itimer)
   END SUBROUTINE absorption
+
+  !===============================================================================
+  ! Total extinction chi and its scattering part scat, both [1/cm], on the
+  ! spectrum sp -- the one place where the continuum, the sampled metal-line
+  ! (absmet) and the line-list opacities are combined:
+  !
+  !   chi  = continuum (electron + Rayleigh included when scattering_absorption)
+  !          + absmet (include_absmet) + line list (include_llist)
+  !   scat = electron + Rayleigh, plus -- when line_scat -- the scattering
+  !          fraction (1-eps) of the absmet and of the LTE line-list opacity.
+  !          Lines carrying departure coefficients are left out: their
+  !          scattering lives in the NLTE rate equations.
+  !
+  ! scat always holds the full electron+Rayleigh pair, also when
+  ! scattering_absorption is off and chi therefore does not contain it -- that
+  ! is what save_opac_table has always written into the 'scat' table.
+  !
+  ! The line kernels accumulate in the working (xhat, ehat) units, so chi is
+  ! transformed in and back out around add_linelist_opacities2; chi_scat comes
+  ! back in those units too, hence the (1-beta) factor when it enters scat.
+  !===============================================================================
+  SUBROUTINE opacity (self, sp, chi, scat, include_absmet, include_llist, dlam, &
+                      sorted, line_scat, vproj, departures)
+    class(composition_type), target :: self
+    class(spectrum_type), intent(in) :: sp
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: scat
+    logical, optional :: include_absmet, include_llist, sorted, line_scat
+    real(8), intent(in), optional :: dlam
+    real(4), dimension(:,:,:), intent(in), contiguous, target, optional :: vproj
+    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
+    real(4), dimension(:,:,:,:), allocatable :: eta, beta, chi_met, epsln, chi_scat
+    real(4), dimension(:,:,:,:,:), allocatable :: one_m_eps
+    logical :: do_absmet, do_llist, do_split
+    real(8) :: dl
+    integer :: i, j, k, f, nf, m(3)
+    integer, save :: itimer=0
+    !---------------------------------------------------------------------------
+    call trace%begin ('composition_type%opacity', itimer=itimer)
+    m = shape(self%temp)
+    nf = size(chi, 1)
+    dl = 100d0
+    if (present(dlam)) dl = dlam
+    do_absmet = .false.
+    if (present(include_absmet)) do_absmet = include_absmet .and. osmet%initialised
+    do_llist = self%ll_initialised
+    if (present(include_llist)) do_llist = include_llist .and. self%ll_initialised
+    do_split = line_scattering
+    if (present(line_scat)) do_split = line_scat
+    do_split = do_split .and. present(scat)
+
+    ! continuum; absmet is handled below so that its scattering part can be split
+    call self%absorption(sp, chi, sorted=sorted)
+
+    if (present(scat)) then
+      scat = 0
+      call self%electron_scattering(scat)
+      call self%rayleigh_scattering(sp%lam, scat)
+    endif
+
+    if (do_absmet) then
+      if (do_split) then
+        allocate(chi_met, epsln, mold=chi)
+        chi_met = 0
+        call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi_met)
+        call osmet%compute_epsilon(sp%nu, self%temp, self%ne, epsln)
+        do k=1, m(3)
+          do j=1, m(2)
+            do i=1, m(1)
+              do f=1, nf
+                chi (f,i,j,k) = chi (f,i,j,k) + chi_met(f,i,j,k)
+                scat(f,i,j,k) = scat(f,i,j,k) + chi_met(f,i,j,k)*(1 - epsln(f,i,j,k))
+              end do
+            end do
+          end do
+        end do
+        deallocate(chi_met, epsln)
+      else
+        call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi)
+      endif
+    endif
+
+    if (do_llist) then
+      allocate(eta, beta, mold=chi)
+      if (do_split) then
+        allocate(chi_scat, mold=chi)
+        allocate(one_m_eps(nf, m(1), m(2), m(3), 2))
+        chi_scat = 0
+        call compute_epsilon_stage(1, sp%nu, self%temp, self%ne, one_m_eps(:,:,:,:,1))
+        call compute_epsilon_stage(2, sp%nu, self%temp, self%ne, one_m_eps(:,:,:,:,2))
+      endif
+      ! chi -> (xhat, ehat), add the lines, then back to chi = xhat - ehat*beta
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            associate(c1=>chi(:,i,j,k), e1=>eta(:,i,j,k), b1=>beta(:,i,j,k), &
+                      xhat=>chi(:,i,j,k), ehat=>eta(:,i,j,k))
+              b1   = exp(-h_k * sp%nu / self%temp(i,j,k))
+              ehat = c1 / (1 - b1)
+              xhat = c1 + ehat*b1
+            end associate
+          end do
+        end do
+      end do
+      if (do_split) then
+        call self%add_linelist_opacities2(sp, chi, eta, dl, vproj, departures=departures, &
+          one_m_eps=one_m_eps, chi_scat=chi_scat)
+      else
+        call self%add_linelist_opacities2(sp, chi, eta, dl, vproj, departures=departures)
+      endif
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            associate(c1=>chi(:,i,j,k), e1=>eta(:,i,j,k), b1=>beta(:,i,j,k), &
+                      xhat=>chi(:,i,j,k), ehat=>eta(:,i,j,k))
+              e1 = ehat * b1
+              c1 = xhat - e1
+            end associate
+          end do
+        end do
+      end do
+      if (do_split) then
+        do k=1, m(3)
+          do j=1, m(2)
+            do i=1, m(1)
+              do f=1, nf
+                scat(f,i,j,k) = scat(f,i,j,k) + chi_scat(f,i,j,k)*(1 - beta(f,i,j,k))
+              end do
+            end do
+          end do
+        end do
+      endif
+    endif
+    call trace%end(itimer)
+  END SUBROUTINE opacity
 
   !===============================================================================
   SUBROUTINE scattering (self, sp, eta, Jnu, include_absmet)

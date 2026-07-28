@@ -389,19 +389,43 @@ CONTAINS
     if (allocated(master)) grph = master%grph
   END FUNCTION hop_get_grph
 
+  !-----------------------------------------------------------------------------
+  ! Microturbulence [km/s] of the loaded state.  vmic enters only the line
+  ! broadening (composition%add_linelist_opacities2), never the EOS, so it can
+  ! be changed on a solved state instead of re-solving it.  A negative value is
+  ! thermal-only broadening.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_set_vmic(n, vmic) RESULT(status) BIND(c, name='hop_set_vmic')
+    integer(c_int), value :: n
+    real(c_float), value :: vmic
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    status = 0
+    if (hop_get_n() /= n .or. n < 1) then
+      status = 3   ! no state loaded or size mismatch
+      return
+    end if
+    comp%vmic = vmic
+  END FUNCTION hop_set_vmic
+
   !=============================================================================
-  ! Continuum opacity.  lam is vacuum Angstrom, ascending.  chi/sig buffers are
-  ! float32 of size nlam*n (Fortran order: wavelength fastest), filled with
-  ! chi in 1/cm (per-volume extinction; divide by rho for per-gram).
+  ! Opacity.  lam is vacuum Angstrom, ascending.  The chi and scat buffers are
+  ! float32 of size nlam*n (Fortran order: wavelength fastest), filled in 1/cm
+  ! (per-volume extinction; divide by rho for per-gram).  See
+  ! composition_type%opacity for what each of them contains: chi is the total
+  ! extinction (continuum + absmet + line list), scat its scattering part.
+  ! line_scat < 0 leaves the split to the module-global line_scattering, 0/1
+  ! override it; include_llist is honoured only once a line list has been read.
   !=============================================================================
-  FUNCTION hop_absorption(nlam, lam, chi, include_absmet) RESULT(status) &
-           BIND(c, name='hop_absorption')
-    integer(c_int), value :: nlam, include_absmet
+  FUNCTION hop_opacity(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
+                       line_scat) RESULT(status) BIND(c, name='hop_opacity')
+    integer(c_int), value :: nlam, include_absmet, include_llist, line_scat
     real(c_double), intent(in) :: lam(nlam)
-    real(c_float), intent(inout), target :: chi(*)
+    real(c_float), intent(inout), target :: chi(*), scat(*)
+    real(c_double), value :: dlam
     integer(c_int) :: status
     type(spectrum_type) :: sp
-    real(4), pointer, contiguous :: chi4(:,:,:,:)
+    real(4), pointer, contiguous :: chi4(:,:,:,:), scat4(:,:,:,:)
     real(8), allocatable :: lam8(:)
     integer :: n
     !---------------------------------------------------------------------------
@@ -415,10 +439,17 @@ CONTAINS
     lam8 = lam(1:nlam)
     call sp%reset(lam=lam8)
     sp%sorted = .true.
-    chi4(1:nlam, 1:n, 1:1, 1:1) => chi(1:nlam*n)
-    call comp%absorption(sp, chi4, include_absmet = include_absmet /= 0, &
-                         sorted = .true.)
-  END FUNCTION hop_absorption
+    chi4 (1:nlam, 1:n, 1:1, 1:1) => chi (1:nlam*n)
+    scat4(1:nlam, 1:n, 1:1, 1:1) => scat(1:nlam*n)
+    if (line_scat < 0) then
+      call comp%opacity(sp, chi4, scat4, include_absmet = include_absmet /= 0, &
+        include_llist = include_llist /= 0, dlam = dlam, sorted = .true.)
+    else
+      call comp%opacity(sp, chi4, scat4, include_absmet = include_absmet /= 0, &
+        include_llist = include_llist /= 0, dlam = dlam, sorted = .true., &
+        line_scat = line_scat /= 0)
+    end if
+  END FUNCTION hop_opacity
 
   !-----------------------------------------------------------------------------
   ! Read one line-list file into the master instance, keeping only lines inside
