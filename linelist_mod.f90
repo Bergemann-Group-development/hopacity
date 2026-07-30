@@ -31,7 +31,7 @@ MODULE linelist_mod
   USE handyfuncs_mod, only: air2vac, vac2air
   USE op_math_mod, only: find_closest
   USE bbtrans_mod, only: voigt_function2, disable_ga, disable_stark, disable_vdw, &
-                         f_conv, tol => tolerance, bbtrans_type
+                         f_conv, tol => tolerance, bbtrans_type, vdw_shift
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
   USE voigt_av_mod, only: voigt_av_t, voigt_av_setup, voigt_av_block
@@ -40,7 +40,7 @@ MODULE linelist_mod
 
   public :: build_linelist, finalize_linelist, add_opacity, add_opacity_equi, voigt_peak
   public :: add_particle_opacity
-  public :: append_line, add_rates, write_ll_header, write_ll_record, bij_const
+  public :: append_line, write_ll_header, write_ll_record, bij_const
   public :: reserve_linelist, print_ll_particle, print_ll_atom
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
@@ -137,7 +137,7 @@ contains
       call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
       call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
       call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
-                                lower_ev, ion_j, xion, vbar2e4, is_mol)
+                                lower_ev, ion_j, xion, vbar2e4, is_mol, ll%vdw_ratio(k))
       ll%ga(k)  = ga_t
       ll%gq(k)  = gq_t
       ll%gw1(k) = gw1_t
@@ -152,13 +152,14 @@ contains
   ! Broadening parameters carry the same over_4pi/nu0 scaling as the prepare_* routines.
   !-------------------------------------------------------------------------------------
   SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, ga, gw1, gw2, gq, unsold, &
-                         lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
+                         vdw_ratio, lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
                          loggf, gv_in, ga_in, gq_in)
     type(linelist_type), intent(inout) :: ll
     real(8), intent(in) :: llam0, gpref
     real(8), intent(in) :: nu0, lower_ev, ga, gw1, gw2, gq, wA, cwt, dej
     real(8), intent(in) :: loggf, gv_in, ga_in, gq_in
     logical, intent(in) :: unsold
+    real(4), intent(in) :: vdw_ratio
     integer, intent(in) :: lev_i, lev_j, itrans, ipart, iso_out
     integer :: k
     !-----------------------------------------------------------------------------------
@@ -175,6 +176,7 @@ contains
     ll%gw2(k)      = gw2
     ll%gq(k)       = gq
     ll%unsold(k)   = unsold
+    ll%vdw_ratio(k) = vdw_ratio
     ll%lev_i(k)    = lev_i
     ll%lev_j(k)    = lev_j
     ll%active(k)   = .true.
@@ -299,9 +301,9 @@ contains
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
     integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb
-    real(8)  :: llc, dl
+    real(8)  :: llc, llc_s, dl
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
+    real(4)  :: a, avdw, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
@@ -394,19 +396,29 @@ contains
             if (voigt_peak * Rij <= ref) cycle
             c_pass = c_pass + 1
 
-            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
+            ! damping parameter (physical, then scaled by idf as in the AoS kernel).
+            ! avdw = the van der Waals contribution (pre-idf) is captured separately so
+            ! it can drive the Lindholm pressure shift below.
             a = ll%ga(l)
             if (ll%unsold(l)) then
-              a = a + ll%gw1(l) * unsold_c
+              avdw = ll%gw1(l) * unsold_c
             else
-              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
+              avdw = ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
+            a = a + avdw
             if (ll%gq(l) >= 0.0) then
               a = a + ll%gq(l) * ne_c
             else
               a = a - ll%gq(l) * starkpe
             end if
             a = a * idf
+
+            ! Lindholm van der Waals pressure shift (red): the pre-idf vdW damping term
+            ! is the vdW HWHM in ln(lambda) units, so shifting the profile centre red by
+            ! vdw_shift*ratio*HWHM is a simple offset in llc. == llc when vdw_shift==0.
+            ! ratio is the per-line impact-theory d/w (ll%vdw_ratio, precomputed at build
+            ! time). The window [fa,fb] and f0 stay on the unshifted centre (shift << window).
+            llc_s = llc + vdw_shift * ll%vdw_ratio(l) * avdw
 
             ll%used(l)     = .true.
             ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
@@ -431,7 +443,7 @@ contains
             if (do_scat .and. .not. nlte) then
               ! LTE line (bi=bj=1) with the scattering fraction accumulated
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc)
+                vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
                 chi(f,i,j,k) = chi(f,i,j,k) + lte
@@ -440,7 +452,7 @@ contains
               end do
             else
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc)
+                vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
                 chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
@@ -489,9 +501,9 @@ contains
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
     integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw
-    real(8)  :: llc, llam1, dllam, inv_dllam
+    real(8)  :: llc, llc_s, llam1, dllam, inv_dllam
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
+    real(4)  :: a, avdw, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
@@ -576,19 +588,29 @@ contains
             if (voigt_peak * Rij <= ref) cycle
             c_pass = c_pass + 1
 
-            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
+            ! damping parameter (physical, then scaled by idf as in the AoS kernel).
+            ! avdw = the van der Waals contribution (pre-idf) is captured separately so
+            ! it can drive the Lindholm pressure shift below.
             a = ll%ga(l)
             if (ll%unsold(l)) then
-              a = a + ll%gw1(l) * unsold_c
+              avdw = ll%gw1(l) * unsold_c
             else
-              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
+              avdw = ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
+            a = a + avdw
             if (ll%gq(l) >= 0.0) then
               a = a + ll%gq(l) * ne_c
             else
               a = a - ll%gq(l) * starkpe
             end if
             a = a * idf
+
+            ! Lindholm van der Waals pressure shift (red): the pre-idf vdW damping term
+            ! is the vdW HWHM in ln(lambda) units, so shifting the profile centre red by
+            ! vdw_shift*ratio*HWHM is a simple offset in llc. == llc when vdw_shift==0.
+            ! ratio is the per-line impact-theory d/w (ll%vdw_ratio, precomputed at build
+            ! time). The window [fa,fb] and f0 stay on the unshifted centre (shift << window).
+            llc_s = llc + vdw_shift * ll%vdw_ratio(l) * avdw
 
             ll%used(l)     = .true.
             ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
@@ -634,7 +656,7 @@ contains
             else if (do_scat .and. .not. nlte) then
               ! LTE line (bi=bj=1) with the scattering fraction accumulated
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc)
+                vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
                 chi(f,i,j,k) = chi(f,i,j,k) + lte
@@ -643,7 +665,7 @@ contains
               end do
             else
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc)
+                vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
                 chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
@@ -796,223 +818,6 @@ contains
   END FUNCTION bisect_nearest
 
   !=====================================================================================
-  ! Rate kernel for model-atom linelists: accumulates the angular/frequency quadrature
-  ! of the radiative bound-bound rates (gamma_ij/gamma_ji, per patch-subset transition
-  ! column ll%itrans) and, optionally, the profile normalization wphi.  Mirrors
-  ! add_opacity: same population/damping evaluation (exp(arg), damping from scratch)
-  ! and the same LTE wing cutoff (phi*Rij vs tol*cont), so the rate integration window
-  ! is identical to the opacity window and iteration-stable.
-  !
-  ! Correspondence with the old rt_patch bound_bound_rates (see voigt_profile, which
-  ! carries an extra idf*(nu/nu0) versus voigt_function2):
-  !   old sum_A = sum_f phi_old*wmu*wnu*Aij, wnu = trapz(nu)/(h_4pi*nu)
-  !             ~ (wmu*Aij*idf/h_4pi) * sum_f phi*w,  w = trapz weight of log(lambda)
-  !   (the smooth nu/nu0 factor across the profile is dropped; it largely cancels in
-  !    the gamma/wphi normalization).  Preconditioning:
-  !   Bij*ni = (Rij/idf)*b_i,  Bji*nj = (Rij/idf)*b_j*exp(-dej*e_kT).
-  !   wphi   = sum_f phi_old*wq ~ idf * sum_f phi*w  (accumulated with wmu, x component
-  !            weight cwt so split multi-component lines reproduce the composite).
-  !
-  ! Windowed mode is mandatory: rates run on the NLTE union grid, which is only
-  ! ascending inside each line's own window.
-  !-------------------------------------------------------------------------------------
-  SUBROUTINE add_rates(ll, llam, Inu, Psi, cont, logref, vproj, inv_df, vbar2, e_kT, &
-                       lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, wmu, precond, &
-                       gamma_ij, gamma_ji, wphi, get_wphi)
-    type(linelist_type), intent(inout) :: ll
-    real(dp), dimension(:),       intent(in)    :: llam
-    real(4),  dimension(:,:,:,:), intent(in)    :: Inu, Psi
-    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
-    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, ne, tothi, stark_pe
-    real(4),  dimension(:,:,:),   intent(in)    :: inv_df, vbar2
-    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
-    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
-    logical,  intent(in) :: do_nlte, precond, get_wphi
-    real(4),  intent(in) :: wmu
-    real(4),  dimension(:,:,:,:), intent(inout) :: gamma_ij, gamma_ji
-    real(4),  dimension(:,:,:,:), intent(inout), optional :: wphi
-    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, ws, we, it, fa, fb
-    real(8)  :: llc, sA, sI, sP, dl
-    real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, w, c, g_ij, g_ji, beta0
-    real(4)  :: lvb2, vm2, edge
-    real(8)  :: arg
-    real(4)  :: base_s(size(lnbase,4))
-    logical  :: nlte, has_ipart
-    integer(8) :: c_visit, c_pass, c_voigt
-    !-----------------------------------------------------------------------------------
-    m  = shape(vproj)
-    nf = size(llam)
-    nl = ll%nline
-    np = size(lnbase, 4)
-    if (nl == 0) return
-    if (.not. allocated(ll%iws)) error stop 'linelist add_rates: windowed linelist required'
-    has_ipart = allocated(ll%ipart)
-    c_visit = 0; c_pass = 0; c_voigt = 0
-
-    do k = 1, m(3)
-      do j = 1, m(2)
-        do i = 1, m(1)
-          idf      = inv_df(i,j,k)
-          unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
-          lvb2     = log(vbar2(i,j,k))
-          ekt      = e_kT(i,j,k)
-          ne_c     = ne(i,j,k)
-          tothi_c  = tothi(i,j,k)
-          starkpe  = stark_pe(i,j,k)
-          vproj_c  = vproj(i,j,k)
-          base_s(1:np) = lnbase(i,j,k,1:np)
-
-          do l = 1, nl
-            if (.not. ll%active(l)) cycle
-            c_visit = c_visit + 1
-
-            llc = ll%llam0(l) - vproj_c
-            ws  = ll%iws(l)
-            we  = ll%iwe(l)
-            f0  = ll%icen(l)
-            do while (f0 < we)
-              if (llam(f0) >= llc) exit
-              f0 = f0 + 1
-            end do
-            do while (f0 > ws)
-              if (llam(f0-1) < llc) exit
-              f0 = f0 - 1
-            end do
-            if (f0 > ws) then
-              if (abs(llam(f0-1) - llc) < abs(llam(f0) - llc)) f0 = f0 - 1
-            end if
-
-            ex  = ll%lower_ev(l) * ekt
-            if (has_ipart) then
-              arg = base_s(ll%ipart(l)) + ll%gpref(l) - ex
-            else
-              arg = base_s(1) + ll%gpref(l) - ex
-            end if
-            if (arg < ex_cutoff) cycle
-            if (arg <= logref(f0,i,j,k)) cycle
-
-            ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
-            Rij = exp(arg)
-
-            ref = tol * cont(f0,i,j,k)
-            if (voigt_peak * Rij <= ref) cycle
-            c_pass = c_pass + 1
-
-            ! damping from scratch, identical to add_opacity
-            a = ll%ga(l)
-            if (ll%unsold(l)) then
-              a = a + ll%gw1(l) * unsold_c
-            else
-              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
-            end if
-            if (ll%gq(l) >= 0.0) then
-              a = a + ll%gq(l) * ne_c
-            else
-              a = a - ll%gq(l) * starkpe
-            end if
-            a = a * idf
-
-            ! centre
-            vs  = idf * real(llam(f0) - llc)
-            phi = voigt_function2(a, vs)
-            c_voigt = c_voigt + 1
-            lte = phi * Rij
-            if (lte <= ref) cycle
-
-            w  = trapw(llam, ws, we, f0)
-            sA = phi * w
-            sI = phi * w * Inu(f0,i,j,k)
-            sP = 0
-            if (precond) sP = phi * phi * w * Psi(f0,i,j,k)
-
-            ! analytic wing extent (same criterion as add_opacity), straight loops
-            vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
-            edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
-            if (vm2 >= edge*edge) then
-              fa = ws
-              fb = we
-            else
-              dl = sqrt(vm2) / idf
-              fa = bisect_nearest(llam, ws, f0, llc - dl)
-              fb = bisect_nearest(llam, f0, we, llc + dl)
-            end if
-            c_voigt = c_voigt + fb - fa
-
-            do f = f0+1, fb        ! red wing
-              vs  = idf * real(llam(f) - llc)
-              phi = voigt_function2(a, vs)
-              w   = trapw(llam, ws, we, f)
-              sA  = sA + phi * w
-              sI  = sI + phi * w * Inu(f,i,j,k)
-              if (precond) sP = sP + phi * phi * w * Psi(f,i,j,k)
-            end do
-            do f = fa, f0-1        ! blue wing
-              vs  = idf * real(llam(f) - llc)
-              phi = voigt_function2(a, vs)
-              w   = trapw(llam, ws, we, f)
-              sA  = sA + phi * w
-              sI  = sI + phi * w * Inu(f,i,j,k)
-              if (precond) sP = sP + phi * phi * w * Psi(f,i,j,k)
-            end do
-
-            nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
-            if (nlte) then
-              bi = dep_mem(i,j,k, ll%lev_i(l))
-              bj = dep_mem(i,j,k, ll%lev_j(l))
-            else
-              bi = 1.0
-              bj = 1.0
-            end if
-
-            c    = wmu * ll%wA(l) * idf * over_h4pi
-            g_ij = c * sI
-            g_ji = c * (sI + sA)
-            if (precond) then
-              beta0 = exp(-ll%dej(l) * ekt)
-              g_ij  = g_ij - c * sP * Rij * bj * beta0
-              g_ji  = g_ji - c * sP * Rij * bi
-            end if
-
-            it = ll%itrans(l)
-            gamma_ij(i,j,k,it) = gamma_ij(i,j,k,it) + g_ij
-            gamma_ji(i,j,k,it) = gamma_ji(i,j,k,it) + g_ji
-            if (get_wphi) then
-              wphi(i,j,k,it) = wphi(i,j,k,it) + wmu * idf * ll%cwt(l) * sA
-            end if
-          end do
-        end do
-      end do
-    end do
-    if (ll_profile) then
-      !$omp atomic
-      ll_nvisit = ll_nvisit + c_visit
-      !$omp atomic
-      ll_npass  = ll_npass  + c_pass
-      !$omp atomic
-      ll_nvoigt = ll_nvoigt + c_voigt
-    endif
-  END SUBROUTINE add_rates
-
-  !-------------------------------------------------------------------------------------
-  ! trapezoid quadrature weight of point f on llam(ws:we) (matches set_weights on the
-  ! same window: half intervals at the window edges)
-  !-------------------------------------------------------------------------------------
-  PURE FUNCTION trapw(llam, ws, we, f) result(w)
-    real(dp), dimension(:), intent(in) :: llam
-    integer, intent(in) :: ws, we, f
-    real(4) :: w
-    !-----------------------------------------------------------------------------------
-    if (f == ws) then
-      w = 0.5 * real(llam(min(ws+1,we)) - llam(ws))
-    elseif (f == we) then
-      w = 0.5 * real(llam(we) - llam(max(we-1,ws)))
-    else
-      w = 0.5 * real(llam(f+1) - llam(f-1))
-    end if
-  END FUNCTION trapw
-
-  !=====================================================================================
   ! Ported broadening setup (scalar versions of the bbtrans_mod prepare_* routines).
   ! Results are scaled by over_4pi/nu0, identical to the AoS path.
   !-------------------------------------------------------------------------------------
@@ -1063,12 +868,13 @@ contains
 
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE prepare_vanderwaals(gw1, gw2, unsold, gv, nu0, lower_ev, lower_ion, &
-                                      cnt_ev, vbar2e4, is_mol)
+                                      cnt_ev, vbar2e4, is_mol, vdw_ratio)
     real(dp), intent(out) :: gw1, gw2
     logical,  intent(out) :: unsold
     real(dp), intent(in)  :: gv, nu0, lower_ev, cnt_ev, vbar2e4
     integer,  intent(in)  :: lower_ion
     logical,  intent(in)  :: is_mol
+    real(4),  intent(out) :: vdw_ratio
     real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625
     real(dp), parameter :: uns = 8.411 * 1.283984e-12
     real(dp), parameter :: barklem = (1e-2 * Rbohr)**2
@@ -1076,6 +882,7 @@ contains
     gw1 = 0
     gw2 = 0
     unsold = .false.
+    vdw_ratio = 0
     if (gv >= 20.0) then
       ! Barklem cross section + velocity exponent
       sigma  = barklem * int(gv)
@@ -1085,8 +892,13 @@ contains
       balfac = (4.0/pi)**(0.5*alpha) * gammaf * 2.e10
       gw2 = 0.5*(1 - alpha)
       gw1 = balfac * sigma * 10**(-12*gw2)
+      ! Lindholm shift/HWHM ratio for an effective inverse-power interaction:
+      ! d/w = tan(pi*alpha/2). The clamp guards against pathological alpha (near 1,
+      ! where the tangent blows up).
+      vdw_ratio = min(tan(0.5*pi * min(max(alpha, 0.02_dp), 0.96_dp)), 3.0_dp)
     elseif (.not. is_mol) then    ! Unsold is not used for molecules
       unsold = .true.
+      vdw_ratio = 0.7265  ! pure van der Waals (p=6, alpha=0.4) -> tan(0.2*pi)
       if (gv < -20.0) then
         c625 = 10**(0.4 * gv)       ! recipe c6 SIU
         gw1  = 17. * c625
@@ -1106,7 +918,7 @@ contains
     gw1 = gw1 * over_4pi / nu0
     if (disable_vdw) then
       unsold = .true.
-      gw1 = 0
+      gw1 = 0                       ! vdw_ratio is then irrelevant: it multiplies avdw = 0
     end if
   END SUBROUTINE prepare_vanderwaals
 
@@ -1295,6 +1107,7 @@ contains
     call grow4(ll%gw1,      ll%nline, need)
     call grow4(ll%gw2,      ll%nline, need)
     call grow4(ll%gq,       ll%nline, need)
+    call grow4(ll%vdw_ratio, ll%nline, need)
     call grow4(ll%strength, ll%nline, need)
     call growi(ll%lev_i,    ll%nline, need)
     call growi(ll%lev_j,    ll%nline, need)

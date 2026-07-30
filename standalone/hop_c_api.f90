@@ -59,7 +59,7 @@ MODULE hop_c_api
   character(len=*), parameter :: option_names = &
     'abundances exclude_elements only_elements vcs_data_dir ' // &
     'ref_lam debug_opac tolerance opac_table_vmic eosmet lam_tolerance ' // &
-    'mhd_eos scattering_absorption helium_scattering relative_abundances ' // &
+    'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
     'irwin_dis disable_ga disable_stark disable_vdw ga_fallback hydrogen_bpo ' // &
     'hydrogen_vcs_table ll_profile voigt_kernel switch verbose'
@@ -313,8 +313,6 @@ CONTAINS
     ! --- logicals -----------------------------------------------------------
     case ('mhd_eos')
       call parse_logical(val, lv, status); if (status == 0) mhd_eos = lv
-    case ('scattering_absorption')
-      call parse_logical(val, lv, status); if (status == 0) scattering_absorption = lv
     case ('helium_scattering')
       call parse_logical(val, lv, status); if (status == 0) helium_scattering = lv
     case ('relative_abundances')
