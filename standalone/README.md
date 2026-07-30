@@ -11,12 +11,8 @@ make -C HOP/standalone -j8            # -> HOP/standalone/build/libhop.so
 make -C HOP/standalone clean          # rebuild from scratch after editing HOP/*.f90
 ```
 
-gfortran only (the framework singletons are replaced by the `-DHOP_STANDALONE` branch of
-`hop_env_mod.f90`). `OPT=-O2` overrides the default `-O1`. The Python side finds the
-library at `HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points.
-
-Every source the library compiles lives under `HOP/` — nothing is pulled in from the
-experiment's `SRC/`, so the directory can be copied or vendored on its own.
+gfortran only. `OPT=-O2` overrides the default `-O1`. The wrapper finds the library at
+`HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points.
 
 Check it loads:
 
@@ -64,12 +60,11 @@ keyword (`mhd_eos=False`, `ref_lam=5000.0`, `abundances='Fe 7.5'`, ...).
 and line list — and returns two float32 arrays of shape `<state shape> + (nlam,)`, in
 1/cm:
 
-- `chi`, the total extinction: continuum with Thomson + Rayleigh scattering folded in (as
-  HOP's `scattering_absorption` does), plus the absmet background with `include_absmet`,
-  plus the LTE line list with `linelist`;
+- `chi`, the total extinction: continuum with Thomson + Rayleigh scattering folded in,
+  plus the absmet background with `include_absmet`, plus the LTE line list with
+  `linelist`;
 - `scat`, the scattering part of it: Thomson + Rayleigh, and with `line_scattering=True`
-  also the (1-eps)-weighted absmet and line-list opacity (the van Regemorter split
-  `composition_type%opacity` applies).
+  also the (1-eps)-weighted absmet and line-list opacity (the van Regemorter split).
 
 Divide by `hop.rho[..., None]` for the per-gram opacity a dispatch `opa`/`scat` table
 holds.
@@ -108,22 +103,21 @@ hump turning over into free-free beyond ~1.6 um. The example above (572 waveleng
 ### Parallelism
 
 The wavelength axis is split into `nchunks` pieces exactly as dispatch splits it over its
-`n_nu` rt_patches, and the pieces run in `nprocs` processes. HOP keeps process-wide global
-state, so each worker holds its own instance and — with a line list — reads only the lines
-its own chunk needs. Cost scales with `nlam x ntemp x nrho`, so raise `nprocs` before you
-widen the window.
+`n_nu` rt_patches, and the pieces run in `nprocs` processes. Each worker holds its own
+instance and — with a line list — reads only the lines its own chunk needs. Cost scales
+with `nlam x ntemp x nrho`, so raise `nprocs` before you widen the window.
 
 Two things to get right:
 
 - **Guard your script's top level with `if __name__ == '__main__':`.** The workers are
-  spawned, not forked (a fork would inherit the parent's Fortran globals), so without the
-  guard every worker re-runs the script on import and the pool spawns forever. Notebooks
-  and pytest are unaffected.
+  spawned, not forked, so without the guard every worker re-runs the script on import and
+  the pool spawns forever. Notebooks and pytest are unaffected.
 - **Pass `vmic` if your atmosphere has microturbulence.** `&opac_table_params` defaults it
-  to -1 (thermal broadening only), but `read_external_mod` overwrites `opac_table_vmic`
-  with the mean of the atmosphere's own vmic whenever any of it is positive. Getting this
-  wrong leaves the line opacity up to an order of magnitude off in the cool, dense corner.
-  It does not affect the EOS or the continuum, and is applied without re-solving the state.
+  to -1 (thermal broadening only), but a dispatch run overrides that with the mean of the
+  atmosphere's own vmic whenever any of it is positive — so pass that mean here. Getting
+  this wrong leaves the line opacity up to an order of magnitude off in the cool, dense
+  corner. It affects neither the EOS nor the continuum, and is applied without re-solving
+  the state.
 
 ### Line-list opacity
 
@@ -139,7 +133,4 @@ chi, scat = hop.opacity(lam, linelist='input/linelists/master_line.txt',
 Only the lines within `dlam` of the requested wavelengths are read. A line list can only
 ever be *added* to a HOP instance, so calling `opacity` with a different one (or over a
 wider window than before) rebuilds the instance and re-solves the state — repeated calls
-with the same list and window cost nothing extra. Note that chunking is therefore not
-quite neutral for line opacity: a chunk sees only the lines within `dlam` of its own
-wavelengths, so a far Lorentz wing reaching in from outside that window is missing —
-exactly as it is in a dispatch run, where each rt_patch reads its own chunk.
+with the same list and window cost nothing extra.

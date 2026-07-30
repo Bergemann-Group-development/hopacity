@@ -1,5 +1,5 @@
 !===============================================================================
-!> C interface to the HOP EOS/opacity engine, for use from Python (ctypes).
+!> C interface to the HOP EOS/opacity engine, for use from Python (cffi).
 !>
 !> Design notes:
 !> - A single composition_type instance per process.  HOP configuration lives
@@ -24,7 +24,7 @@ MODULE hop_c_api
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
-  USE hprofl_mod,   only: hydrogen_BPO
+  USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE osmet_mod,    only: eosmet
@@ -47,7 +47,84 @@ MODULE hop_c_api
   ! prints at its own default (the linelist line count), 1 and up add the rest.
   integer, save :: init_verbose = -1
 
+  ! Message for the most recent nonzero status, readable with hop_last_error.  The
+  ! status codes alone cannot say *which* option was rejected or *why* a value would
+  ! not parse, and the wrapper cannot reconstruct that.  This does not cover the
+  ! stop/error stop sites inside HOP itself, which still kill the process.
+  character(len=512), save :: last_error = ''
+
+  !> Every option hop_set_option accepts, in the order hop_option_names reports them.
+  !> Kept adjacent to the select case below -- the two must agree, and
+  !> tests/test_hop_abi.py checks that they do.
+  character(len=*), parameter :: option_names = &
+    'abundances exclude_elements only_elements vcs_data_dir ' // &
+    'ref_lam debug_opac tolerance opac_table_vmic eosmet lam_tolerance ' // &
+    'mhd_eos scattering_absorption helium_scattering relative_abundances ' // &
+    'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
+    'irwin_dis disable_ga disable_stark disable_vdw ga_fallback hydrogen_bpo ' // &
+    'hydrogen_vcs_table ll_profile voigt_kernel switch verbose'
+
 CONTAINS
+
+  !=============================================================================
+  ! Error reporting
+  !=============================================================================
+  !> Record msg and return code, so every failure path is one call.
+  SUBROUTINE fail(msg, code, status)
+    character(len=*), intent(in) :: msg
+    integer(c_int), intent(in)   :: code
+    integer(c_int), intent(out)  :: status
+    !---------------------------------------------------------------------------
+    last_error = msg
+    status = code
+  END SUBROUTINE fail
+
+  !> Copy a Fortran string into a caller-provided C buffer, NUL-terminated.
+  SUBROUTINE f2c_string(fs, buf, buflen, status)
+    character(len=*), intent(in) :: fs
+    character(kind=c_char), intent(out) :: buf(*)
+    integer(c_int), intent(in)  :: buflen
+    integer(c_int), intent(out) :: status
+    integer :: i, n
+    !---------------------------------------------------------------------------
+    status = 0
+    n = len_trim(fs)
+    if (buflen < 1) then
+      status = 5
+      return
+    end if
+    if (n + 1 > buflen) then
+      status = 5           ! truncated; the caller still gets what fits
+      n = buflen - 1
+    end if
+    do i = 1, n
+      buf(i) = fs(i:i)
+    end do
+    buf(n+1) = c_null_char
+  END SUBROUTINE f2c_string
+
+  !> Message for the most recent nonzero status ('' if none).  Always succeeds
+  !> unless the buffer is too small, in which case the text is truncated and the
+  !> status is 5.
+  FUNCTION hop_last_error(buf, buflen) RESULT(status) &
+           BIND(c, name='hop_last_error')
+    character(kind=c_char), intent(out) :: buf(*)
+    integer(c_int), value :: buflen
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    call f2c_string(last_error, buf, buflen, status)
+  END FUNCTION hop_last_error
+
+  !> Space-separated list of the names hop_set_option accepts, so a wrapper can
+  !> report or validate them instead of hardcoding its own copy.
+  FUNCTION hop_option_names(buf, buflen) RESULT(status) &
+           BIND(c, name='hop_option_names')
+    character(kind=c_char), intent(out) :: buf(*)
+    integer(c_int), value :: buflen
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    call f2c_string(option_names, buf, buflen, status)
+  END FUNCTION hop_option_names
 
   !=============================================================================
   ! Helpers
@@ -83,15 +160,19 @@ CONTAINS
     status = 0
     if (index(trim(nm), ' ') == 0) then
       if (c%nmolec == 0) then
-        status = 1
+        call fail("unknown species '" // trim(nm) // "': no molecules loaded, and an " // &
+                  "element id needs an ionization stage (e.g. 'Fe I')", 1, status)
         return
       else if (findloc(c%molecules%id, trim(nm), 1) == 0) then
-        status = 1   ! unknown molecule, or an element id without ' <stage>'
+        ! unknown molecule, or an element id without ' <stage>'
+        call fail("unknown species '" // trim(nm) // "': not a molecule; an element " // &
+                  "id needs an ionization stage (e.g. 'Fe I')", 1, status)
         return
       end if
     end if
     call c%particle_by_id(trim(nm), particle)
-    if (.not. associated(particle)) status = 1
+    if (.not. associated(particle)) &
+      call fail("unknown species '" // trim(nm) // "'", 1, status)
   END SUBROUTINE species_lookup
 
   !=============================================================================
@@ -108,7 +189,7 @@ CONTAINS
     character(len=:), allocatable :: absdat_f, abund_f, iso_f, molec_f
     !---------------------------------------------------------------------------
     if (allocated(master)) then
-      status = 1   ! already initialized; call hop_free first
+      call fail('already initialized; call hop_free first', 1, status)
       return
     end if
     absdat_f = c2f_string(absdat_file)
@@ -141,16 +222,72 @@ CONTAINS
   ! Module-global options.  String/real options that influence injon
   ! (abundances, exclude_elements, ...) must be set BEFORE hop_init.
   !=============================================================================
-  FUNCTION hop_set_option_str(name, value) RESULT(status) &
-           BIND(c, name='hop_set_option_str')
+  !> Parse helpers.  Each leaves status alone on success and sets 4 on a value that
+  !> will not read as the option's type, so the caller can report which it was.
+  SUBROUTINE parse_real(s, out, status)
+    character(len=*), intent(in) :: s
+    real(dp), intent(out) :: out
+    integer(c_int), intent(inout) :: status
+    integer :: ios
+    !---------------------------------------------------------------------------
+    read(s, *, iostat=ios) out
+    if (ios /= 0) call fail("cannot read '" // trim(s) // "' as a number", 4, status)
+  END SUBROUTINE parse_real
+
+  SUBROUTINE parse_int(s, out, status)
+    character(len=*), intent(in) :: s
+    integer, intent(out) :: out
+    integer(c_int), intent(inout) :: status
+    integer :: ios
+    !---------------------------------------------------------------------------
+    read(s, *, iostat=ios) out
+    if (ios /= 0) call fail("cannot read '" // trim(s) // "' as an integer", 4, status)
+  END SUBROUTINE parse_int
+
+  !> Accepts what a namelist and a Python bool both stringify to.
+  SUBROUTINE parse_logical(s, out, status)
+    character(len=*), intent(in) :: s
+    logical, intent(out) :: out
+    integer(c_int), intent(inout) :: status
+    character(len=:), allocatable :: t
+    !---------------------------------------------------------------------------
+    t = lowercase(trim(adjustl(s)))
+    select case (t)
+    case ('1', 't', 'true', '.true.', 'yes', 'on')
+      out = .true.
+    case ('0', 'f', 'false', '.false.', 'no', 'off')
+      out = .false.
+    case default
+      call fail("cannot read '" // trim(s) // "' as a logical (use true/false or 1/0)", &
+                4, status)
+    end select
+  END SUBROUTINE parse_logical
+
+  !=============================================================================
+  ! The one option setter.  Name and value both cross as strings and the parse
+  ! happens here, against the option's own type, so no caller has to know which
+  ! type bucket an option belongs to, and an unknown name stays distinguishable
+  ! from a value that will not parse (see the status codes below).
+  !
+  ! Options that influence injon (abundances, exclude_elements, ...) must still
+  ! be set BEFORE hop_init.
+  !
+  ! status: 0 ok, 1 unknown name, 4 value will not parse as that option's type
+  !=============================================================================
+  FUNCTION hop_set_option(name, value) RESULT(status) &
+           BIND(c, name='hop_set_option')
     character(kind=c_char), intent(in) :: name(*), value(*)
     integer(c_int) :: status
     character(len=:), allocatable :: nm, val
+    real(dp) :: rv
+    integer  :: iv
+    logical  :: lv
     !---------------------------------------------------------------------------
     nm  = lowercase(c2f_string(name))
     val = c2f_string(value)
     status = 0
     select case (nm)
+    ! --- strings ------------------------------------------------------------
     case ('abundances')
       abundances = val
       abundances_set = .true.
@@ -160,91 +297,67 @@ CONTAINS
       only_elements = val
     case ('vcs_data_dir')
       vcs_data_dir = val
-    case default
-      status = 1
-    end select
-  END FUNCTION hop_set_option_str
-
-  FUNCTION hop_set_option_real(name, value) RESULT(status) &
-           BIND(c, name='hop_set_option_real')
-    character(kind=c_char), intent(in) :: name(*)
-    real(c_double), value :: value
-    integer(c_int) :: status
-    character(len=:), allocatable :: nm
-    !---------------------------------------------------------------------------
-    nm = lowercase(c2f_string(name))
-    status = 0
-    select case (nm)
+    ! --- reals --------------------------------------------------------------
     case ('ref_lam')
-      ref_lam = value
+      call parse_real(val, rv, status); if (status == 0) ref_lam = rv
     case ('debug_opac')
-      debug_opac = value
+      call parse_real(val, rv, status); if (status == 0) debug_opac = rv
     case ('tolerance')
-      tolerance = real(value, 4)
+      call parse_real(val, rv, status); if (status == 0) tolerance = real(rv, 4)
     case ('opac_table_vmic')
-      opac_table_vmic = real(value, 4)
+      call parse_real(val, rv, status); if (status == 0) opac_table_vmic = real(rv, 4)
     case ('eosmet')
-      eosmet = value
+      call parse_real(val, rv, status); if (status == 0) eosmet = rv
     case ('lam_tolerance')
-      lam_tolerance = value
-    case default
-      status = 1
-    end select
-  END FUNCTION hop_set_option_real
-
-  FUNCTION hop_set_option_int(name, value) RESULT(status) &
-           BIND(c, name='hop_set_option_int')
-    character(kind=c_char), intent(in) :: name(*)
-    integer(c_int), value :: value
-    integer(c_int) :: status
-    character(len=:), allocatable :: nm
-    !---------------------------------------------------------------------------
-    nm = lowercase(c2f_string(name))
-    status = 0
-    select case (nm)
+      call parse_real(val, rv, status); if (status == 0) lam_tolerance = rv
+    ! --- logicals -----------------------------------------------------------
     case ('mhd_eos')
-      mhd_eos = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) mhd_eos = lv
     case ('scattering_absorption')
-      scattering_absorption = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) scattering_absorption = lv
     case ('helium_scattering')
-      helium_scattering = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) helium_scattering = lv
     case ('relative_abundances')
-      relative_abundances = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) relative_abundances = lv
     case ('line_scattering')
-      line_scattering = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) line_scattering = lv
     case ('sample_linelist')
-      sample_linelist = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) sample_linelist = lv
     case ('h_occupation_probability')
-      H_occupation_probability = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) H_occupation_probability = lv
     case ('debye_shield')
-      debye_shield = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) debye_shield = lv
     case ('irwin_dis')
-      irwin_dis = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) irwin_dis = lv
     case ('disable_ga')
-      disable_ga = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) disable_ga = lv
     case ('disable_stark')
-      disable_stark = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) disable_stark = lv
     case ('disable_vdw')
-      disable_vdw = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) disable_vdw = lv
     case ('ga_fallback')
-      ga_fallback = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) ga_fallback = lv
     case ('hydrogen_bpo')
-      hydrogen_BPO = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) hydrogen_BPO = lv
     case ('hydrogen_vcs_table')
-      hydrogen_vcs_table = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) hydrogen_vcs_table = lv
     case ('ll_profile')
-      ll_profile = value /= 0
+      call parse_logical(val, lv, status); if (status == 0) ll_profile = lv
+    ! --- integers -----------------------------------------------------------
     case ('voigt_kernel')
-      voigt_kernel = value
+      call parse_int(val, iv, status); if (status == 0) voigt_kernel = iv
     case ('switch')
-      switch = value
+      call parse_int(val, iv, status); if (status == 0) switch = iv
     case ('verbose')
-      init_verbose = value
-      if (allocated(master)) master%verbose = value
+      call parse_int(val, iv, status)
+      if (status == 0) then
+        init_verbose = iv
+        if (allocated(master)) master%verbose = iv
+      end if
     case default
-      status = 1
+      call fail("unknown option '" // trim(nm) // "' (see hop_option_names)", 1, status)
     end select
-  END FUNCTION hop_set_option_int
+  END FUNCTION hop_set_option
 
   !=============================================================================
   ! EOS
@@ -252,8 +365,11 @@ CONTAINS
   FUNCTION hop_load_state(n, temp, ne, rho, vmic, use_rho, use_ne) &
            RESULT(status) BIND(c, name='hop_load_state')
     integer(c_int), value :: n, use_rho, use_ne
-    real(c_double), intent(in)    :: temp(n), rho(n)
-    real(c_double), intent(inout) :: ne(n)
+    ! assumed-size, not temp(n): -fc-prototypes renders an explicit-shape dummy as a
+    ! by-value scalar (`const double temp`) and only gets `(*)` right as a pointer, so
+    ! the generated header is only trustworthy if every array dummy here is `(*)`
+    real(c_double), intent(in)    :: temp(*), rho(*)
+    real(c_double), intent(inout) :: ne(*)
     real(c_float),  value         :: vmic
     integer(c_int) :: status
     real(dp), allocatable :: t3(:,:,:), ne3(:,:,:), rho3(:,:,:)
@@ -261,15 +377,15 @@ CONTAINS
     !---------------------------------------------------------------------------
     status = 0
     if (.not. allocated(master)) then
-      status = 2   ! hop_init not called
+      call fail('hop_load_state: no instance; call hop_init first', 2, status)
       return
     end if
     if (.not. master%initialised) then
-      status = 2
+      call fail('hop_load_state: instance not initialised', 2, status)
       return
     end if
     if (n < 1) then
-      status = 3
+      call fail('hop_load_state: n must be >= 1', 3, status)
       return
     end if
 
@@ -309,13 +425,14 @@ CONTAINS
            BIND(c, name='hop_get_field')
     character(kind=c_char), intent(in) :: name(*)
     integer(c_int), value :: n
-    real(c_double), intent(out) :: out(n)
+    real(c_double), intent(out) :: out(*)
     integer(c_int) :: status
     character(len=:), allocatable :: nm
     !---------------------------------------------------------------------------
     status = 0
     if (hop_get_n() /= n .or. n < 1) then
-      status = 3   ! no state loaded or size mismatch
+      call fail('hop_get_field: no state loaded, or n differs from the loaded size', &
+                3, status)
       return
     end if
     nm = lowercase(c2f_string(name))
@@ -337,7 +454,7 @@ CONTAINS
     case ('chi500')
       out(1:n) = reshape(real(comp%chi500, dp), [n])
     case default
-      status = 1
+      call fail("hop_get_field: unknown field '" // trim(nm) // "'", 1, status)
     end select
   END FUNCTION hop_get_field
 
@@ -354,7 +471,7 @@ CONTAINS
     class(particle_type), pointer :: particle
     !---------------------------------------------------------------------------
     if (.not. allocated(master)) then
-      status = 2   ! hop_init not called
+      call fail('hop_keep_species: no instance; call hop_init first', 2, status)
       return
     end if
     call species_lookup(master, c2f_string(name), particle, status)
@@ -370,18 +487,20 @@ CONTAINS
            BIND(c, name='hop_get_species')
     character(kind=c_char), intent(in) :: name(*)
     integer(c_int), value :: n
-    real(c_double), intent(out) :: out(n)
+    real(c_double), intent(out) :: out(*)
     integer(c_int) :: status
     class(particle_type), pointer :: particle
     !---------------------------------------------------------------------------
     if (hop_get_n() /= n .or. n < 1) then
-      status = 3   ! no state loaded or size mismatch
+      call fail('hop_get_species: no state loaded, or n differs from the loaded size', &
+                3, status)
       return
     end if
     call species_lookup(comp, c2f_string(name), particle, status)
     if (status /= 0) return
     if (.not. allocated(particle%n)) then
-      status = 4   ! density not retained; call hop_keep_species before loading
+      call fail('species density not retained; call hop_keep_species before ' // &
+                'hop_load_state', 4, status)
       return
     end if
     out(1:n) = reshape(particle%n, [n])
@@ -407,7 +526,8 @@ CONTAINS
     !---------------------------------------------------------------------------
     status = 0
     if (hop_get_n() /= n .or. n < 1) then
-      status = 3   ! no state loaded or size mismatch
+      call fail('hop_set_vmic: no state loaded, or n differs from the loaded size', &
+                3, status)
       return
     end if
     comp%vmic = vmic
@@ -425,7 +545,7 @@ CONTAINS
   FUNCTION hop_opacity(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
                        line_scat) RESULT(status) BIND(c, name='hop_opacity')
     integer(c_int), value :: nlam, include_absmet, include_llist, line_scat
-    real(c_double), intent(in) :: lam(nlam)
+    real(c_double), intent(in) :: lam(*)
     real(c_float), intent(inout), target :: chi(*), scat(*)
     real(c_double), value :: dlam
     integer(c_int) :: status
@@ -437,7 +557,7 @@ CONTAINS
     status = 0
     n = hop_get_n()
     if (n < 1 .or. nlam < 1) then
-      status = 3
+      call fail('hop_opacity: no state loaded, or nlam < 1', 3, status)
       return
     end if
     allocate(lam8(nlam))
@@ -476,16 +596,16 @@ CONTAINS
     !---------------------------------------------------------------------------
     status = 0
     if (.not. allocated(master)) then
-      status = 2   ! hop_init not called
+      call fail('hop_init_linelist: no instance; call hop_init first', 2, status)
       return
     end if
     if (.not. master%initialised) then
-      status = 2
+      call fail('hop_init_linelist: instance not initialised', 2, status)
       return
     end if
     file_f = c2f_string(linelist_file)
     if (len(file_f) == 0) then
-      status = 3
+      call fail('hop_init_linelist: empty file name', 3, status)
       return
     end if
     if (nlam > 0) then
@@ -497,10 +617,36 @@ CONTAINS
     end if
   END FUNCTION hop_init_linelist
 
+  !-----------------------------------------------------------------------------
+  ! Griem's tabulated quasistatic Stark profile S(beta, p) for the hydrogen line
+  ! (n, m), evaluated over a vector of beta.  HOP itself calls holtsmark() one
+  ! beta at a time from stark1 (hprofl_mod); this batches it for the hydrogen-
+  ! Stark study code, which fits a component pattern to S.  Needs no instance --
+  ! holtsmark reads only its own tabulated data.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_holtsmark(nbeta, beta, p, n, m, out) RESULT(status) &
+           BIND(c, name='hop_holtsmark')
+    integer(c_int), value :: nbeta, n, m
+    real(c_double), intent(in)  :: beta(*)
+    real(c_double), value       :: p
+    real(c_double), intent(out) :: out(*)
+    integer(c_int) :: status
+    integer :: i
+    !---------------------------------------------------------------------------
+    status = 0
+    if (nbeta < 1) then
+      call fail('hop_holtsmark: nbeta must be >= 1', 3, status)
+      return
+    end if
+    do i = 1, nbeta
+      out(i) = real(holtsmark(beta(i), p, n, m), c_double)
+    end do
+  END FUNCTION hop_holtsmark
+
   FUNCTION hop_scattering(nlam, lam, sig) RESULT(status) &
            BIND(c, name='hop_scattering')
     integer(c_int), value :: nlam
-    real(c_double), intent(in) :: lam(nlam)
+    real(c_double), intent(in) :: lam(*)
     real(c_float), intent(inout), target :: sig(*)
     integer(c_int) :: status
     real(4), pointer, contiguous :: sig4(:,:,:,:)
@@ -510,7 +656,7 @@ CONTAINS
     status = 0
     n = hop_get_n()
     if (n < 1 .or. nlam < 1) then
-      status = 3
+      call fail('hop_scattering: no state loaded, or nlam < 1', 3, status)
       return
     end if
     allocate(lam8(nlam))
