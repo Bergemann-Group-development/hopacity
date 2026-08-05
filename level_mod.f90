@@ -119,19 +119,23 @@ contains
   END SUBROUTINE wcalc
 
   !===============================================================================
-  SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield)
+  SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, i0, i1)
     class(level_type) :: self
     real(4), intent(inout), dimension(:,:,:,:) :: chi
     real(dp), intent(in), dimension(:) :: lam, ab
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
+    integer, intent(in), optional :: i0, i1
     real(dp), dimension(:), allocatable :: x1, x2, kk, lfac, cutfac
     real(dp) :: ns, ns2, rih, neutr, k1, k2, x, charg, res, nh43, nhe43
     real(dp) :: redcut, nu, w, n, frac, wstar
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
-    integer :: f,i,j,k, m(3), nf
+    integer :: f,i,j,k, m(3), nf, xlo, xhi
     !---------------------------------------------------------------------------
     m = shape(ne)
     nf = size(lam)
+    xlo = 1; xhi = m(1)
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
     allocate(x1, x2, kk, lfac, cutfac, mold=lam)
     kk = 0.
 
@@ -158,7 +162,7 @@ contains
 
     do k=1, m(3)
       do j=1, m(2)
-        do i=1, m(1)
+        do i=xlo, xhi
           w = self%w(i,j,k)
           x = shield(i,j,k)
           n = self%n(i,j,k)

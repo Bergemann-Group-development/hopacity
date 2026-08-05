@@ -141,7 +141,7 @@ contains
 
   !====================================================================================
   SUBROUTINE add_h_opacities(self, f0, nu, vproj, inv_df, temp, ni, nj, &
-    ne, tothi, vbar2h, fo, t3nhe, bi, bj, chi, eta, cont, do_nlte)
+    ne, tothi, vbar2h, fo, t3nhe, bi, bj, chi, eta, cont, do_nlte, i0, i1)
     class(bbtrans_type), intent(in) :: self
     integer, intent(in) :: f0
     real(8), dimension(:), intent(in), contiguous :: nu
@@ -151,13 +151,14 @@ contains
     real(4), dimension(:,:,:,:), intent(inout) :: chi, eta
     real(4), dimension(:,:,:,:), intent(in) :: cont
     logical, intent(in) :: do_nlte
+    integer, intent(in), optional :: i0, i1
     real(8), allocatable :: qq(:)
     real(4), allocatable :: phis(:)
     real(4) :: lchi, leta, phi, idf, cchi, ceta, v, ref, nh1, strength, nup, nlo
     real(4) :: resont, vdw, hwstk, hwlor, hfwid, t, e, inv_nu0, Rij, blz0
     real(8) :: q
     real(4), parameter :: tol=1e-7
-    integer :: i,j,k,f, nf, m(3), itimer=0
+    integer :: i,j,k,f, nf, m(3), itimer=0, lo, hi, io, mem_offset
     logical lymanalf, used, use_vcs
     !  Prepared VCS profile for the current cell. A local (not the module-level
     !  memo behind phi_vcs) so the frequency loops below touch no threadprivate
@@ -174,12 +175,22 @@ contains
     inv_nu0 = 1.0 / self%nu0
     used = .false.
     strength = 0.0
+    lo = 1;  hi = m(1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    mem_offset = 0
+    if (size(chi, 2) == hi - lo + 1) then
+      mem_offset = lo - 1
+    else if (size(chi, 2) /= m(1)) then
+      error stop 'hprofl add_h_opacities: array size mismatch'
+    end if
 
     !phi = debug_hprofl(3,4,18751.05d0,18756.05D0,4e3,1e13,1e17,1e16,1e-7)
 
     do k=1, m(3)
       do j=1, m(2)
-        do i=1, m(1)
+        do i=lo, hi
+          io = i - mem_offset            ! chi/eta index (chunk-local); cont stays whole-tile at i
           ! fetch variables
           idf = inv_df(i,j,k)
           v   = (vproj(i,j,k) + 1)*self%nu0
@@ -230,8 +241,8 @@ contains
             lchi = phi * cchi
             leta = phi * ceta
             !if (lymanalf .and. k==m(3)) print *, f, phi, cchi, ceta/(exp(HH*nu(f)/(BK*temp(i,j,k)))-1.0)
-            chi(f,i,j,k) = chi(f,i,j,k) + lchi
-            eta(f,i,j,k) = eta(f,i,j,k) + leta
+            chi(f,io,j,k) = chi(f,io,j,k) + lchi
+            eta(f,io,j,k) = eta(f,io,j,k) + leta
             if (f==f0) then
               used = .true.
               strength = max(strength, lchi / cont(f0,i,j,k))
@@ -253,8 +264,8 @@ contains
             lchi = phi * cchi
             leta = phi * ceta
             !if (lymanalf .and. k==m(3)) print *, f, phi, cchi, ceta/(exp(HH*nu(f)/(BK*temp(i,j,k)))-1.0)
-            chi(f,i,j,k) = chi(f,i,j,k) + lchi
-            eta(f,i,j,k) = eta(f,i,j,k) + leta
+            chi(f,io,j,k) = chi(f,io,j,k) + lchi
+            eta(f,io,j,k) = eta(f,io,j,k) + leta
             f = f - 1
           end do
           !if (lymanalf .and. k==m(3)) stop
@@ -580,6 +591,7 @@ contains
     real(8) :: wt, xmn12, fk, xmn
     real(8), save :: fnm, wtc, fkn, gca, ginf
     integer, save :: xn=0, xm=0
+    !$omp threadprivate(fnm, wtc, fkn, gca, ginf, xn, xm)
     !---------------------------------------------------------------------------
     hfnm=0.
     if (m <= n) return
@@ -629,8 +641,7 @@ contains
     real(8) :: f, p1, t4, xne16, pp, y1b, y1s, gcon1, gcon2, gcon, q1
     real(8) :: wty1, y1scal, c1, c1coef, g1, beta, y2, gam, prqs, dbeta, fns, y1
     real(8) :: cne, hw5, ex, xm2mn2
-    real(8), save :: y1num, y1wht
-    integer, save :: xn=0, xm=0
+    real(8) :: y1num, y1wht
     integer :: mmn
     real(4), dimension(2,2), parameter :: y1wtm = reshape([1.e18, 1.e17, 1.e16, 1.e14], [2,2])
     !---------------------------------------------------------------------------

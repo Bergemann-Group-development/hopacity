@@ -1165,7 +1165,7 @@ contains
   ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
-                                     only_departures, one_m_eps, chi_scat, beta)
+                                     only_departures, one_m_eps, chi_scat, beta, i0, i1)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1187,6 +1187,7 @@ contains
     real(4), intent(in),    dimension(:,:,:,:,:), optional :: one_m_eps
     real(4), intent(inout), dimension(:,:,:,:),   optional :: chi_scat
     real(4), intent(in),    dimension(:,:,:,:),   optional :: beta
+    integer, intent(in), optional :: i0, i1
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
@@ -1199,17 +1200,20 @@ contains
     real(4), dimension(:,:,:), pointer :: bi, bj
     real(8), dimension(:), allocatable :: llam
     real(4) :: log_tol_over_voigt_peak
-    integer :: i, j, k, l, f, f0, m(3), nf
+    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io
     logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
     call trace%begin ('composition_type%add_linelist_opacities2', itimer=itimer)
     m = shape(self%ne)
     nf = sp%nnu
+    lo = 1;  hi = m(1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
     allocate(tothi(m(1),m(2),m(3)))
     allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
              ni, nj, mold=tothi)
-    allocate(chi_l, eta_l, mold=all_chi)
+    allocate(chi_l(nf, hi-lo+1, m(2), m(3)), eta_l(nf, hi-lo+1, m(2), m(3)))
     allocate(dummy_dep(m(1),m(2),m(3),1), source=0.)
     chi_l = 0.
     eta_l = 0.
@@ -1234,10 +1238,10 @@ contains
     llam = log(sp%lam)
 
     ! Precompute once here (shared by all particles); guard non-positive continuum.
-    allocate(logref, mold=all_chi)
+    allocate(logref(nf, hi-lo+1, m(2), m(3)))
     log_tol_over_voigt_peak = log(tolerance / voigt_peak)
-    where (all_chi > 0.)
-      logref = log_tol_over_voigt_peak + log(all_chi)
+    where (all_chi(:, lo:hi, :, :) > 0.)
+      logref = log_tol_over_voigt_peak + log(all_chi(:, lo:hi, :, :))
     elsewhere
       logref = -huge(1.)
     end where
@@ -1274,7 +1278,7 @@ contains
           bj => dep%mem(:,:,:,line%j)
         endif
         call add_h_opacities(line, f0, sp%nu, vpr, inv_df, temp, &
-          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte)
+          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte, lo, hi)
       end do
     endif
 
@@ -1292,10 +1296,11 @@ contains
 
     do k=1, m(3)
       do j=1, m(2)
-        do i=1, m(1)
+        do i=lo, hi
+          io = i - lo + 1
           do f=1, nf
-            all_eta(f,i,j,k) = all_eta(f,i,j,k) + eta_l(f,i,j,k)
-            all_chi(f,i,j,k) = all_chi(f,i,j,k) + chi_l(f,i,j,k)
+            all_eta(f,i,j,k) = all_eta(f,i,j,k) + eta_l(f,io,j,k)
+            all_chi(f,i,j,k) = all_chi(f,i,j,k) + chi_l(f,io,j,k)
           end do
         end do
       end do
@@ -1306,7 +1311,7 @@ contains
     if (present(chi_scat) .and. present(beta)) then
       do k=1, m(3)
         do j=1, m(2)
-          do i=1, m(1)
+          do i=lo, hi
             do f=1, nf
               chi_scat(f,i,j,k) = chi_scat(f,i,j,k) * (1 - beta(f,i,j,k))
             end do
@@ -1359,18 +1364,18 @@ contains
         ! NLTE species: departure-coefficient source, no scattering split
         call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
-          .true., sp%equidistant)
+          .true., sp%equidistant, i0=lo, i1=hi)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
         call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
-          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat)
+          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, i0=lo, i1=hi)
       else
         call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
-          .false., sp%equidistant)
+          .false., sp%equidistant, i0=lo, i1=hi)
       endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2
@@ -2112,20 +2117,24 @@ contains
   ! (xhat, ehat) pair, so every routine below takes it as an argument rather
   ! than recomputing the exponential.
   !=============================================================================
-  SUBROUTINE boltzmann_factor(self, sp, beta)
+  SUBROUTINE boltzmann_factor(self, sp, beta, i0, i1)
     class(composition_type) :: self
     class(spectrum_type), intent(in) :: sp
     real(4), dimension(:,:,:,:), contiguous, intent(out) :: beta
-    integer :: x, y, z, f, nf, m(3)
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
+    integer :: x, y, z, f, nf, m(3), lo, hi
     real(8) :: hk_T
     !---------------------------------------------------------------------------
     m = shape(self%temp)
     nf = size(beta, 1)
+    lo = 1; hi = m(1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
     ! h/(k T) is frequency-independent: hoist the division out of the frequency
     ! loop so the inner loop is one multiply plus the exponential.
     do z=1, m(3)
       do y=1, m(2)
-        do x=1, m(1)
+        do x=lo, hi
           hk_T = h_k / self%temp(x,y,z)
           do f=1, nf
             beta(f,x,y,z) = max(real(exp(-sp%nu(f) * hk_T), 4), tiny(1.0))
@@ -2174,7 +2183,7 @@ contains
   ! lifted by 1/(1-beta); they go through a separate buffer so the dominant term
   ! never round-trips through a small 1-beta.
   !=============================================================================
-  SUBROUTINE continuum_opacities(self, sp, xhat, sigma, beta, sorted)
+  SUBROUTINE continuum_opacities(self, sp, xhat, sigma, beta, sorted, i0, i1)
     class(composition_type), target :: self
     class(spectrum_type), intent(in) :: sp
     class(bftrans_type), pointer :: trans
@@ -2183,11 +2192,12 @@ contains
     real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma
     real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta
     logical, optional :: sorted
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(4), dimension(:,:,:,:), pointer, contiguous :: bet
     real(4), dimension(:,:,:,:), allocatable, target :: bet_mem
     real(4), dimension(:,:,:,:), allocatable :: tmp
     logical :: any_istim
-    integer :: i, x, y, z, f, nf, nx, ny, nz
+    integer :: i, x, y, z, f, nf, nx, ny, nz, lo, hi, nn
     integer, save :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%continuum_opacities', itimer=itimer)
@@ -2196,10 +2206,14 @@ contains
     ny = size(self%temp, 2)
     nz = size(self%temp, 3)
     nf = size(sp%nu, 1)
+    lo = 1; hi = nx
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    nn = hi - lo + 1
 
-    ! the tables below carry no stimulated emission, so their sum IS xhat = ehat
-    xhat = 0
-    call self%add_hrest(xhat, sp%lam)
+    ! the tables below carry no stimulated emission, so their sum IS xhat = ehat.
+    xhat(:,lo:hi,:,:) = 0
+    call self%add_hrest(xhat, sp%lam, lo, hi)
     any_istim = .false.
     do i=1, size(self%trans)
       trans => self%trans(i)
@@ -2207,7 +2221,7 @@ contains
         any_istim = .true.
       else
         call trans%add_absorption(xhat, sp%lam, self%temp, self%e_kT, self%teta, &
-          self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, sorted=sorted)
+          self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, sorted=sorted, i0=lo, i1=hi)
       endif
     end do
 
@@ -2216,7 +2230,7 @@ contains
         bet => beta
       else
         allocate(bet_mem, mold=xhat)
-        call self%boltzmann_factor(sp, bet_mem)
+        call self%boltzmann_factor(sp, bet_mem, lo, hi)
         bet => bet_mem
       endif
       allocate(tmp, mold=xhat)
@@ -2225,12 +2239,12 @@ contains
         trans => self%trans(i)
         if (trans%istim) then
           call trans%add_absorption(tmp, sp%lam, self%temp, self%e_kT, self%teta, &
-            self%pe, self%dxi, sorted=sorted)
+            self%pe, self%dxi, sorted=sorted, i0=lo, i1=hi)
         endif
       end do
       do z=1, nz
         do y=1, ny
-          do x=1, nx
+          do x=lo, hi
             do f=1, nf
               xhat(f,x,y,z) = xhat(f,x,y,z) + tmp(f,x,y,z) / (1 - bet(f,x,y,z))
             end do
@@ -2241,9 +2255,9 @@ contains
     endif
 
     if (present(sigma)) then
-      sigma = 0
-      call self%electron_scattering(sigma)
-      call self%rayleigh_scattering(sp%lam, sigma)
+      sigma(:,lo:hi,:,:) = 0
+      call self%electron_scattering(sigma, lo, hi)
+      call self%rayleigh_scattering(sp%lam, sigma, lo, hi)
     endif
 
     call trace%end(itimer)
@@ -2746,23 +2760,27 @@ contains
   END SUBROUTINE overwrite_abundance
 
   !=========================================================================
-  SUBROUTINE add_hrest(self, chi, lam)
+  SUBROUTINE add_hrest(self, chi, lam, i0, i1)
     class(composition_type), target :: self
     class(ion_type), pointer :: HI
     real(4), dimension(:,:,:,:), intent(inout) :: chi
     real(dp), dimension(:), intent(in) :: lam
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: lam3
     real(dp) :: hrest, umc, fakt, e_kT, dxi
     real(dp), parameter :: nniv2 = 15.5**2
-    integer :: f, x,y,z
+    integer :: f, x,y,z, xlo, xhi
     integer :: p(4)=pp
     !---------------------------------------------------------------------
     call self%ion_by_id('H I', HI)
     allocate(lam3, mold=lam)
     lam3 = lam**3
+    xlo = 1; xhi = size(self%temp,1)
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
     do z=1, size(self%temp,3)
       do y=1, size(self%temp,2)
-        do x=1, size(self%temp,1)
+        do x=xlo, xhi
           e_kT = self%e_kT(x,y,z)
           dxi = self%dxi(x,y,z)
           fakt = exp(-e_kT*(HI%xion - dxi) - HI%part(x,y,z))
@@ -2784,16 +2802,20 @@ contains
   END SUBROUTINE add_hrest
 
   !=========================================================================
-  SUBROUTINE electron_scattering(self, chi)
+  SUBROUTINE electron_scattering(self, chi, i0, i1)
     class(composition_type), target :: self
     real(4), dimension(:,:,:,:), intent(inout) :: chi
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), parameter :: thomson = 8./3.*PI*(EC**2/(EM*CC**2))**2
     real(dp) :: els
-    integer :: f, x, y, z
+    integer :: f, x, y, z, lo, hi
     !---------------------------------------------------------------------
+    lo = 1; hi = size(chi, 2)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
     do z=1, size(chi, 4)
       do y=1, size(chi, 3)
-        do x=1, size(chi, 2)
+        do x=lo, hi
           !els = 4.8206e-9 * self%pe / self%temp
           els = thomson * self%ne(x,y,z)
           chi(:,x,y,z) = chi(:,x,y,z) + els
@@ -2803,18 +2825,22 @@ contains
   END SUBROUTINE electron_scattering
 
   !=========================================================================
-  SUBROUTINE rayleigh_scattering(self, lam, chi)
+  SUBROUTINE rayleigh_scattering(self, lam, chi, i0, i1)
     class(composition_type), target :: self
     class(molec_type), pointer :: H2
     class(ion_type), pointer :: HI, HE
     real(dp), dimension(:), intent(in) :: lam
     real(4), dimension(:,:,:,:), intent(inout) :: chi
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: xray2, HeIscat
     real(dp) :: xr, ll, scalar, h2ray, rayh, rayh2, nHI, nH2, nHE
     logical :: do_H2
-    integer :: f, x, y, z
+    integer :: f, x, y, z, xlo, xhi
     !---------------------------------------------------------------------
     allocate(xray2, HeIscat,  mold=lam)
+    xlo = 1; xhi = size(chi, 2)
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
 
     ! rayleigh scattering
     call self%ion_by_id('H I', HI)
@@ -2835,7 +2861,7 @@ contains
 
     do z=1, size(chi, 4)
       do y=1, size(chi, 3)
-        do x=1, size(chi, 2)
+        do x=xlo, xhi
           nHI = HI%n(x,y,z)
           nHE = HE%n(x,y,z)
           if (do_H2) then

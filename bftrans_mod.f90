@@ -171,7 +171,7 @@ contains
   end FUNCTION linear_weight
 
   !===============================================================================
-  SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield)
+  SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield, i0, i1)
     class(bftrans_type) :: self
     class(level_type), pointer :: lvl
     real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
@@ -183,6 +183,7 @@ contains
     logical, dimension(:), intent(in) :: quad
     real(dp), dimension(:,:), intent(in) :: lagrange
     real(dp), intent(in), dimension(:,:,:), optional :: ne, nhe, shield
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:,:,:), pointer :: newt
     real(dp), dimension(:), allocatable :: ab, lam3
     real(dp), dimension(:,:), allocatable, target :: pvt_xkap
@@ -192,11 +193,14 @@ contains
     real(dp) :: ab1, fakt1, t, diff(3), w(3), t3(3), dt, a, b, y1,y2,y3
     real(dp), dimension(self%nnu) :: yy
     real(dp), dimension(self%ntt) :: tt
-    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j1, j2, j3
+    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j1, j2, j3, xlo, xhi
     logical :: skip, do_log, do_exp, in_bounds, quadratic
     integer, save :: itimer1=0, itimer2=0, itimer3=0, itimer4=0, itimer5=0
     !---------------------------------------------------------------------------
     nx = size(temp, 1)
+    xlo = 1; xhi = nx
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
     ny = size(temp, 2)
     nz = size(temp, 3)
     allocate(ab(fs:fe))
@@ -240,7 +244,7 @@ contains
 
       do z=1, nz
         do y=1, ny
-          do x=1, nx
+          do x=xlo, xhi
             t = temp(x,y,z)
             in_bounds = .true.
             quadratic = .false.
@@ -370,12 +374,12 @@ contains
         lvl => self%ion%levels(self%k)
         lvl%i = self%k
         call trace%begin('wcalc2', itimer=itimer3)
-        call wcalc2(lvl, chi, lam(fs:fe), ab, self%ion%n, nhe, ne, shield)
+        call wcalc2(lvl, chi, lam(fs:fe), ab, self%ion%n, nhe, ne, shield, xlo, xhi)
         call trace%end(itimer3)
       else
         do z=1, nz
           do y=1, ny
-            do x=1, nx
+            do x=xlo, xhi
               do f=fs,fe
                 chi(f,x,y,z) = chi(f,x,y,z) + ab(f)*fakt(x,y,z)
               end do
@@ -435,11 +439,12 @@ contains
   END SUBROUTINE absorption_factor
 
   !===============================================================================
-  SUBROUTINE add_absorption(self, chi, lam, temp, e_kT, teta, pe, dxi, ne, nhe, shield, sorted)
+  SUBROUTINE add_absorption(self, chi, lam, temp, e_kT, teta, pe, dxi, ne, nhe, shield, sorted, i0, i1)
     class(bftrans_type), intent(in) :: self
     real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
     real(dp), dimension(:,:,:), intent(in) :: temp, e_kT, teta, pe, dxi
     real(dp), dimension(:,:,:), intent(in), optional :: ne, nhe, shield
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), intent(in) :: lam
     real(dp), dimension(:,:,:), allocatable :: fakt
     logical, optional :: sorted
@@ -469,7 +474,7 @@ contains
       !if (nf > 1) prev = chi(p(1), p(2), p(3), p(4))
 
       call self%absorption_factor(e_kT, teta, pe, dxi, fakt)
-      call self%interp_xkap(chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield)
+      call self%interp_xkap(chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield, i0, i1)
 
       !if (nf > 1) then
       !  post = chi(p(1),p(2),p(3),p(4))

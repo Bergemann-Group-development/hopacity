@@ -284,7 +284,7 @@ contains
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
                          lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-                         one_m_eps, chi_scat, do_scat)
+                         one_m_eps, chi_scat, do_scat, i0, i1)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
@@ -300,7 +300,8 @@ contains
     real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
-    integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb
+    integer,  intent(in), optional :: i0, i1
+    integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb, lo, hi, io, mem_offset
     real(8)  :: llc, llc_s, dl
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
     real(4)  :: a, avdw, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
@@ -316,6 +317,15 @@ contains
     if (nl == 0) return
     has_ipart = allocated(ll%ipart)
     c_visit = 0; c_pass = 0; c_voigt = 0; c_march = 0
+    lo = 1;  hi = m(1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    mem_offset = 0
+    if (size(chi, 2) == hi - lo + 1) then
+      mem_offset = lo - 1
+    else if (size(chi, 2) /= m(1)) then
+      error stop 'linelist add_opacity: array size mismatch'
+    end if
     ! the spectrum machinery always delivers lam (hence llam) ascending; the monotonic
     ! march relies on this, so assert it once rather than branching per line.
     if (nf > 1 .and. llam(nf) < llam(1)) &
@@ -323,7 +333,8 @@ contains
 
     do k = 1, m(3)
       do j = 1, m(2)
-        do i = 1, m(1)
+        do i = lo, hi
+          io       = i - mem_offset      ! chi/eta/logref index (chunk-local); cont etc. stay at i
           idf      = inv_df(i,j,k)
           unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
           lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
@@ -372,7 +383,7 @@ contains
 
             ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= logref(f0).
             ! This rejects the vast majority of lines without evaluating exp().
-            if (arg <= logref(f0,i,j,k)) cycle
+            if (arg <= logref(f0,io,j,k)) cycle
 
             ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
             Rij = exp(arg)
@@ -428,7 +439,7 @@ contains
             ! a straight (data-independent) loop over [fa,fb], centre included,
             ! pipelines much better than a walk whose exit condition depends on
             ! the previous Voigt value
-            vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
+            vm2  = max(real(arg - logref(f0,io,j,k)), a*Rij*over_pi/ref)
             edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
             if (vm2 >= edge*edge) then
               fa = ws         ! line fills the window; skip the extent bisections
@@ -446,8 +457,8 @@ contains
                 vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
-                chi(f,i,j,k) = chi(f,i,j,k) + lte
-                eta(f,i,j,k) = eta(f,i,j,k) + lte
+                chi(f,io,j,k) = chi(f,io,j,k) + lte
+                eta(f,io,j,k) = eta(f,io,j,k) + lte
                 chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
               end do
             else
@@ -455,8 +466,8 @@ contains
                 vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
-                chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
-                eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+                chi(f,io,j,k) = chi(f,io,j,k) + lte*bi
+                eta(f,io,j,k) = eta(f,io,j,k) + lte*bj
               end do
             end if
           end do
@@ -486,7 +497,7 @@ contains
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
                               lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-                              one_m_eps, chi_scat, do_scat)
+                              one_m_eps, chi_scat, do_scat, i0, i1)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
@@ -500,7 +511,8 @@ contains
     real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
-    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw
+    integer,  intent(in), optional :: i0, i1
+    integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw, lo, hi, io, mem_offset
     real(8)  :: llc, llc_s, llam1, dllam, inv_dllam
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
     real(4)  :: a, avdw, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
@@ -522,6 +534,15 @@ contains
     if (nf < 2) return
     has_ipart = allocated(ll%ipart)
     c_visit = 0; c_pass = 0; c_voigt = 0
+    lo = 1;  hi = m(1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    mem_offset = 0
+    if (size(chi, 2) == hi - lo + 1) then
+      mem_offset = lo - 1
+    else if (size(chi, 2) /= m(1)) then
+      error stop 'linelist add_opacity_equi: array size mismatch'
+    end if
     if (llam(nf) < llam(1)) &
       error stop 'linelist add_opacity_equi: log(lambda) grid must be ascending'
 
@@ -532,7 +553,8 @@ contains
 
     do k = 1, m(3)
       do j = 1, m(2)
-        do i = 1, m(1)
+        do i = lo, hi
+          io       = i - mem_offset      ! chi/eta/logref index (chunk-local); cont etc. stay at i
           idf      = inv_df(i,j,k)
           unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
           lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
@@ -564,7 +586,7 @@ contains
 
             ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= logref(f0).
             ! This rejects the vast majority of lines without evaluating exp().
-            if (arg <= logref(f0,i,j,k)) cycle
+            if (arg <= logref(f0,io,j,k)) cycle
 
             ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
             Rij = exp(arg)
@@ -619,7 +641,7 @@ contains
             ! core v^2 = arg - logref, Lorentz far wing v^2 = a*Rij/(pi*ref). On a
             ! uniform log(lambda) grid the half-width in llam is sqrt(vm2)/idf, so the
             ! index half-width is that over dllam -- no bisection required.
-            vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
+            vm2  = max(real(arg - logref(f0,io,j,k)), a*Rij*over_pi/ref)
             noff = int(sqrt(vm2) / idf * inv_dllam) + 1
             fa   = max(1,  f0 - noff)
             fb   = min(nf, f0 + noff)
@@ -641,15 +663,15 @@ contains
               if (do_scat .and. .not. nlte) then
                 do f = fa, fb
                   lte = Kbuf(f-fa+1) * Rn
-                  chi(f,i,j,k) = chi(f,i,j,k) + lte
-                  eta(f,i,j,k) = eta(f,i,j,k) + lte
+                  chi(f,io,j,k) = chi(f,io,j,k) + lte
+                  eta(f,io,j,k) = eta(f,io,j,k) + lte
                   chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
                 end do
               else
                 do f = fa, fb
                   lte = Kbuf(f-fa+1) * Rn
-                  chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
-                  eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+                  chi(f,io,j,k) = chi(f,io,j,k) + lte*bi
+                  eta(f,io,j,k) = eta(f,io,j,k) + lte*bj
                 end do
               end if
 
@@ -659,8 +681,8 @@ contains
                 vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
-                chi(f,i,j,k) = chi(f,i,j,k) + lte
-                eta(f,i,j,k) = eta(f,i,j,k) + lte
+                chi(f,io,j,k) = chi(f,io,j,k) + lte
+                eta(f,io,j,k) = eta(f,io,j,k) + lte
                 chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
               end do
             else
@@ -668,8 +690,8 @@ contains
                 vs   = idf * real(llam(f) - llc_s)
                 phi  = voigt_function2(a, vs)
                 lte  = phi * Rij
-                chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
-                eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
+                chi(f,io,j,k) = chi(f,io,j,k) + lte*bi
+                eta(f,io,j,k) = eta(f,io,j,k) + lte*bj
               end do
             end if
           end do
@@ -707,7 +729,7 @@ contains
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_particle_opacity(ptc, temp, vmic, dxi, llam, chi, eta, cont, logref, &
                                   vproj, e_kT, ne, tothi, stark_pe, dep_ev, dep_mem, &
-                                  do_nlte, equidistant, one_m_eps, chi_scat)
+                                  do_nlte, equidistant, one_m_eps, chi_scat, i0, i1)
     class(particle_type), intent(inout) :: ptc
     real(4),  dimension(:,:,:),   intent(in)    :: temp, vmic, vproj, e_kT, ne, tothi, stark_pe
     real(dp), dimension(:,:,:),   intent(in)    :: dxi
@@ -721,6 +743,7 @@ contains
     ! for this particle's stage) and the shared scattering-opacity accumulator
     real(4), dimension(:,:,:,:), intent(in),    optional :: one_m_eps
     real(4), dimension(:,:,:,:), intent(inout), optional :: chi_scat
+    integer, intent(in), optional :: i0, i1
     real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
     real(4)  :: eps_dummy(0,0,0,0), scat_dummy(0,0,0,0)
     real(dp) :: iso_frac
@@ -771,21 +794,21 @@ contains
           if (do_scat) then
             call add_opacity_equi(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              one_m_eps, chi_scat, .true.)
+              one_m_eps, chi_scat, .true., i0, i1)
           else
             call add_opacity_equi(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              eps_dummy, scat_dummy, .false.)
+              eps_dummy, scat_dummy, .false., i0, i1)
           end if
         else
           if (do_scat) then
             call add_opacity(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              one_m_eps, chi_scat, .true.)
+              one_m_eps, chi_scat, .true., i0, i1)
           else
             call add_opacity(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              eps_dummy, scat_dummy, .false.)
+              eps_dummy, scat_dummy, .false., i0, i1)
           end if
         end if
       end associate
