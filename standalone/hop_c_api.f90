@@ -27,10 +27,13 @@ MODULE hop_c_api
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
   USE linelist_mod, only: ll_profile, voigt_kernel
-  USE osmet_mod,    only: eosmet
+  USE osmet_mod,    only: eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase
   USE prec_mod,     only: dp
   USE const_mod,    only: h_k
+#ifdef _OPENMP
+  USE omp_lib,      only: omp_set_num_threads, omp_get_max_threads
+#endif
   implicit none
   private
 
@@ -573,6 +576,155 @@ CONTAINS
         line_scat = line_scat /= 0)
     end if
   END FUNCTION hop_opacity
+
+  !=============================================================================
+  ! Threaded Opacity
+  !=============================================================================
+  FUNCTION hop_opacity_omp(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
+                           line_scat, nthreads) RESULT(status) BIND(c, name='hop_opacity_omp')
+    integer(c_int), value :: nlam, include_absmet, include_llist, line_scat, nthreads
+    real(c_double), intent(in) :: lam(*)
+    real(c_float), intent(inout), target :: chi(*), scat(*)
+    real(c_double), value :: dlam
+    integer(c_int) :: status
+    
+    type(spectrum_type) :: sp
+    real(4), pointer, contiguous :: chi4(:,:,:,:), scat4(:,:,:,:)
+    real(8), allocatable :: lam8(:)
+    integer :: n
+    
+    real(4), dimension(:,:,:,:), allocatable, target :: bet, sig
+    real(4), dimension(:,:,:,:), allocatable :: ehat, chi_scat
+    real(4), dimension(:,:,:,:,:), allocatable :: one_m_eps
+    logical :: do_absmet, do_llist, do_split, sorted
+    real(8) :: dl
+    integer :: i, j, k, f, nf, m(3)
+    
+    integer :: nch_l, w, i0, i1, base, rem
+
+    status = 0
+    n = hop_get_n()
+    if (n < 1 .or. nlam < 1) then
+      call fail('hop_opacity_omp: no state loaded, or nlam < 1', 3, status)
+      return
+    end if
+
+#ifdef _OPENMP
+    if (nthreads > 0) call omp_set_num_threads(nthreads)
+    ! Massively increase the chunk multiplier to actually allow dynamic scheduling
+    ! to load balance the threads. Previously, 1 chunk per thread defeated the dynamic scheduler.
+    nch_l = min(n, max(1, omp_get_max_threads() * 64))
+#else
+    nch_l = 1
+#endif
+
+    allocate(lam8(nlam))
+    lam8 = lam(1:nlam)
+    call sp%reset(lam=lam8)
+    sp%sorted = .true.
+    chi4 (1:nlam, 1:n, 1:1, 1:1) => chi (1:nlam*n)
+    scat4(1:nlam, 1:n, 1:1, 1:1) => scat(1:nlam*n)
+
+    m = shape(comp%temp)
+    nf = size(chi4, 1)
+    dl = dlam
+    do_absmet = .false. 
+    do_llist = (include_llist /= 0) .and. comp%ll_initialised
+    do_split = (line_scat /= 0)
+    sorted = .true.
+
+    allocate(bet, mold=chi4)
+    call comp%boltzmann_factor(sp, bet)
+    allocate(sig, mold=chi4)
+
+    call comp%continuum_opacities(sp, chi4, sigma=sig, beta=bet, sorted=sorted)
+    if (do_absmet) call comp%add_absmet_opacities(sp, chi4, bet, sigma=sig, split=do_split)
+
+    if (do_llist) then
+      allocate(ehat, mold=chi4)
+      ehat = chi4                       
+      if (do_split) then
+        allocate(chi_scat, mold=chi4)
+        allocate(one_m_eps(nf, m(1), m(2), m(3), 2))
+        chi_scat = 0
+        call compute_epsilon_stage(1, sp%nu, comp%temp, comp%ne, one_m_eps(:,:,:,:,1))
+        call compute_epsilon_stage(2, sp%nu, comp%temp, comp%ne, one_m_eps(:,:,:,:,2))
+        
+        base = n / nch_l
+        rem  = mod(n, nch_l)
+        !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
+        do w = 1, nch_l
+          i0 = (w-1)*base + min(w-1, rem) + 1
+          i1 =  w   *base + min(w,   rem)
+          if (i1 < i0) cycle
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, &
+            one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1)
+        end do
+        !$omp end parallel do
+        
+        do k=1, m(3)
+          do j=1, m(2)
+            do i=1, m(1)
+              do f=1, nf
+                sig(f,i,j,k) = sig(f,i,j,k) + chi_scat(f,i,j,k)
+              end do
+            end do
+          end do
+        end do
+      else
+        base = n / nch_l
+        rem  = mod(n, nch_l)
+        !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
+        do w = 1, nch_l
+          i0 = (w-1)*base + min(w-1, rem) + 1
+          i1 =  w   *base + min(w,   rem)
+          if (i1 < i0) cycle
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, i0=i0, i1=i1)
+        end do
+        !$omp end parallel do
+      endif
+      
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              chi4(f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k)
+            end do
+          end do
+        end do
+      end do
+    else
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              chi4(f,i,j,k) = chi4(f,i,j,k) * (1 - bet(f,i,j,k))
+            end do
+          end do
+        end do
+      end do
+    endif
+
+    do k=1, m(3)
+      do j=1, m(2)
+        do i=1, m(1)
+          do f=1, nf
+            chi4(f,i,j,k) = chi4(f,i,j,k) + sig(f,i,j,k)
+          end do
+        end do
+      end do
+    end do
+    
+    do k=1, m(3)
+      do j=1, m(2)
+        do i=1, m(1)
+          do f=1, nf
+            scat4(f,i,j,k) = sig(f,i,j,k)
+          end do
+        end do
+      end do
+    end do
+  END FUNCTION hop_opacity_omp
 
   !-----------------------------------------------------------------------------
   ! Read one line-list file into the master instance, keeping only lines inside
