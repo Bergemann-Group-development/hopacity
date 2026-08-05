@@ -2117,25 +2117,30 @@ contains
   ! (xhat, ehat) pair, so every routine below takes it as an argument rather
   ! than recomputing the exponential.
   !=============================================================================
-  SUBROUTINE boltzmann_factor(self, sp, beta, i0, i1)
-    class(composition_type) :: self
+  SUBROUTINE boltzmann_factor(self, sp, beta, temp)
+    class(composition_type), target :: self
     class(spectrum_type), intent(in) :: sp
     real(4), dimension(:,:,:,:), contiguous, intent(out) :: beta
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
-    integer :: x, y, z, f, nf, m(3), lo, hi
+    real(dp), dimension(:,:,:), intent(in), optional, target :: temp
+    real(dp), dimension(:,:,:), pointer :: t
+    integer :: x, y, z, f, nf, m(3)
     real(8) :: hk_T
     !---------------------------------------------------------------------------
-    m = shape(self%temp)
+    if (present(temp)) then
+      t => temp
+    else
+      t => self%temp
+    endif
+    m = shape(t)
     nf = size(beta, 1)
-    lo = 1; hi = m(1)
-    if (present(i0)) lo = i0
-    if (present(i1)) hi = i1
+    if (size(beta, 2) /= m(1)) &
+      error stop 'boltzmann_factor: beta and temp span different cells'
     ! h/(k T) is frequency-independent: hoist the division out of the frequency
     ! loop so the inner loop is one multiply plus the exponential.
     do z=1, m(3)
       do y=1, m(2)
-        do x=lo, hi
-          hk_T = h_k / self%temp(x,y,z)
+        do x=1, m(1)
+          hk_T = h_k / t(x,y,z)
           do f=1, nf
             beta(f,x,y,z) = max(real(exp(-sp%nu(f) * hk_T), 4), tiny(1.0))
           end do
@@ -2197,7 +2202,7 @@ contains
     real(4), dimension(:,:,:,:), allocatable, target :: bet_mem
     real(4), dimension(:,:,:,:), allocatable :: tmp
     logical :: any_istim
-    integer :: i, x, y, z, f, nf, nx, ny, nz, lo, hi, nn
+    integer :: i, x, y, z, f, nf, nx, ny, nz, lo, hi, nn, boff
     integer, save :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%continuum_opacities', itimer=itimer)
@@ -2210,6 +2215,10 @@ contains
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
     nn = hi - lo + 1
+    if (size(xhat, 2) /= nx) error stop 'continuum_opacities: xhat must be whole-tile'
+    if (present(sigma)) then
+      if (size(sigma, 2) /= nx) error stop 'continuum_opacities: sigma must be whole-tile'
+    endif
 
     ! the tables below carry no stimulated emission, so their sum IS xhat = ehat.
     xhat(:,lo:hi,:,:) = 0
@@ -2226,27 +2235,35 @@ contains
     end do
 
     if (any_istim) then
+      boff = lo - 1
       if (present(beta)) then
         bet => beta
+        if (size(bet, 2) == nx) then
+          boff = 0
+        else if (size(bet, 2) /= nn) then
+          error stop 'continuum_opacities: beta is neither whole-tile nor chunk-local'
+        endif
       else
-        allocate(bet_mem, mold=xhat)
-        call self%boltzmann_factor(sp, bet_mem, lo, hi)
+        allocate(bet_mem(nf, nn, ny, nz))
+        call self%boltzmann_factor(sp, bet_mem, self%temp(lo:hi,:,:))
         bet => bet_mem
       endif
-      allocate(tmp, mold=xhat)
+      allocate(tmp(nf, nn, ny, nz))
       tmp = 0
       do i=1, size(self%trans)
         trans => self%trans(i)
         if (trans%istim) then
           call trans%add_absorption(tmp, sp%lam, self%temp, self%e_kT, self%teta, &
-            self%pe, self%dxi, sorted=sorted, i0=lo, i1=hi)
+            self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, &
+            sorted=sorted, i0=lo, i1=hi)
         endif
       end do
       do z=1, nz
         do y=1, ny
           do x=lo, hi
             do f=1, nf
-              xhat(f,x,y,z) = xhat(f,x,y,z) + tmp(f,x,y,z) / (1 - bet(f,x,y,z))
+              xhat(f,x,y,z) = xhat(f,x,y,z) &
+                + tmp(f,x-lo+1,y,z) / (1 - bet(f,x-boff,y,z))
             end do
           end do
         end do

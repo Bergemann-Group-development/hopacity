@@ -587,20 +587,20 @@ CONTAINS
     real(c_float), intent(inout), target :: chi(*), scat(*)
     real(c_double), value :: dlam
     integer(c_int) :: status
-    
+
     type(spectrum_type) :: sp
     real(4), pointer, contiguous :: chi4(:,:,:,:), scat4(:,:,:,:)
     real(8), allocatable :: lam8(:)
     integer :: n
-    
+
     real(4), dimension(:,:,:,:), allocatable, target :: bet, sig
     real(4), dimension(:,:,:,:), allocatable :: ehat, chi_scat
     real(4), dimension(:,:,:,:,:), allocatable :: one_m_eps
     logical :: do_absmet, do_llist, do_split, sorted
     real(8) :: dl
     integer :: i, j, k, f, nf, m(3)
-    
-    integer :: nch_l, w, i0, i1, base, rem
+    real(4) :: s
+    integer :: nch_l, nch_c, nthr, w, i0, i1
 
     status = 0
     n = hop_get_n()
@@ -611,11 +611,16 @@ CONTAINS
 
 #ifdef _OPENMP
     if (nthreads > 0) call omp_set_num_threads(nthreads)
-    ! Massively increase the chunk multiplier to actually allow dynamic scheduling
-    ! to load balance the threads. Previously, 1 chunk per thread defeated the dynamic scheduler.
-    nch_l = min(n, max(1, omp_get_max_threads() * 64))
+    nthr = omp_get_max_threads()
 #else
-    nch_l = 1
+    nthr = 1
+#endif
+    ! increase the chunk multiplier to allow dynamic scheduling
+    nch_l = min(n, max(1, nthr * 64))
+    nch_c = min(n, max(1, nthr * 4))
+#ifndef _OPENMP
+    nch_l = 1                   
+    nch_c = 1
 #endif
 
     allocate(lam8(nlam))
@@ -626,104 +631,111 @@ CONTAINS
     scat4(1:nlam, 1:n, 1:1, 1:1) => scat(1:nlam*n)
 
     m = shape(comp%temp)
+    if (m(1) /= n) then
+      call fail('hop_opacity_omp: state is not shaped (n,1,1)', 3, status)
+      return
+    end if
     nf = size(chi4, 1)
     dl = dlam
-    do_absmet = .false. 
+    do_absmet = .false.
     do_llist = (include_llist /= 0) .and. comp%ll_initialised
     do_split = (line_scat /= 0)
     sorted = .true.
 
     allocate(bet, mold=chi4)
-    call comp%boltzmann_factor(sp, bet)
     allocate(sig, mold=chi4)
-
-    call comp%continuum_opacities(sp, chi4, sigma=sig, beta=bet, sorted=sorted)
-    if (do_absmet) call comp%add_absmet_opacities(sp, chi4, bet, sigma=sig, split=do_split)
-
     if (do_llist) then
       allocate(ehat, mold=chi4)
-      ehat = chi4                       
       if (do_split) then
         allocate(chi_scat, mold=chi4)
         allocate(one_m_eps(nf, m(1), m(2), m(3), 2))
-        chi_scat = 0
-        call compute_epsilon_stage(1, sp%nu, comp%temp, comp%ne, one_m_eps(:,:,:,:,1))
-        call compute_epsilon_stage(2, sp%nu, comp%temp, comp%ne, one_m_eps(:,:,:,:,2))
-        
-        base = n / nch_l
-        rem  = mod(n, nch_l)
+      endif
+    endif
+
+    ! --- everything that precedes the line opacity, over cell chunks ----------
+    !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
+    do w = 1, nch_c
+      call chunk_range(w, nch_c, n, i0, i1)
+      if (i1 < i0) cycle
+      call comp%boltzmann_factor(sp, bet(:,i0:i1,:,:), comp%temp(i0:i1,:,:))
+      call comp%continuum_opacities(sp, chi4, sigma=sig, beta=bet, sorted=sorted, i0=i0, i1=i1)
+      if (do_llist) then
+        ehat(:,i0:i1,:,:) = chi4(:,i0:i1,:,:)
+        if (do_split) then
+          chi_scat(:,i0:i1,:,:) = 0
+          call compute_epsilon_stage(1, sp%nu, comp%temp(i0:i1,:,:), comp%ne(i0:i1,:,:), one_m_eps(:,i0:i1,:,:,1))
+          call compute_epsilon_stage(2, sp%nu, comp%temp(i0:i1,:,:), comp%ne(i0:i1,:,:), one_m_eps(:,i0:i1,:,:,2))
+        endif
+      endif
+    end do
+    !$omp end parallel do
+
+    if (do_absmet) call comp%add_absmet_opacities(sp, chi4, bet, sigma=sig, split=do_split)
+
+    ! --- line opacity --------------------------------------------------------
+    if (do_llist) then
+      if (do_split) then
         !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
         do w = 1, nch_l
-          i0 = (w-1)*base + min(w-1, rem) + 1
-          i1 =  w   *base + min(w,   rem)
+          call chunk_range(w, nch_l, n, i0, i1)
           if (i1 < i0) cycle
-          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, &
-            one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1)
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1)
         end do
         !$omp end parallel do
-        
-        do k=1, m(3)
-          do j=1, m(2)
-            do i=1, m(1)
-              do f=1, nf
-                sig(f,i,j,k) = sig(f,i,j,k) + chi_scat(f,i,j,k)
-              end do
-            end do
-          end do
-        end do
       else
-        base = n / nch_l
-        rem  = mod(n, nch_l)
         !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
         do w = 1, nch_l
-          i0 = (w-1)*base + min(w-1, rem) + 1
-          i1 =  w   *base + min(w,   rem)
+          call chunk_range(w, nch_l, n, i0, i1)
           if (i1 < i0) cycle
           call comp%add_linelist_opacities2(sp, chi4, ehat, dl, i0=i0, i1=i1)
         end do
         !$omp end parallel do
       endif
-      
-      do k=1, m(3)
-        do j=1, m(2)
-          do i=1, m(1)
-            do f=1, nf
-              chi4(f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k)
-            end do
-          end do
-        end do
-      end do
-    else
-      do k=1, m(3)
-        do j=1, m(2)
-          do i=1, m(1)
-            do f=1, nf
-              chi4(f,i,j,k) = chi4(f,i,j,k) * (1 - bet(f,i,j,k))
-            end do
-          end do
-        end do
-      end do
     endif
 
+    !$omp parallel do collapse(3) schedule(static) default(shared) private(f, s)
     do k=1, m(3)
       do j=1, m(2)
         do i=1, m(1)
-          do f=1, nf
-            chi4(f,i,j,k) = chi4(f,i,j,k) + sig(f,i,j,k)
-          end do
+          if (do_llist) then
+            if (do_split) then
+              do f=1, nf
+                s = sig(f,i,j,k) + chi_scat(f,i,j,k)
+                chi4 (f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) + s
+                scat4(f,i,j,k) = s
+              end do
+            else
+              do f=1, nf
+                s = sig(f,i,j,k)
+                chi4 (f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) + s
+                scat4(f,i,j,k) = s
+              end do
+            endif
+          else
+            do f=1, nf
+              s = sig(f,i,j,k)
+              chi4 (f,i,j,k) = chi4(f,i,j,k) * (1 - bet(f,i,j,k)) + s
+              scat4(f,i,j,k) = s
+            end do
+          endif
         end do
       end do
     end do
-    
-    do k=1, m(3)
-      do j=1, m(2)
-        do i=1, m(1)
-          do f=1, nf
-            scat4(f,i,j,k) = sig(f,i,j,k)
-          end do
-        end do
-      end do
-    end do
+    !$omp end parallel do
+
+  CONTAINS
+    !> Cell range [i0, i1] of chunk w of nch over n cells, balanced to +-1 cell.
+    !> Empty (i1 < i0) when there are fewer cells than chunks.
+    PURE SUBROUTINE chunk_range(w, nch, n, i0, i1)
+      integer, intent(in)  :: w, nch, n
+      integer, intent(out) :: i0, i1
+      integer :: base, rem
+      !-------------------------------------------------------------------------
+      base = n / nch
+      rem  = mod(n, nch)
+      i0 = (w-1)*base + min(w-1, rem) + 1
+      i1 =  w   *base + min(w,   rem)
+    END SUBROUTINE chunk_range
   END FUNCTION hop_opacity_omp
 
   !-----------------------------------------------------------------------------

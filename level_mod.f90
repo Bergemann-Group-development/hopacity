@@ -119,23 +119,34 @@ contains
   END SUBROUTINE wcalc
 
   !===============================================================================
-  SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, i0, i1)
-    class(level_type) :: self
+  SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl)
+    class(level_type), target :: self
     real(4), intent(inout), dimension(:,:,:,:) :: chi
     real(dp), intent(in), dimension(:) :: lam, ab
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    integer, intent(in), optional :: i0, i1
+    real(dp), intent(in), dimension(:,:,:), optional, target :: wocc, nlvl
+    real(dp), dimension(:,:,:), pointer :: wp, np
     real(dp), dimension(:), allocatable :: x1, x2, kk, lfac, cutfac
     real(dp) :: ns, ns2, rih, neutr, k1, k2, x, charg, res, nh43, nhe43
     real(dp) :: redcut, nu, w, n, frac, wstar
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
-    integer :: f,i,j,k, m(3), nf, xlo, xhi
+    integer :: f,i,j,k, m(3), nf
     !---------------------------------------------------------------------------
+    if (present(wocc)) then
+      wp => wocc
+    else
+      wp => self%w
+    endif
+    if (present(nlvl)) then
+      np => nlvl
+    else
+      np => self%n
+    endif
     m = shape(ne)
     nf = size(lam)
-    xlo = 1; xhi = m(1)
-    if (present(i0)) xlo = i0
-    if (present(i1)) xhi = i1
+    if (size(chi,2) /= m(1) .or. size(wp,1) /= m(1) .or. size(np,1) /= m(1) .or. &
+        size(nh,1) /= m(1) .or. size(nhe,1) /= m(1) .or. size(shield,1) /= m(1)) &
+      error stop 'wcalc2: chi/nh/nhe/shield/w/n span different cells than ne'
     allocate(x1, x2, kk, lfac, cutfac, mold=lam)
     kk = 0.
 
@@ -162,10 +173,10 @@ contains
 
     do k=1, m(3)
       do j=1, m(2)
-        do i=xlo, xhi
-          w = self%w(i,j,k)
+        do i=1, m(1)
+          w = wp(i,j,k)
           x = shield(i,j,k)
-          n = self%n(i,j,k)
+          n = np(i,j,k)
           nh43  = pi43 * nh(i,j,k)
           nhe43 = pi43 * nhe(i,j,k)
           do f=1, nf
