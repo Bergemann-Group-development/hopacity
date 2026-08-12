@@ -1165,7 +1165,7 @@ contains
   ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
-                                     only_departures, one_m_eps, chi_scat, beta, i0, i1)
+                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1194,13 +1194,17 @@ contains
     real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
     real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
+    real(4), dimension(:,:,:), allocatable :: vmic_c
+    real(dp), dimension(:,:,:), allocatable :: dxi_c
     real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
     real(4), dimension(:,:,:,:), allocatable :: dummy_dep, logref
     real(4), dimension(:,:,:), pointer, contiguous :: vpr
     real(4), dimension(:,:,:), pointer :: bi, bj
-    real(8), dimension(:), allocatable :: llam
+    real(8), dimension(:), allocatable, target :: llam_mem
+    real(8), dimension(:), pointer :: llam
+    real(8), intent(in), dimension(:), optional, target :: llam_in
     real(4) :: log_tol_over_voigt_peak
-    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io
+    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn
     logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
@@ -1210,11 +1214,12 @@ contains
     lo = 1;  hi = m(1)
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
-    allocate(tothi(m(1),m(2),m(3)))
+    nn = hi - lo + 1
+    allocate(tothi(nn,m(2),m(3)))
     allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
              ni, nj, mold=tothi)
-    allocate(chi_l(nf, hi-lo+1, m(2), m(3)), eta_l(nf, hi-lo+1, m(2), m(3)))
-    allocate(dummy_dep(m(1),m(2),m(3),1), source=0.)
+    allocate(chi_l(nf, nn, m(2), m(3)), eta_l(nf, nn, m(2), m(3)))
+    allocate(dummy_dep(1,1,1,1), source=0.)
     chi_l = 0.
     eta_l = 0.
 
@@ -1222,23 +1227,30 @@ contains
     skip_lte = .false.
     if (present(only_departures)) skip_lte = only_departures
     if (present(vproj)) then
-      vpr => vproj
+      allocate(vpr, source=vproj(lo:hi,:,:))
     else
       allocate(vpr, mold=tothi)
       vpr = 0
     endif
 
-    ne   = real(self%ne)
-    temp = real(self%temp)
-    e_kT = real(self%e_kT)
-    tothi = real(self%tothi)
-    stark_pe = real(self%stark_pe)
+    ne   = real(self%ne(lo:hi,:,:))
+    temp = real(self%temp(lo:hi,:,:))
+    e_kT = real(self%e_kT(lo:hi,:,:))
+    tothi = real(self%tothi(lo:hi,:,:))
+    stark_pe = real(self%stark_pe(lo:hi,:,:))
+    allocate(vmic_c, source=self%vmic(lo:hi,:,:))
+    allocate(dxi_c,  source=self%dxi(lo:hi,:,:))
 
-    allocate(llam(nf))
-    llam = log(sp%lam)
+    if (present(llam_in)) then
+      llam => llam_in
+    else
+      allocate(llam_mem(nf))
+      llam_mem = log(sp%lam)
+      llam => llam_mem
+    endif
 
     ! Precompute once here (shared by all particles); guard non-positive continuum.
-    allocate(logref(nf, hi-lo+1, m(2), m(3)))
+    allocate(logref(nf, nn, m(2), m(3)))
     log_tol_over_voigt_peak = log(tolerance / voigt_peak)
     where (all_chi(:, lo:hi, :, :) > 0.)
       logref = log_tol_over_voigt_peak + log(all_chi(:, lo:hi, :, :))
@@ -1252,10 +1264,10 @@ contains
     call get_departure_coefficients(ion, dep)
     if (ion%in_linelist .and. ion%nline > 0 .and. &
         .not. (skip_lte .and. .not. associated(dep))) then
-      fo = self%fo
-      vbar2 = self%vbar2h
-      t3nhe = self%t3nhe
-      inv_df = element%inverse_doppler_factor(temp, self%vmic)
+      fo = self%fo(lo:hi,:,:)
+      vbar2 = self%vbar2h(lo:hi,:,:)
+      t3nhe = self%t3nhe(lo:hi,:,:)
+      inv_df = element%inverse_doppler_factor(temp, self%vmic(lo:hi,:,:))
 
       do l=1, ion%nline
         line => ion%line(l)
@@ -1266,11 +1278,11 @@ contains
           line%i = find_closest(dep%ev, 100*ion%j + line%lower_ev)
           line%j = find_closest(dep%ev, 100*ion%j + line%lower_ev + H_E*line%nu0)
         endif
-        ni = ion%levels(line%i)%n
-        nj = ion%levels(line%j)%n
+        ni = ion%levels(line%i)%n(lo:hi,:,:)
+        nj = ion%levels(line%j)%n(lo:hi,:,:)
         if (H_occupation_probability) then
-          ni = ni * ion%levels(line%j)%w
-          nj = nj * ion%levels(line%j)%w
+          ni = ni * ion%levels(line%j)%w(lo:hi,:,:)
+          nj = nj * ion%levels(line%j)%w(lo:hi,:,:)
         endif
         do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
         if (do_nlte) then
@@ -1305,7 +1317,7 @@ contains
         end do
       end do
     end do
-    if (.not. present(vproj)) deallocate(vpr)
+    deallocate(vpr)
 
     ! working units -> physical extinction for the scattering component
     if (present(chi_scat) .and. present(beta)) then
@@ -1362,18 +1374,19 @@ contains
       ! work arrays and the departure lookup, and hand the resolved dep arrays in.
       if (associated(dep)) then
         ! NLTE species: departure-coefficient source, no scattering split
-        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
           .true., sp%equidistant, i0=lo, i1=hi)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
-        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
-          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, i0=lo, i1=hi)
+          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
+          i0=lo, i1=hi)
       else
-        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, i0=lo, i1=hi)
       endif

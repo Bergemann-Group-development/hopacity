@@ -178,27 +178,26 @@ contains
     lo = 1;  hi = m(1)
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
-    mem_offset = 0
-    if (size(chi, 2) == hi - lo + 1) then
-      mem_offset = lo - 1
-    else if (size(chi, 2) /= m(1)) then
-      error stop 'hprofl add_h_opacities: array size mismatch'
-    end if
+    mem_offset = lo - 1
+    if (hi - lo + 1 /= m(1)) &
+      error stop 'hprofl add_h_opacities: per-cell arrays are not sized to the cell range'
+    if (size(chi, 2) /= m(1)) &
+      error stop 'hprofl add_h_opacities: chi/eta extent does not match the cell range'
 
     !phi = debug_hprofl(3,4,18751.05d0,18756.05D0,4e3,1e13,1e17,1e16,1e-7)
 
     do k=1, m(3)
       do j=1, m(2)
         do i=lo, hi
-          io = i - mem_offset            ! chi/eta index (chunk-local); cont stays whole-tile at i
+          io = i - mem_offset            ! chunk-local index; cont and bi/bj stay whole-tile at i
           ! fetch variables
-          idf = inv_df(i,j,k)
-          v   = (vproj(i,j,k) + 1)*self%nu0
-          t   = temp(i,j,k)
-          e   = ne(i,j,k)
-          nh1 = tothi(i,j,k)
-          nlo = ni(i,j,k)
-          nup = nj(i,j,k)
+          idf = inv_df(io,j,k)
+          v   = (vproj(io,j,k) + 1)*self%nu0
+          t   = temp(io,j,k)
+          e   = ne(io,j,k)
+          nh1 = tothi(io,j,k)
+          nlo = ni(io,j,k)
+          nup = nj(io,j,k)
 
           ! we include the idf normalisation factor along with voigt_function2
           ! as stark1 is normalised differently, therefore we do not multiply by idf here
@@ -213,11 +212,11 @@ contains
 
           resont = nh1 * self%gw1
           if (self%gw2 /= 0) then
-            resont = resont * vbar2h(i,j,k)**self%gw2
+            resont = resont * vbar2h(io,j,k)**self%gw2
           endif
 
-          hwstk = self%gq * fo(i,j,k)
-          vdw = self%gw3 * t3nhe(i,j,k)
+          hwstk = self%gq * fo(io,j,k)
+          vdw = self%gw3 * t3nhe(io,j,k)
           hwlor = self%ga + resont + vdw
 
           hfwid = max(1/idf, hwlor, hwstk) ! defines where we switch from Voigt to adding

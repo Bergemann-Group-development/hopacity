@@ -20,7 +20,8 @@ MODULE hop_c_api
   USE iso_c_binding
   USE composition_mod
   USE spectrum_mod, only: spectrum_type, lam_tolerance
-  USE bbtrans_mod,  only: tolerance, disable_ga, disable_stark, disable_vdw, ga_fallback
+  USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_ga, disable_stark, &
+                          disable_vdw, ga_fallback
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
@@ -32,7 +33,8 @@ MODULE hop_c_api
   USE prec_mod,     only: dp
   USE const_mod,    only: h_k
 #ifdef _OPENMP
-  USE omp_lib,      only: omp_set_num_threads, omp_get_max_threads
+  USE omp_lib,      only: omp_set_num_threads, omp_get_max_threads, &
+                          omp_pause_resource_all, omp_pause_soft
 #endif
   implicit none
   private
@@ -55,13 +57,14 @@ MODULE hop_c_api
   ! not parse, and the wrapper cannot reconstruct that.  This does not cover the
   ! stop/error stop sites inside HOP itself, which still kill the process.
   character(len=512), save :: last_error = ''
+  integer, parameter :: MIN_CHUNK_CELLS = 1
 
   !> Every option hop_set_option accepts, in the order hop_option_names reports them.
   !> Kept adjacent to the select case below -- the two must agree, and
   !> tests/test_hop_abi.py checks that they do.
   character(len=*), parameter :: option_names = &
     'abundances exclude_elements only_elements vcs_data_dir ' // &
-    'ref_lam debug_opac tolerance opac_table_vmic eosmet lam_tolerance ' // &
+    'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
     'irwin_dis disable_ga disable_stark disable_vdw ga_fallback hydrogen_bpo ' // &
@@ -218,8 +221,18 @@ CONTAINS
     !---------------------------------------------------------------------------
     if (allocated(comp)) deallocate(comp)
     if (allocated(master)) deallocate(master)
+    status = hop_omp_release()
     status = 0
   END FUNCTION hop_free
+
+  FUNCTION hop_omp_release() RESULT(status) BIND(c, name='hop_omp_release')
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    status = 0
+#ifdef _OPENMP
+    status = int(omp_pause_resource_all(omp_pause_soft), c_int)
+#endif
+  END FUNCTION hop_omp_release
 
   !=============================================================================
   ! Module-global options.  String/real options that influence injon
@@ -307,6 +320,8 @@ CONTAINS
       call parse_real(val, rv, status); if (status == 0) debug_opac = rv
     case ('tolerance')
       call parse_real(val, rv, status); if (status == 0) tolerance = real(rv, 4)
+    case ('line_reject_frac')
+      call parse_real(val, rv, status); if (status == 0) line_reject_frac = real(rv, 4)
     case ('opac_table_vmic')
       call parse_real(val, rv, status); if (status == 0) opac_table_vmic = real(rv, 4)
     case ('eosmet')
@@ -590,7 +605,7 @@ CONTAINS
 
     type(spectrum_type) :: sp
     real(4), pointer, contiguous :: chi4(:,:,:,:), scat4(:,:,:,:)
-    real(8), allocatable :: lam8(:)
+    real(8), allocatable :: lam8(:), llam(:)
     integer :: n
 
     real(4), dimension(:,:,:,:), allocatable, target :: bet, sig
@@ -615,9 +630,8 @@ CONTAINS
 #else
     nthr = 1
 #endif
-    ! increase the chunk multiplier to allow dynamic scheduling
-    nch_l = min(n, max(1, nthr * 64))
-    nch_c = min(n, max(1, nthr * 4))
+    nch_l = min(max(1, n / MIN_CHUNK_CELLS), max(1, nthr * 64))
+    nch_c = min(max(1, n / MIN_CHUNK_CELLS), max(1, nthr * 4))
 #ifndef _OPENMP
     nch_l = 1                   
     nch_c = 1
@@ -627,6 +641,8 @@ CONTAINS
     lam8 = lam(1:nlam)
     call sp%reset(lam=lam8)
     sp%sorted = .true.
+    allocate(llam(nlam))
+    llam = log(sp%lam)
     chi4 (1:nlam, 1:n, 1:1, 1:1) => chi (1:nlam*n)
     scat4(1:nlam, 1:n, 1:1, 1:1) => scat(1:nlam*n)
 
@@ -679,7 +695,7 @@ CONTAINS
         do w = 1, nch_l
           call chunk_range(w, nch_l, n, i0, i1)
           if (i1 < i0) cycle
-          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1)
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1, llam_in=llam)
         end do
         !$omp end parallel do
       else
@@ -687,7 +703,7 @@ CONTAINS
         do w = 1, nch_l
           call chunk_range(w, nch_l, n, i0, i1)
           if (i1 < i0) cycle
-          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, i0=i0, i1=i1)
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, i0=i0, i1=i1, llam_in=llam)
         end do
         !$omp end parallel do
       endif

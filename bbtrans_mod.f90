@@ -50,6 +50,7 @@ MODULE bbtrans_mod
   ! ratio; 0 = neglected (default, reproduces the pre-shift synthesis).
   real(4), public :: vdw_shift=0.0
   real(4), public, save :: tolerance=1e-4
+  real(4), public, save :: line_reject_frac=0.0
   real(4), parameter :: pqs  = 1.128379167  ! 2./pi**0.5
   real(4), parameter :: isqp = 0.5641895835 ! 1/pi**0.5
   real(4), parameter :: ipi  = 0.3183098862 ! 1/pi

@@ -31,7 +31,8 @@ MODULE linelist_mod
   USE handyfuncs_mod, only: air2vac, vac2air
   USE op_math_mod, only: find_closest
   USE bbtrans_mod, only: voigt_function2, disable_ga, disable_stark, disable_vdw, &
-                         f_conv, tol => tolerance, bbtrans_type, vdw_shift
+                         f_conv, tol => tolerance, bbtrans_type, vdw_shift, &
+                         line_reject_frac
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
   USE voigt_av_mod, only: voigt_av_t, voigt_av_setup, voigt_av_block
@@ -47,6 +48,7 @@ MODULE linelist_mod
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
   real(dp), parameter :: over_h4pi = 1.0_dp / h_4pi
   real(4),  parameter :: over_pi   = 0.3183098862
+  real(4),  parameter :: sqrt_pi   = 1.7724538509
   real(dp), parameter :: ex_cutoff = -85.0_dp  ! skip lines whose log(Rij) underflows
   real(4), parameter  :: voigt_peak = 0.5641895835 ! 1/sqrt(pi): max of voigt_function2
 
@@ -301,6 +303,9 @@ contains
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
     integer,  intent(in), optional :: i0, i1
+    logical  :: run_floor
+    integer  :: f0_prev
+    real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb, lo, hi, io, mem_offset
     real(8)  :: llc, llc_s, dl
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
@@ -316,16 +321,16 @@ contains
     np = size(lnbase, 4)
     if (nl == 0) return
     has_ipart = allocated(ll%ipart)
+    run_floor = line_reject_frac > 0.
     c_visit = 0; c_pass = 0; c_voigt = 0; c_march = 0
     lo = 1;  hi = m(1)
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
-    mem_offset = 0
-    if (size(chi, 2) == hi - lo + 1) then
-      mem_offset = lo - 1
-    else if (size(chi, 2) /= m(1)) then
-      error stop 'linelist add_opacity: array size mismatch'
-    end if
+    mem_offset = lo - 1
+    if (hi - lo + 1 /= m(1)) &
+      error stop 'linelist add_opacity: per-cell arrays are not sized to the cell range'
+    if (size(chi, 2) /= m(1)) &
+      error stop 'linelist add_opacity: chi/eta extent does not match the cell range'
     ! the spectrum machinery always delivers lam (hence llam) ascending; the monotonic
     ! march relies on this, so assert it once rather than branching per line.
     if (nf > 1 .and. llam(nf) < llam(1)) &
@@ -334,17 +339,18 @@ contains
     do k = 1, m(3)
       do j = 1, m(2)
         do i = lo, hi
-          io       = i - mem_offset      ! chi/eta/logref index (chunk-local); cont etc. stay at i
-          idf      = inv_df(i,j,k)
-          unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
-          lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
-          ekt      = e_kT(i,j,k)
-          ne_c     = ne(i,j,k)
-          tothi_c  = tothi(i,j,k)
-          starkpe  = stark_pe(i,j,k)
-          vproj_c  = vproj(i,j,k)
+          io       = i - mem_offset      ! chunk-local index; cont/chi_scat/dep_mem stay at i
+          f0_prev  = -1                  ! running-floor cache is per cell
+          idf      = inv_df(io,j,k)
+          unsold_c = vbar2(io,j,k)**0.3 * tothi(io,j,k)
+          lvb2     = log(vbar2(io,j,k))                   ! vb2**gw2 as exp(gw2*log(vb2))
+          ekt      = e_kT(io,j,k)
+          ne_c     = ne(io,j,k)
+          tothi_c  = tothi(io,j,k)
+          starkpe  = stark_pe(io,j,k)
+          vproj_c  = vproj(io,j,k)
           ! line-independent part of log(Rij) per population group (idf folded in)
-          base_s(1:np) = lnbase(i,j,k,1:np)
+          base_s(1:np) = lnbase(io,j,k,1:np)
           fc = 1
           ws = 1
           we = nf
@@ -383,7 +389,23 @@ contains
 
             ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= logref(f0).
             ! This rejects the vast majority of lines without evaluating exp().
-            if (arg <= logref(f0,io,j,k)) cycle
+            if (run_floor) then
+              if (f0 /= f0_prev) then
+                f0_prev = f0
+                refl_c  = tol * cont(f0,i,j,k)
+                flo     = line_reject_frac * chi(f0,io,j,k)
+                if (flo > refl_c) then
+                  refl_c = flo
+                  lref_c = log(flo * sqrt_pi)      ! == log(ref/voigt_peak)
+                else
+                  lref_c = logref(f0,io,j,k)
+                end if
+              end if
+            else
+              lref_c = logref(f0,io,j,k)
+            end if
+
+            if (arg <= lref_c) cycle
 
             ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
             Rij = exp(arg)
@@ -399,7 +421,8 @@ contains
 
             ! folding b_i into ref makes every phi*Rij test an actual-opacity test
             ! (phi*Rij >= ref <=> phi*Rij*bi >= tol*cont) at no per-frequency cost
-            ref = tol * cont(f0,i,j,k) / bi
+            if (.not. run_floor) refl_c = tol * cont(f0,i,j,k)
+            ref = refl_c / bi
 
             ! exact pre-filter: voigt_function2 <= 1/sqrt(pi) everywhere, so if even the
             ! peak cannot reach the tolerance the whole line is negligible -- skip
@@ -439,7 +462,7 @@ contains
             ! a straight (data-independent) loop over [fa,fb], centre included,
             ! pipelines much better than a walk whose exit condition depends on
             ! the previous Voigt value
-            vm2  = max(real(arg - logref(f0,io,j,k)), a*Rij*over_pi/ref)
+            vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
             edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
             if (vm2 >= edge*edge) then
               fa = ws         ! line fills the window; skip the extent bisections
@@ -495,8 +518,8 @@ contains
   ! v = sqrt(vm2)/idf in log(lambda)) and converting that half-width straight to an index
   ! offset via 1/dllam. Windowed (per-line ll%iws/iwe) mode is not supported here.
   !-------------------------------------------------------------------------------------
-  SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
-                              lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
+  SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, &
+                              e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
                               one_m_eps, chi_scat, do_scat, i0, i1)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
@@ -512,6 +535,9 @@ contains
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
     integer,  intent(in), optional :: i0, i1
+    logical  :: run_floor
+    integer  :: f0_prev
+    real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw, lo, hi, io, mem_offset
     real(8)  :: llc, llc_s, llam1, dllam, inv_dllam
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
@@ -519,12 +545,12 @@ contains
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
-    integer(8) :: c_visit, c_pass, c_voigt
+    integer(8) :: c_visit, c_pass, c_voigt, c_fill
     ! voigt_kernel==1 scratch: per-line profile state, the window's K values, and the
     ! fp32 abscissa ramp. Kbuf is an automatic array (stack) but only [1:nw] is ever
     ! touched, and windows average ~8 points, so it stays L1-resident.
     type(voigt_av_t) :: vst
-    real(4)  :: Kbuf(size(llam)), v0, dv, Rn
+    real(4)  :: Kbuf(size(llam)), v0, dv, Rn, rnoff
     !-----------------------------------------------------------------------------------
     m  = shape(vproj)
     nf = size(llam)
@@ -533,16 +559,16 @@ contains
     if (nl == 0) return
     if (nf < 2) return
     has_ipart = allocated(ll%ipart)
-    c_visit = 0; c_pass = 0; c_voigt = 0
+    run_floor = line_reject_frac > 0.
+    c_visit = 0; c_pass = 0; c_voigt = 0; c_fill = 0
     lo = 1;  hi = m(1)
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
-    mem_offset = 0
-    if (size(chi, 2) == hi - lo + 1) then
-      mem_offset = lo - 1
-    else if (size(chi, 2) /= m(1)) then
-      error stop 'linelist add_opacity_equi: array size mismatch'
-    end if
+    mem_offset = lo - 1
+    if (hi - lo + 1 /= m(1)) &
+      error stop 'linelist add_opacity_equi: per-cell arrays are not sized to the cell range'
+    if (size(chi, 2) /= m(1)) &
+      error stop 'linelist add_opacity_equi: chi/eta extent does not match the cell range'
     if (llam(nf) < llam(1)) &
       error stop 'linelist add_opacity_equi: log(lambda) grid must be ascending'
 
@@ -554,17 +580,18 @@ contains
     do k = 1, m(3)
       do j = 1, m(2)
         do i = lo, hi
-          io       = i - mem_offset      ! chi/eta/logref index (chunk-local); cont etc. stay at i
-          idf      = inv_df(i,j,k)
-          unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
-          lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
-          ekt      = e_kT(i,j,k)
-          ne_c     = ne(i,j,k)
-          tothi_c  = tothi(i,j,k)
-          starkpe  = stark_pe(i,j,k)
-          vproj_c  = vproj(i,j,k)
+          io       = i - mem_offset      ! chunk-local index; cont/chi_scat/dep_mem stay at i
+          f0_prev  = -1                  ! running-floor cache is per cell
+          idf      = inv_df(io,j,k)
+          unsold_c = vbar2(io,j,k)**0.3 * tothi(io,j,k)
+          lvb2     = log(vbar2(io,j,k))                   ! vb2**gw2 as exp(gw2*log(vb2))
+          ekt      = e_kT(io,j,k)
+          ne_c     = ne(io,j,k)
+          tothi_c  = tothi(io,j,k)
+          starkpe  = stark_pe(io,j,k)
+          vproj_c  = vproj(io,j,k)
           ! line-independent part of log(Rij) per population group (idf folded in)
-          base_s(1:np) = lnbase(i,j,k,1:np)
+          base_s(1:np) = lnbase(io,j,k,1:np)
 
           do l = 1, nl
             if (.not. ll%active(l)) cycle
@@ -586,7 +613,23 @@ contains
 
             ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= logref(f0).
             ! This rejects the vast majority of lines without evaluating exp().
-            if (arg <= logref(f0,io,j,k)) cycle
+            if (run_floor) then
+              if (f0 /= f0_prev) then
+                f0_prev = f0
+                refl_c  = tol * cont(f0,i,j,k)
+                flo     = line_reject_frac * chi(f0,io,j,k)
+                if (flo > refl_c) then
+                  refl_c = flo
+                  lref_c = log(flo * sqrt_pi)      ! == log(ref/voigt_peak)
+                else
+                  lref_c = logref(f0,io,j,k)
+                end if
+              end if
+            else
+              lref_c = logref(f0,io,j,k)
+            end if
+
+            if (arg <= lref_c) cycle
 
             ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
             Rij = exp(arg)
@@ -602,7 +645,8 @@ contains
 
             ! folding b_i into ref makes every phi*Rij test an actual-opacity test
             ! (phi*Rij >= ref <=> phi*Rij*bi >= tol*cont) at no per-frequency cost
-            ref = tol * cont(f0,i,j,k) / bi
+            if (.not. run_floor) refl_c = tol * cont(f0,i,j,k)
+            ref = refl_c / bi
 
             ! exact pre-filter: voigt_function2 <= 1/sqrt(pi) everywhere, so if even the
             ! peak cannot reach the tolerance the whole line is negligible -- skip
@@ -641,10 +685,17 @@ contains
             ! core v^2 = arg - logref, Lorentz far wing v^2 = a*Rij/(pi*ref). On a
             ! uniform log(lambda) grid the half-width in llam is sqrt(vm2)/idf, so the
             ! index half-width is that over dllam -- no bisection required.
-            vm2  = max(real(arg - logref(f0,io,j,k)), a*Rij*over_pi/ref)
-            noff = int(sqrt(vm2) / idf * inv_dllam) + 1
-            fa   = max(1,  f0 - noff)
-            fb   = min(nf, f0 + noff)
+            vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
+            rnoff = sqrt(vm2) / idf * inv_dllam
+            if (rnoff >= real(nf, 4)) then
+              fa = 1
+              fb = nf
+              c_fill = c_fill + 1
+            else
+              noff = int(rnoff) + 1
+              fa   = max(1,  f0 - noff)
+              fb   = min(nf, f0 + noff)
+            end if
             c_voigt = c_voigt + fb - fa + 1
 
             if (voigt_kernel == 1) then
@@ -747,10 +798,14 @@ contains
     real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
     real(4)  :: eps_dummy(0,0,0,0), scat_dummy(0,0,0,0)
     real(dp) :: iso_frac
-    integer  :: m(3), kiso, ll_n, l
+    integer  :: m(3), kiso, ll_n, l, lo, hi
     logical  :: do_scat
     !-----------------------------------------------------------------------------------
     m = shape(temp)
+    lo = 1;  hi = size(ptc%n, 1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    if (hi - lo + 1 /= m(1)) error stop 'add_particle_opacity: cell range does not match the per-cell arrays'
     allocate(idf3(m(1),m(2),m(3)), vb3(m(1),m(2),m(3)), lnbase(m(1),m(2),m(3),1))
     do_scat = present(one_m_eps) .and. present(chi_scat)
 
@@ -777,7 +832,7 @@ contains
         ! the log: molecules are legitimately absent (n==0) where they do not form, and
         ! log(0)=-Inf raises the divide-by-zero FP trap under full_debug. The floored value
         ! gives a large negative lnbase -> exp(lnbase)=0 downstream, i.e. no opacity.
-        lnbase(:,:,:,1) = log(max(ptc%n, tiny(1.0_dp))) - ptc%part &
+        lnbase(:,:,:,1) = log(max(ptc%n(lo:hi,:,:), tiny(1.0_dp))) - ptc%part(lo:hi,:,:) &
                         + real(dxi) * (ptc%j-1) * e_kT + log(idf3) &
                         + real(log(iso_frac), 4)
 
