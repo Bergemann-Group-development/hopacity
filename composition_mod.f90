@@ -8,7 +8,7 @@ MODULE composition_mod
   USE level_mod, only: level_type, wcalc
   USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
-  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
+  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium, moleq_warn
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE line_types_mod, only: linelist_type
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
@@ -503,6 +503,7 @@ contains
 
     allocate(self%trans(nkomp))
     self%trans%verbose = self%verbose
+    moleq_warn = self%verbose > 0
 
     self%elements(1)%ions%in_opac = .true.
     self%elements(2)%ions%in_opac = .true.

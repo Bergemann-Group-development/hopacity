@@ -34,6 +34,7 @@ MODULE molecule_mod
   end type
 
   logical, public :: irwin_dis=.true.
+  logical, public :: moleq_warn=.false. 
 
 contains
 
@@ -783,7 +784,7 @@ contains
       end do
     end do
 
-    if (nfail > 0) then
+    if (nfail > 0 .and. moleq_warn) then
       print *, 'molecular_equilibrium: ', nfail, '/', nx*ny*nz, ' points not converged after', &
         niter_max, ' iterations; worst scaled residual:', worst
     endif
