@@ -31,8 +31,7 @@ MODULE linelist_mod
   USE handyfuncs_mod, only: air2vac, vac2air
   USE op_math_mod, only: find_closest
   USE bbtrans_mod, only: disable_ga, disable_stark, disable_vdw, &
-                         f_conv, tol => tolerance, bbtrans_type, vdw_shift, &
-                         line_reject_frac
+                         f_conv, tol => tolerance, bbtrans_type, line_reject_frac
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
   ! The one Voigt kernel. qlg_bot_sweep is the window form, used by add_opacity_equi;
@@ -175,7 +174,7 @@ contains
       call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
       call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
       call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
-                                lower_ev, ion_j, xion, vbar2e4, is_mol, ll%vdw_ratio(k))
+                                lower_ev, ion_j, xion, vbar2e4, is_mol)
       ll%ga(k)  = ga_t
       ll%gq(k)  = gq_t
       ll%gw1(k) = gw1_t
@@ -190,14 +189,13 @@ contains
   ! Broadening parameters carry the same over_4pi/nu0 scaling as the prepare_* routines.
   !-------------------------------------------------------------------------------------
   SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, ga, gw1, gw2, gq, unsold, &
-                         vdw_ratio, lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
+                         lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
                          loggf, gv_in, ga_in, gq_in)
     type(linelist_type), intent(inout) :: ll
     real(8), intent(in) :: llam0, gpref
     real(8), intent(in) :: nu0, lower_ev, ga, gw1, gw2, gq, wA, cwt, dej
     real(8), intent(in) :: loggf, gv_in, ga_in, gq_in
     logical, intent(in) :: unsold
-    real(4), intent(in) :: vdw_ratio
     integer, intent(in) :: lev_i, lev_j, itrans, ipart, iso_out
     integer :: k
     !-----------------------------------------------------------------------------------
@@ -214,7 +212,6 @@ contains
     ll%gw2(k)      = gw2
     ll%gq(k)       = gq
     ll%unsold(k)   = unsold
-    ll%vdw_ratio(k) = vdw_ratio
     ll%lev_i(k)    = lev_i
     ll%lev_j(k)    = lev_j
     ll%active(k)   = .true.
@@ -342,9 +339,9 @@ contains
     integer  :: f0_prev
     real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb, lo, hi, io, mem_offset
-    real(8)  :: llc, llc_s, dl
+    real(8)  :: llc, dl
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, avdw, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
@@ -462,29 +459,19 @@ contains
             if (voigt_peak * Rij <= ref) cycle
             c_pass = c_pass + 1
 
-            ! damping parameter (physical, then scaled by idf as in the AoS kernel).
-            ! avdw = the van der Waals contribution (pre-idf) is captured separately so
-            ! it can drive the Lindholm pressure shift below.
+            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
             a = ll%ga(l)
             if (ll%unsold(l)) then
-              avdw = ll%gw1(l) * unsold_c
+              a = a + ll%gw1(l) * unsold_c
             else
-              avdw = ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
+              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
-            a = a + avdw
             if (ll%gq(l) >= 0.0) then
               a = a + ll%gq(l) * ne_c
             else
               a = a - ll%gq(l) * starkpe
             end if
             a = a * idf
-
-            ! Lindholm van der Waals pressure shift (red): the pre-idf vdW damping term
-            ! is the vdW HWHM in ln(lambda) units, so shifting the profile centre red by
-            ! vdw_shift*ratio*HWHM is a simple offset in llc. == llc when vdw_shift==0.
-            ! ratio is the per-line impact-theory d/w (ll%vdw_ratio, precomputed at build
-            ! time). The window [fa,fb] and f0 stay on the unshifted centre (shift << window).
-            llc_s = llc + vdw_shift * ll%vdw_ratio(l) * avdw
 
             ll%used(l)     = .true.
             ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
@@ -509,7 +496,7 @@ contains
             if (do_scat .and. .not. nlte) then
               ! LTE line (bi=bj=1) with the scattering fraction accumulated
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc_s)
+                vs   = idf * real(llam(f) - llc)
                 phi  = qlg_bot_phi(a, vs)
                 lte  = phi * Rij
                 chi(f,io,j,k) = chi(f,io,j,k) + lte
@@ -518,7 +505,7 @@ contains
               end do
             else
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc_s)
+                vs   = idf * real(llam(f) - llc)
                 phi  = qlg_bot_phi(a, vs)
                 lte  = phi * Rij
                 chi(f,io,j,k) = chi(f,io,j,k) + lte*bi
@@ -571,9 +558,9 @@ contains
     integer  :: f0_prev
     real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw, lo, hi, io, mem_offset
-    real(8)  :: llc, llc_s, llam1, dllam, inv_dllam
+    real(8)  :: llc, llam1, dllam, inv_dllam
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, avdw, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
@@ -690,29 +677,19 @@ contains
             if (voigt_peak * Rij <= ref) cycle
             c_pass = c_pass + 1
 
-            ! damping parameter (physical, then scaled by idf as in the AoS kernel).
-            ! avdw = the van der Waals contribution (pre-idf) is captured separately so
-            ! it can drive the Lindholm pressure shift below.
+            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
             a = ll%ga(l)
             if (ll%unsold(l)) then
-              avdw = ll%gw1(l) * unsold_c
+              a = a + ll%gw1(l) * unsold_c
             else
-              avdw = ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
+              a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
-            a = a + avdw
             if (ll%gq(l) >= 0.0) then
               a = a + ll%gq(l) * ne_c
             else
               a = a - ll%gq(l) * starkpe
             end if
             a = a * idf
-
-            ! Lindholm van der Waals pressure shift (red): the pre-idf vdW damping term
-            ! is the vdW HWHM in ln(lambda) units, so shifting the profile centre red by
-            ! vdw_shift*ratio*HWHM is a simple offset in llc. == llc when vdw_shift==0.
-            ! ratio is the per-line impact-theory d/w (ll%vdw_ratio, precomputed at build
-            ! time). The window [fa,fb] and f0 stay on the unshifted centre (shift << window).
-            llc_s = llc + vdw_shift * ll%vdw_ratio(l) * avdw
 
             ll%used(l)     = .true.
             ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
@@ -984,13 +961,12 @@ contains
 
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE prepare_vanderwaals(gw1, gw2, unsold, gv, nu0, lower_ev, lower_ion, &
-                                      cnt_ev, vbar2e4, is_mol, vdw_ratio)
+                                      cnt_ev, vbar2e4, is_mol)
     real(dp), intent(out) :: gw1, gw2
     logical,  intent(out) :: unsold
     real(dp), intent(in)  :: gv, nu0, lower_ev, cnt_ev, vbar2e4
     integer,  intent(in)  :: lower_ion
     logical,  intent(in)  :: is_mol
-    real(4),  intent(out) :: vdw_ratio
     real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625
     real(dp), parameter :: uns = 8.411 * 1.283984e-12
     real(dp), parameter :: barklem = (1e-2 * Rbohr)**2
@@ -998,7 +974,6 @@ contains
     gw1 = 0
     gw2 = 0
     unsold = .false.
-    vdw_ratio = 0
     if (gv >= 20.0) then
       ! Barklem cross section + velocity exponent
       sigma  = barklem * int(gv)
@@ -1008,13 +983,8 @@ contains
       balfac = (4.0/pi)**(0.5*alpha) * gammaf * 2.e10
       gw2 = 0.5*(1 - alpha)
       gw1 = balfac * sigma * 10**(-12*gw2)
-      ! Lindholm shift/HWHM ratio for an effective inverse-power interaction:
-      ! d/w = tan(pi*alpha/2). The clamp guards against pathological alpha (near 1,
-      ! where the tangent blows up).
-      vdw_ratio = min(tan(0.5*pi * min(max(alpha, 0.02_dp), 0.96_dp)), 3.0_dp)
     elseif (.not. is_mol) then    ! Unsold is not used for molecules
       unsold = .true.
-      vdw_ratio = 0.7265  ! pure van der Waals (p=6, alpha=0.4) -> tan(0.2*pi)
       if (gv < -20.0) then
         c625 = 10**(0.4 * gv)       ! recipe c6 SIU
         gw1  = 17. * c625
@@ -1034,7 +1004,7 @@ contains
     gw1 = gw1 * over_4pi / nu0
     if (disable_vdw) then
       unsold = .true.
-      gw1 = 0                       ! vdw_ratio is then irrelevant: it multiplies avdw = 0
+      gw1 = 0
     end if
   END SUBROUTINE prepare_vanderwaals
 
@@ -1223,7 +1193,6 @@ contains
     call grow4(ll%gw1,      ll%nline, need)
     call grow4(ll%gw2,      ll%nline, need)
     call grow4(ll%gq,       ll%nline, need)
-    call grow4(ll%vdw_ratio, ll%nline, need)
     call grow4(ll%strength, ll%nline, need)
     call growi(ll%lev_i,    ll%nline, need)
     call growi(ll%lev_j,    ll%nline, need)

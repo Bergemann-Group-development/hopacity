@@ -35,9 +35,6 @@ MODULE line_types_mod
     real(4),  allocatable :: gw1(:)      ! van der Waals coefficient
     real(4),  allocatable :: gw2(:)      ! van der Waals exponent
     real(4),  allocatable :: gq(:)       ! Stark constant (sign encodes recipe)
-    ! Lindholm shift/HWHM ratio d/w (impact theory), precomputed per line at build time;
-    ! the opacity kernel scales it by the global vdw_shift knob (see linelist_mod).
-    real(4),  allocatable :: vdw_ratio(:)
     logical,  allocatable :: unsold(:)   ! .true. -> Unsold vdW, .false. -> Barklem
     ! bookkeeping
     integer,  allocatable :: lev_i(:)    ! NLTE lower level index (filled at opacity time)
