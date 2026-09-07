@@ -52,11 +52,20 @@ MODULE optab_mod
     integer :: nnu=0, ntemp=0, nne=0
     type(pca_transform_type) :: pca       ! (lnT, lnNe) -> table-axis coordinates
     real(8), dimension(:), allocatable :: lam                 ! (nnu) irregular wavelength nodes
-    real(4), dimension(:,:,:), allocatable :: val             ! (nnu,ntemp,nne) chi/chi500
+    real(4), dimension(:,:,:), allocatable :: val             ! (nnu,ntemp,nne) /chi500
     real(4), dimension(:,:,:), allocatable :: dl, dt, de      ! precomputed node slopes
-    ! line_scattering: (1-eps)-weighted scattering component of the same table
-    ! (chi_scat/chi500), with its own node slopes; allocated only when line
-    ! scattering is active
+    ! Second, scattering component with its own node slopes, /chi500.
+    !   background table: val is the true absorption and scat the coherent
+    !     scattering, kept DISJOINT and summed only after interpolation.  Both
+    !     interpolants are non-negative (pchip_mono keeps each inside its local
+    !     node range), so scat <= val + scat = chi_total holds by construction --
+    !     that is what makes the interpolated single-scattering albedo <= 1
+    !     without a clamp.
+    !   line-list table: scat is the (1-eps)-weighted part of the line opacity
+    !     already contained in val, because the foreground redirects that
+    !     fraction of the line source from Bnu to Jnu without altering chi.
+    ! Allocated on the background path always, on the line path only when line
+    ! scattering is active.
     real(4), dimension(:,:,:), allocatable :: scat
     real(4), dimension(:,:,:), allocatable :: sl, st, se
     logical :: initialised=.false.
@@ -218,20 +227,24 @@ contains
   ! temp/ne axes use direct floor indexing; the irregular wavelength axis uses a
   ! per-frequency searchsorted precompute.
   !===============================================================================
-  SUBROUTINE sample_interpolate (self, temp, ne, chi500, back, lam_q, fs, fe)
+  SUBROUTINE sample_interpolate (self, temp, ne, chi500, back, scat, lam_q, fs, fe)
     class(sample_optab_type) :: self
     integer, intent(in) :: fs, fe
     real(8), dimension(:,:,:), intent(in) :: temp, ne
     real(4), dimension(:,:,:), intent(in) :: chi500
-    real(4), dimension(fs:,:,:,:), intent(inout) :: back
+    ! back receives the TOTAL extinction and scat its scattering part.  The two
+    ! table components are disjoint (true absorption / scattering), interpolated
+    ! separately with identical weights and summed here -- so scat <= back holds
+    ! pointwise, and the single-scattering albedo the transfer sees can never
+    ! exceed 1 no matter how coarse the table is.
+    real(4), dimension(fs:,:,:,:), intent(inout) :: back, scat
     real(8), dimension(:), intent(in) :: lam_q
     integer, dimension(:), allocatable :: kl
     real(4), dimension(:), allocatable :: pl, wc0, wc1, wcm0, wcm1
     real(8) :: rd1, rd2, ft, fe_, d1, d2, p1, p2
     real(4) :: hl, tl, tt, te, pt, pe
     real(4) :: tc0, tc1, tcm0, tcm1, nc0, nc1, ncm0, ncm1
-    real(4) :: v00, v10, v01, v11, gt00, gt10, gt01, gt11
-    real(4) :: ge00, ge10, ge01, ge11, f0, f1, ge0, ge1, kappa
+    real(4) :: kappa, kappa_scat
     real(4) :: dc1_4, dc2_4
     integer :: nx, ny, nz, x, y, z, f, k, k1, it, je
     integer, save :: itimer=0
@@ -275,37 +288,49 @@ contains
           do f=fs, fe
             k  = kl(f)
             k1 = k + 1
-            ! collapse wavelength at the 4 (temp,ne) corners
-            v00 = wc0(f)*self%val(k,it  ,je  ) + wc1(f)*self%val(k1,it  ,je  ) &
-                + wcm0(f)*self%dl(k,it  ,je  ) + wcm1(f)*self%dl(k1,it  ,je  )
-            v10 = wc0(f)*self%val(k,it+1,je  ) + wc1(f)*self%val(k1,it+1,je  ) &
-                + wcm0(f)*self%dl(k,it+1,je  ) + wcm1(f)*self%dl(k1,it+1,je  )
-            v01 = wc0(f)*self%val(k,it  ,je+1) + wc1(f)*self%val(k1,it  ,je+1) &
-                + wcm0(f)*self%dl(k,it  ,je+1) + wcm1(f)*self%dl(k1,it  ,je+1)
-            v11 = wc0(f)*self%val(k,it+1,je+1) + wc1(f)*self%val(k1,it+1,je+1) &
-                + wcm0(f)*self%dl(k,it+1,je+1) + wcm1(f)*self%dl(k1,it+1,je+1)
-            ! carry temp-slope and ne-slope across the collapsed wavelength axis
-            gt00 = (1.-pl(f))*self%dt(k,it  ,je  ) + pl(f)*self%dt(k1,it  ,je  )
-            gt10 = (1.-pl(f))*self%dt(k,it+1,je  ) + pl(f)*self%dt(k1,it+1,je  )
-            gt01 = (1.-pl(f))*self%dt(k,it  ,je+1) + pl(f)*self%dt(k1,it  ,je+1)
-            gt11 = (1.-pl(f))*self%dt(k,it+1,je+1) + pl(f)*self%dt(k1,it+1,je+1)
-            ge00 = (1.-pl(f))*self%de(k,it  ,je  ) + pl(f)*self%de(k1,it  ,je  )
-            ge10 = (1.-pl(f))*self%de(k,it+1,je  ) + pl(f)*self%de(k1,it+1,je  )
-            ge01 = (1.-pl(f))*self%de(k,it  ,je+1) + pl(f)*self%de(k1,it  ,je+1)
-            ge11 = (1.-pl(f))*self%de(k,it+1,je+1) + pl(f)*self%de(k1,it+1,je+1)
-            ! collapse temp for the two ne rows
-            f0  = tc0*v00 + tc1*v10 + tcm0*gt00 + tcm1*gt10
-            f1  = tc0*v01 + tc1*v11 + tcm0*gt01 + tcm1*gt11
-            ge0 = (1.-pt)*ge00 + pt*ge10
-            ge1 = (1.-pt)*ge01 + pt*ge11
-            ! collapse log ne
-            kappa = nc0*f0 + nc1*f1 + ncm0*ge0 + ncm1*ge1
-            back(f,x,y,z) = kappa * chi500(x,y,z)
+            kappa      = collapse(self%val , self%dl, self%dt, self%de)
+            kappa_scat = collapse(self%scat, self%sl, self%st, self%se)
+            back(f,x,y,z) = (kappa + kappa_scat) * chi500(x,y,z)
+            scat(f,x,y,z) =          kappa_scat  * chi500(x,y,z)
           end do
         end do
       end do
     end do
     call trace%end(itimer)
+
+  contains
+    ! separable tensor-product cubic Hermite collapse (wavelength -> temp ->
+    ! log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
+    ! coefficients; one call per table component
+    real(4) function collapse(val, dl, dt, de) result(kap)
+      real(4), dimension(:,:,:), intent(in) :: val, dl, dt, de
+      real(4) :: v00, v10, v01, v11, gt00, gt10, gt01, gt11
+      real(4) :: ge00, ge10, ge01, ge11, f0, f1, ge0, ge1
+      ! collapse wavelength at the 4 (temp,ne) corners
+      v00 = wc0(f)*val(k,it  ,je  ) + wc1(f)*val(k1,it  ,je  ) &
+          + wcm0(f)*dl(k,it  ,je  ) + wcm1(f)*dl(k1,it  ,je  )
+      v10 = wc0(f)*val(k,it+1,je  ) + wc1(f)*val(k1,it+1,je  ) &
+          + wcm0(f)*dl(k,it+1,je  ) + wcm1(f)*dl(k1,it+1,je  )
+      v01 = wc0(f)*val(k,it  ,je+1) + wc1(f)*val(k1,it  ,je+1) &
+          + wcm0(f)*dl(k,it  ,je+1) + wcm1(f)*dl(k1,it  ,je+1)
+      v11 = wc0(f)*val(k,it+1,je+1) + wc1(f)*val(k1,it+1,je+1) &
+          + wcm0(f)*dl(k,it+1,je+1) + wcm1(f)*dl(k1,it+1,je+1)
+      ! carry temp-slope and ne-slope across the collapsed wavelength axis
+      gt00 = (1.-pl(f))*dt(k,it  ,je  ) + pl(f)*dt(k1,it  ,je  )
+      gt10 = (1.-pl(f))*dt(k,it+1,je  ) + pl(f)*dt(k1,it+1,je  )
+      gt01 = (1.-pl(f))*dt(k,it  ,je+1) + pl(f)*dt(k1,it  ,je+1)
+      gt11 = (1.-pl(f))*dt(k,it+1,je+1) + pl(f)*dt(k1,it+1,je+1)
+      ge00 = (1.-pl(f))*de(k,it  ,je  ) + pl(f)*de(k1,it  ,je  )
+      ge10 = (1.-pl(f))*de(k,it+1,je  ) + pl(f)*de(k1,it+1,je  )
+      ge01 = (1.-pl(f))*de(k,it  ,je+1) + pl(f)*de(k1,it  ,je+1)
+      ge11 = (1.-pl(f))*de(k,it+1,je+1) + pl(f)*de(k1,it+1,je+1)
+      ! collapse temp for the two ne rows, then log ne
+      f0  = tc0*v00 + tc1*v10 + tcm0*gt00 + tcm1*gt10
+      f1  = tc0*v01 + tc1*v11 + tcm0*gt01 + tcm1*gt11
+      ge0 = (1.-pt)*ge00 + pt*ge10
+      ge1 = (1.-pt)*ge01 + pt*ge11
+      kap = nc0*f0 + nc1*f1 + ncm0*ge0 + ncm1*ge1
+    end function collapse
   END SUBROUTINE sample_interpolate
 
   !===============================================================================

@@ -5,12 +5,14 @@
 # the package is self-contained.  This directory is invisible to the main
 # experiment build (its wildcard only scans SRC/*.f90 HOP/*.f90).
 #
-# Usage:  make [-j N] [OPT=-O2]
-BUILD := build
+# Usage:  make [-j N] [OPT=-O2] [BUILD=dir]
+BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 HDR   := libhop.h
 FC    := gfortran
 OPT   ?= -O1
+# Vectorization increases speed of voigt kernel 1
+#OPT   ?= -O3 -march=native -mprefer-vector-width=256
 FFLAGS = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
          -fno-range-check -fallow-argument-mismatch $(OPT) -g -fbacktrace \
          -fopenmp -fPIC -I$(BUILD) -J$(BUILD)

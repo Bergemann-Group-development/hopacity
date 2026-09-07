@@ -20,17 +20,22 @@ MODULE hop_c_api
   USE iso_c_binding
   USE composition_mod
   USE spectrum_mod, only: spectrum_type, lam_tolerance
-  USE bbtrans_mod,  only: tolerance, disable_ga, disable_stark, disable_vdw, ga_fallback
+  USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_ga, disable_stark, &
+                          disable_vdw, ga_fallback
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
   USE linelist_mod, only: ll_profile, voigt_kernel, voigt_kernel_init
-  USE osmet_mod,    only: eosmet
+  USE osmet_mod,    only: eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase
   USE prec_mod,     only: dp
   USE const_mod,    only: h_k
+#ifdef _OPENMP
+  USE omp_lib,      only: omp_set_num_threads, omp_get_max_threads, &
+                          omp_pause_resource_all, omp_pause_soft
+#endif
   implicit none
   private
 
@@ -52,14 +57,15 @@ MODULE hop_c_api
   ! not parse, and the wrapper cannot reconstruct that.  This does not cover the
   ! stop/error stop sites inside HOP itself, which still kill the process.
   character(len=512), save :: last_error = ''
+  integer, parameter :: MIN_CHUNK_CELLS = 1
 
   !> Every option hop_set_option accepts, in the order hop_option_names reports them.
   !> Kept adjacent to the select case below -- the two must agree, and
   !> tests/test_hop_abi.py checks that they do.
   character(len=*), parameter :: option_names = &
     'abundances exclude_elements only_elements vcs_data_dir ' // &
-    'ref_lam debug_opac tolerance opac_table_vmic eosmet lam_tolerance ' // &
-    'mhd_eos scattering_absorption helium_scattering relative_abundances ' // &
+    'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
+    'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
     'irwin_dis disable_ga disable_stark disable_vdw ga_fallback hydrogen_bpo ' // &
     'hydrogen_vcs_table ll_profile voigt_kernel switch verbose'
@@ -220,8 +226,18 @@ CONTAINS
     !---------------------------------------------------------------------------
     if (allocated(comp)) deallocate(comp)
     if (allocated(master)) deallocate(master)
+    status = hop_omp_release()
     status = 0
   END FUNCTION hop_free
+
+  FUNCTION hop_omp_release() RESULT(status) BIND(c, name='hop_omp_release')
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    status = 0
+#ifdef _OPENMP
+    status = int(omp_pause_resource_all(omp_pause_soft), c_int)
+#endif
+  END FUNCTION hop_omp_release
 
   !=============================================================================
   ! Module-global options.  String/real options that influence injon
@@ -309,6 +325,8 @@ CONTAINS
       call parse_real(val, rv, status); if (status == 0) debug_opac = rv
     case ('tolerance')
       call parse_real(val, rv, status); if (status == 0) tolerance = real(rv, 4)
+    case ('line_reject_frac')
+      call parse_real(val, rv, status); if (status == 0) line_reject_frac = real(rv, 4)
     case ('opac_table_vmic')
       call parse_real(val, rv, status); if (status == 0) opac_table_vmic = real(rv, 4)
     case ('eosmet')
@@ -318,8 +336,6 @@ CONTAINS
     ! --- logicals -----------------------------------------------------------
     case ('mhd_eos')
       call parse_logical(val, lv, status); if (status == 0) mhd_eos = lv
-    case ('scattering_absorption')
-      call parse_logical(val, lv, status); if (status == 0) scattering_absorption = lv
     case ('helium_scattering')
       call parse_logical(val, lv, status); if (status == 0) helium_scattering = lv
     case ('relative_abundances')
@@ -582,6 +598,168 @@ CONTAINS
         line_scat = line_scat /= 0)
     end if
   END FUNCTION hop_opacity
+
+  !=============================================================================
+  ! Threaded Opacity
+  !=============================================================================
+  FUNCTION hop_opacity_omp(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
+                           line_scat, nthreads) RESULT(status) BIND(c, name='hop_opacity_omp')
+    integer(c_int), value :: nlam, include_absmet, include_llist, line_scat, nthreads
+    real(c_double), intent(in) :: lam(*)
+    real(c_float), intent(inout), target :: chi(*), scat(*)
+    real(c_double), value :: dlam
+    integer(c_int) :: status
+
+    type(spectrum_type) :: sp
+    real(4), pointer, contiguous :: chi4(:,:,:,:), scat4(:,:,:,:)
+    real(8), allocatable :: lam8(:), llam(:)
+    integer :: n
+
+    real(4), dimension(:,:,:,:), allocatable, target :: bet, sig
+    real(4), dimension(:,:,:,:), allocatable :: ehat, chi_scat
+    real(4), dimension(:,:,:,:,:), allocatable :: one_m_eps
+    logical :: do_absmet, do_llist, do_split, sorted
+    real(8) :: dl
+    integer :: i, j, k, f, nf, m(3)
+    real(4) :: s
+    integer :: nch_l, nch_c, nthr, w, i0, i1
+
+    status = 0
+    n = hop_get_n()
+    if (n < 1 .or. nlam < 1) then
+      call fail('hop_opacity_omp: no state loaded, or nlam < 1', 3, status)
+      return
+    end if
+
+#ifdef _OPENMP
+    if (nthreads > 0) call omp_set_num_threads(nthreads)
+    nthr = omp_get_max_threads()
+#else
+    nthr = 1
+#endif
+    nch_l = min(max(1, n / MIN_CHUNK_CELLS), max(1, nthr * 64))
+    nch_c = min(max(1, n / MIN_CHUNK_CELLS), max(1, nthr * 4))
+#ifndef _OPENMP
+    nch_l = 1                   
+    nch_c = 1
+#endif
+
+    allocate(lam8(nlam))
+    lam8 = lam(1:nlam)
+    call sp%reset(lam=lam8)
+    sp%sorted = .true.
+    allocate(llam(nlam))
+    llam = log(sp%lam)
+    chi4 (1:nlam, 1:n, 1:1, 1:1) => chi (1:nlam*n)
+    scat4(1:nlam, 1:n, 1:1, 1:1) => scat(1:nlam*n)
+
+    m = shape(comp%temp)
+    if (m(1) /= n) then
+      call fail('hop_opacity_omp: state is not shaped (n,1,1)', 3, status)
+      return
+    end if
+    nf = size(chi4, 1)
+    dl = dlam
+    do_absmet = .false.
+    do_llist = (include_llist /= 0) .and. comp%ll_initialised
+    do_split = (line_scat /= 0)
+    sorted = .true.
+
+    allocate(bet, mold=chi4)
+    allocate(sig, mold=chi4)
+    if (do_llist) then
+      allocate(ehat, mold=chi4)
+      if (do_split) then
+        allocate(chi_scat, mold=chi4)
+        allocate(one_m_eps(nf, m(1), m(2), m(3), 2))
+      endif
+    endif
+
+    ! --- everything that precedes the line opacity, over cell chunks ----------
+    !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
+    do w = 1, nch_c
+      call chunk_range(w, nch_c, n, i0, i1)
+      if (i1 < i0) cycle
+      call comp%boltzmann_factor(sp, bet(:,i0:i1,:,:), comp%temp(i0:i1,:,:))
+      call comp%continuum_opacities(sp, chi4, sigma=sig, beta=bet, sorted=sorted, i0=i0, i1=i1)
+      if (do_llist) then
+        ehat(:,i0:i1,:,:) = chi4(:,i0:i1,:,:)
+        if (do_split) then
+          chi_scat(:,i0:i1,:,:) = 0
+          call compute_epsilon_stage(1, sp%nu, comp%temp(i0:i1,:,:), comp%ne(i0:i1,:,:), one_m_eps(:,i0:i1,:,:,1))
+          call compute_epsilon_stage(2, sp%nu, comp%temp(i0:i1,:,:), comp%ne(i0:i1,:,:), one_m_eps(:,i0:i1,:,:,2))
+        endif
+      endif
+    end do
+    !$omp end parallel do
+
+    if (do_absmet) call comp%add_absmet_opacities(sp, chi4, bet, sigma=sig, split=do_split)
+
+    ! --- line opacity --------------------------------------------------------
+    if (do_llist) then
+      if (do_split) then
+        !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
+        do w = 1, nch_l
+          call chunk_range(w, nch_l, n, i0, i1)
+          if (i1 < i0) cycle
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1, llam_in=llam)
+        end do
+        !$omp end parallel do
+      else
+        !$omp parallel do schedule(dynamic) default(shared) private(w, i0, i1)
+        do w = 1, nch_l
+          call chunk_range(w, nch_l, n, i0, i1)
+          if (i1 < i0) cycle
+          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, i0=i0, i1=i1, llam_in=llam)
+        end do
+        !$omp end parallel do
+      endif
+    endif
+
+    !$omp parallel do collapse(3) schedule(static) default(shared) private(f, s)
+    do k=1, m(3)
+      do j=1, m(2)
+        do i=1, m(1)
+          if (do_llist) then
+            if (do_split) then
+              do f=1, nf
+                s = sig(f,i,j,k) + chi_scat(f,i,j,k)
+                chi4 (f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) + s
+                scat4(f,i,j,k) = s
+              end do
+            else
+              do f=1, nf
+                s = sig(f,i,j,k)
+                chi4 (f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) + s
+                scat4(f,i,j,k) = s
+              end do
+            endif
+          else
+            do f=1, nf
+              s = sig(f,i,j,k)
+              chi4 (f,i,j,k) = chi4(f,i,j,k) * (1 - bet(f,i,j,k)) + s
+              scat4(f,i,j,k) = s
+            end do
+          endif
+        end do
+      end do
+    end do
+    !$omp end parallel do
+
+  CONTAINS
+    !> Cell range [i0, i1] of chunk w of nch over n cells, balanced to +-1 cell.
+    !> Empty (i1 < i0) when there are fewer cells than chunks.
+    PURE SUBROUTINE chunk_range(w, nch, n, i0, i1)
+      integer, intent(in)  :: w, nch, n
+      integer, intent(out) :: i0, i1
+      integer :: base, rem
+      !-------------------------------------------------------------------------
+      base = n / nch
+      rem  = mod(n, nch)
+      i0 = (w-1)*base + min(w-1, rem) + 1
+      i1 =  w   *base + min(w,   rem)
+    END SUBROUTINE chunk_range
+  END FUNCTION hop_opacity_omp
 
   !-----------------------------------------------------------------------------
   ! Read one line-list file into the master instance, keeping only lines inside

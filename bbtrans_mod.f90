@@ -13,6 +13,7 @@ MODULE bbtrans_mod
     real(dp) :: lam_air
     integer :: nnu ! number of frequencies in the line
     real(dp) :: ga=0, gw1=0, gw2=0, gw3=0, gq=0, gv=0 ! line broadening (damping) constants
+    real(4) :: vdw_ratio=0 ! Lindholm vdW shift/HWHM ratio d/w (see prepare_VanderWaals)
     real(dp) :: ga_in=0, gq_in=0, gv_in=0 ! input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
     real(dp) :: Aji, Aij, Bji, Bij ! Einstein coefficients, Bij is the
@@ -43,7 +44,14 @@ MODULE bbtrans_mod
   integer, save :: count1, count2, count3, count4, count5, count6
   logical, public :: disable_stark=.false., disable_vdw=.false., disable_ga=.false.
   logical, public :: ga_fallback=.false.
+  ! Lindholm van der Waals pressure line shift: a global scale on the per-line
+  ! impact-theory ratio d/w = tan(pi*alpha/2), built from each line's width velocity
+  ! parameter alpha by prepare_VanderWaals and stored per line (vdw_ratio here,
+  ! ll%vdw_ratio in linelist_mod). vdw_shift=1.0 applies the full physical (red-shifted)
+  ! ratio; 0 = neglected (default, reproduces the pre-shift synthesis).
+  real(4), public :: vdw_shift=0.0
   real(4), public, save :: tolerance=1e-4
+  real(4), public, save :: line_reject_frac=0.0
   real(4), parameter :: pqs  = 1.128379167  ! 2./pi**0.5
   real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3
 
@@ -284,6 +292,7 @@ contains
     ! compute van der waals broadening due to hydrogen
     ! following Barklem
     self%unsold = .false.
+    self%vdw_ratio = 0
     if(gv >= 20.0) then
       sigma = barklem*int(gv)
       alpha = gv - int(gv)
@@ -293,8 +302,13 @@ contains
 
       self%gw2 = 0.5*(1 - alpha)
       self%gw1 = balfac * sigma * 10**(-12*self%gw2)
+      ! Lindholm shift/HWHM ratio for an effective inverse-power interaction:
+      ! d/w = tan(pi*alpha/2). The clamp guards against pathological alpha (near 1,
+      ! where the tangent blows up).
+      self%vdw_ratio = min(tan(0.5*pi * min(max(alpha, 0.02_dp), 0.96_dp)), 3.0_dp)
     elseif (.not. is_mol) then ! cannot use Unsold for molecules
       self%unsold = .true.
+      self%vdw_ratio = 0.7265 ! pure van der Waals (p=6, alpha=0.4) -> tan(0.2*pi)
       if (gv < -20.0) then
         ! recipe c6 SIU
         c625 = 10**(0.4 * gv)
@@ -323,7 +337,7 @@ contains
     self%gw1 = self%gw1 * over_4pi / self%nu0
     if (disable_vdw) then
       self%unsold = .true.
-      self%gw1 = 0
+      self%gw1 = 0    ! vdw_ratio is then irrelevant: it multiplies a zero vdW width
     endif
   END SUBROUTINE prepare_VanderWaals
   !------------------------------------------------------------------------------------

@@ -9,7 +9,9 @@ int hop_init_linelist (const char *linelist_file, double dlam, int nlam, const d
 int hop_keep_species (const char *name);
 int hop_last_error (char *buf, int buflen);
 int hop_load_state (int n, const double *temp, double *ne, const double *rho, float vmic, int use_rho, int use_ne);
+int hop_omp_release ();
 int hop_opacity (int nlam, const double *lam, float *chi, float *scat, int include_absmet, int include_llist, double dlam, int line_scat);
+int hop_opacity_omp (int nlam, const double *lam, float *chi, float *scat, int include_absmet, int include_llist, double dlam, int line_scat, int nthreads);
 int hop_option_names (char *buf, int buflen);
 int hop_scattering (int nlam, const double *lam, float *sig);
 int hop_set_option (const char *name, const char *value);

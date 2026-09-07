@@ -171,10 +171,11 @@ contains
   end FUNCTION linear_weight
 
   !===============================================================================
-  SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield)
-    class(bftrans_type) :: self
+  SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, &
+                         ne, nhe, shield, i0, i1)
+    class(bftrans_type), target :: self
     class(level_type), pointer :: lvl
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
+    real(4), dimension(:,:,:,:), intent(inout) :: chi
     real(dp), intent(in), dimension(:,:,:), target :: temp, teta
     real(dp), intent(inout), dimension(:,:,:) :: fakt
     real(dp), intent(in), dimension(:) :: lam
@@ -183,20 +184,30 @@ contains
     logical, dimension(:), intent(in) :: quad
     real(dp), dimension(:,:), intent(in) :: lagrange
     real(dp), intent(in), dimension(:,:,:), optional :: ne, nhe, shield
+    integer, intent(in), optional :: i0, i1
     real(dp), dimension(:,:,:), pointer :: newt
     real(dp), dimension(:), allocatable :: ab, lam3
-    real(dp), dimension(:,:), allocatable, target :: pvt_xkap
+    real(dp), dimension(:,:), pointer, contiguous :: pvt_xkap
     real(dp), dimension(:,:), pointer :: xkap
     real(dp), dimension(3,self%ntt-1) :: dtdt
     real(dp), dimension(self%ntt-1) :: dtdt1
     real(dp) :: ab1, fakt1, t, diff(3), w(3), t3(3), dt, a, b, y1,y2,y3
     real(dp), dimension(self%nnu) :: yy
     real(dp), dimension(self%ntt) :: tt
-    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j1, j2, j3
+    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j1, j2, j3, xlo, xhi, mem_offset
     logical :: skip, do_log, do_exp, in_bounds, quadratic
     integer, save :: itimer1=0, itimer2=0, itimer3=0, itimer4=0, itimer5=0
     !---------------------------------------------------------------------------
     nx = size(temp, 1)
+    xlo = 1; xhi = nx
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
+    mem_offset = 0
+    if (size(chi, 2) == xhi - xlo + 1) then
+      mem_offset = xlo - 1                 ! chunk-local buffer: its cell 1 is xlo
+    else if (size(chi, 2) /= nx) then
+      error stop 'interp_xkap: chi is neither whole-tile nor the given cell range'
+    end if
     ny = size(temp, 2)
     nz = size(temp, 3)
     allocate(ab(fs:fe))
@@ -208,10 +219,10 @@ contains
       do_exp = .false.
       do_log = .false.
       if (self%ilogt) then
-        allocate(pvt_xkap, source=self%log_xkap)
+        pvt_xkap => self%log_xkap
         do_exp = .not. self%ilogl
       else
-        allocate(pvt_xkap, source=self%xkap)
+        pvt_xkap => self%xkap
         do_log = self%ilogl
       endif
 
@@ -240,7 +251,7 @@ contains
 
       do z=1, nz
         do y=1, ny
-          do x=1, nx
+          do x=xlo, xhi
             t = temp(x,y,z)
             in_bounds = .true.
             quadratic = .false.
@@ -333,7 +344,7 @@ contains
               endif
 
               fakt1 = fakt(x,y,z)
-              chi(fs:fe,x,y,z) = chi(fs:fe,x,y,z) + fakt1*ab(fs:fe)
+              chi(fs:fe,x-mem_offset,y,z) = chi(fs:fe,x-mem_offset,y,z) + fakt1*ab(fs:fe)
             endif
           end do
         end do
@@ -368,16 +379,18 @@ contains
 
       if (H_occupation_probability .and. trim(self%key) == 'H BF') then
         lvl => self%ion%levels(self%k)
-        lvl%i = self%k
         call trace%begin('wcalc2', itimer=itimer3)
-        call wcalc2(lvl, chi, lam(fs:fe), ab, self%ion%n, nhe, ne, shield)
+        call wcalc2(lvl, chi(fs:fe, xlo-mem_offset:xhi-mem_offset, :, :), &
+                    lam(fs:fe), ab(fs:fe), self%ion%n(xlo:xhi,:,:), &
+                    nhe(xlo:xhi,:,:), ne(xlo:xhi,:,:), shield(xlo:xhi,:,:), &
+                    wocc=lvl%w(xlo:xhi,:,:), nlvl=lvl%n(xlo:xhi,:,:))
         call trace%end(itimer3)
       else
         do z=1, nz
           do y=1, ny
-            do x=1, nx
+            do x=xlo, xhi
               do f=fs,fe
-                chi(f,x,y,z) = chi(f,x,y,z) + ab(f)*fakt(x,y,z)
+                chi(f,x-mem_offset,y,z) = chi(f,x-mem_offset,y,z) + ab(f)*fakt(x,y,z)
               end do
             end do
           end do
@@ -388,65 +401,75 @@ contains
   END SUBROUTINE interp_xkap
 
   !===============================================================================
-  SUBROUTINE absorption_factor(self, e_kT, teta, pe, dxi, fakt)
+  SUBROUTINE absorption_factor(self, e_kT, teta, pe, dxi, fakt, i0, i1)
     class(bftrans_type), intent(in) :: self
     class(particle_type), pointer :: ion
     real(dp), dimension(:,:,:), intent(in) :: e_kT, teta, pe, dxi
-    real(dp), dimension(:,:,:), intent(out) :: fakt
+    real(dp), dimension(:,:,:), intent(inout) :: fakt
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:,:,:), allocatable :: h1
     integer, dimension(:,:,:), allocatable :: nniv
     real(dp) :: scalar
+    integer :: lo, hi
     integer :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin('absorption_factor', itimer=itimer)
     ion => self%ion
+    lo = 1; hi = size(fakt, 1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    associate (fk   => fakt(lo:hi,:,:), ekt => e_kT(lo:hi,:,:), &
+               pev  => pe  (lo:hi,:,:), dxv => dxi (lo:hi,:,:), &
+               nion => ion%n(lo:hi,:,:))
     select case(trim(self%key))
      case('H- BF')
-      fakt = ion%n
+      fk = nion
      case('H- FF', 'H2-', 'HE-')
-      fakt = ion%n * pe
+      fk = nion * pev
      case('H BF')
       if (.not. H_occupation_probability) then
         scalar = 2.0898E-26 / (2*self%k**5)
-        fakt = scalar * ion%levels(self%k)%n
+        fk = scalar * ion%levels(self%k)%n(lo:hi,:,:)
       endif
      case('H FF')
       !fakt = 2.0898E-26 / 2 * ion%part * ion%n * exp(-31.30364*teta + 2.3026*dxi*teta) / (31.30364*teta)
-      fakt = exp(-e_kT*(ion%xion - dxi) - ion%part)
-      fakt = 2.0898E-26 / (2*RYD*e_kT) * fakt * ion%n
+      fk = exp(-ekt*(ion%xion - dxv) - ion%part(lo:hi,:,:))
+      fk = 2.0898E-26 / (2*RYD*ekt) * fk * nion
      case('H+H', 'H+HE', 'H2+H', 'H2+H2', 'H2+HE')
-      fakt = ion%n * self%ion2%n
+      fk = nion * self%ion2%n(lo:hi,:,:)
      case('H2+')
-      fakt = 1d-40 * ion%n * self%ion2%n
+      fk = 1d-40 * nion * self%ion2%n(lo:hi,:,:)
      case default
       if (self%pedep) then
-        fakt = pe * ion%n
+        fk = pev * nion
         if (self%peach) then
-          fakt = (1d-40 / EE) * e_kT * fakt
+          fk = (1d-40 / EE) * ekt * fk
         endif
       elseif (self%molecular) then
-        fakt = ion%n * ion%awgt / 6.023d23
+        fk = nion * ion%awgt / 6.023d23
       elseif (self%regular) then
-        fakt = self%level%g * exp(-e_kT*self%level%xion - ion%part)
-        fakt = fakt * ion%n
+        fk = self%level%g * exp(-ekt*self%level%xion - ion%part(lo:hi,:,:))
+        fk = fk * nion
       endif
     end select
+    end associate
     call trace%end(itimer)
   END SUBROUTINE absorption_factor
 
   !===============================================================================
-  SUBROUTINE add_absorption(self, chi, lam, temp, e_kT, teta, pe, dxi, ne, nhe, shield, sorted)
-    class(bftrans_type), intent(in) :: self
+  SUBROUTINE add_absorption(self, chi, lam, temp, e_kT, teta, pe, dxi, ne, nhe, shield, sorted, i0, i1)
+    class(bftrans_type), intent(in), target :: self
     real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
     real(dp), dimension(:,:,:), intent(in) :: temp, e_kT, teta, pe, dxi
     real(dp), dimension(:,:,:), intent(in), optional :: ne, nhe, shield
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), intent(in) :: lam
     real(dp), dimension(:,:,:), allocatable :: fakt
     logical, optional :: sorted
     logical :: active
     real(dp) :: prev, post
     integer :: i,j,k,f,nf, m(2), p(4)=pp
-    integer :: fs, fe
+    integer :: fs, fe, lo, hi
     integer, dimension(:), allocatable :: iw
     logical, dimension(:), allocatable :: quad
     real(dp), dimension(:,:), allocatable :: lagrange
@@ -458,8 +481,11 @@ contains
     allocate(quad(nf))
     allocate(iw(nf), source=-1)
     allocate(lagrange(3,nf), source=0.d0)
+    lo = 1; hi = size(temp, 1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
     allocate(fakt, mold=temp)
-    fakt = huge(1d0)
+    fakt(lo:hi,:,:) = huge(1d0)
     if (.not. allocated(self%ion%n)) then
       stop 'add_absorption: ion%n not allocated'
     endif
@@ -468,8 +494,8 @@ contains
     if (active) then
       !if (nf > 1) prev = chi(p(1), p(2), p(3), p(4))
 
-      call self%absorption_factor(e_kT, teta, pe, dxi, fakt)
-      call self%interp_xkap(chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield)
+      call self%absorption_factor(e_kT, teta, pe, dxi, fakt, lo, hi)
+      call self%interp_xkap(chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, ne, nhe, shield, lo, hi)
 
       !if (nf > 1) then
       !  post = chi(p(1),p(2),p(3),p(4))

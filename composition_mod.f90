@@ -8,7 +8,7 @@ MODULE composition_mod
   USE level_mod, only: level_type, wcalc
   USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
-  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
+  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium, moleq_warn
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE line_types_mod, only: linelist_type
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
@@ -77,12 +77,13 @@ MODULE composition_mod
     procedure :: particle_by_id
     procedure :: trans_by_id
     procedure :: ion_by_id
-    procedure :: absorption
+    procedure :: boltzmann_factor
+    procedure :: continuum_opacities
+    procedure :: add_absmet_opacities
     procedure :: opacity
     procedure :: add_hrest
     procedure :: electron_scattering
     procedure :: rayleigh_scattering
-    procedure :: scattering
     procedure :: reassign_pointer
     procedure :: get_totn
     procedure :: compute_grams_per_hydrogen
@@ -111,7 +112,6 @@ MODULE composition_mod
   end type departure_pointer_t
 
   character(128), public, save :: exclude_elements='', only_elements=''
-  logical, public :: scattering_absorption=.true.
   ! feed the Hummer-Mihalas occupation-weighted H I partition function into the
   ! ionization and molecular equilibrium (pressure ionization consistent with
   ! the H_occupation_probability opacity treatment)
@@ -503,6 +503,7 @@ contains
 
     allocate(self%trans(nkomp))
     self%trans%verbose = self%verbose
+    moleq_warn = self%verbose > 0
 
     self%elements(1)%ions%in_opac = .true.
     self%elements(2)%ions%in_opac = .true.
@@ -1165,7 +1166,7 @@ contains
   ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
-                                     only_departures, one_m_eps, chi_scat)
+                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1181,32 +1182,45 @@ contains
     ! (last index 1=neutral incl. molecules, 2=ionized) and the accumulator the
     ! (1-eps)-weighted LTE line opacity is added to; hydrogen (AoS block) stays
     ! thermal
+    ! chi_scat must enter zeroed.  The kernels accumulate it in working units
+    ! (pre-stimulated-emission, like all_chi); with beta present it is converted
+    ! to physical 1/cm on the way out, so callers never see the raw form.
     real(4), intent(in),    dimension(:,:,:,:,:), optional :: one_m_eps
     real(4), intent(inout), dimension(:,:,:,:),   optional :: chi_scat
+    real(4), intent(in),    dimension(:,:,:,:),   optional :: beta
+    integer, intent(in), optional :: i0, i1
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
     real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
     real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
+    real(4), dimension(:,:,:), allocatable :: vmic_c
+    real(dp), dimension(:,:,:), allocatable :: dxi_c
     real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
     real(4), dimension(:,:,:,:), allocatable :: dummy_dep, logref
     real(4), dimension(:,:,:), pointer, contiguous :: vpr
     real(4), dimension(:,:,:), pointer :: bi, bj
-    real(8), dimension(:), allocatable :: llam
+    real(8), dimension(:), allocatable, target :: llam_mem
+    real(8), dimension(:), pointer :: llam
+    real(8), intent(in), dimension(:), optional, target :: llam_in
     real(4) :: log_tol_over_voigt_peak
-    integer :: i, j, k, l, f, f0, m(3), nf
+    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn
     logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
     call trace%begin ('composition_type%add_linelist_opacities2', itimer=itimer)
     m = shape(self%ne)
     nf = sp%nnu
-    allocate(tothi(m(1),m(2),m(3)))
+    lo = 1;  hi = m(1)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    nn = hi - lo + 1
+    allocate(tothi(nn,m(2),m(3)))
     allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
              ni, nj, mold=tothi)
-    allocate(chi_l, eta_l, mold=all_chi)
-    allocate(dummy_dep(m(1),m(2),m(3),1), source=0.)
+    allocate(chi_l(nf, nn, m(2), m(3)), eta_l(nf, nn, m(2), m(3)))
+    allocate(dummy_dep(1,1,1,1), source=0.)
     chi_l = 0.
     eta_l = 0.
 
@@ -1214,26 +1228,33 @@ contains
     skip_lte = .false.
     if (present(only_departures)) skip_lte = only_departures
     if (present(vproj)) then
-      vpr => vproj
+      allocate(vpr, source=vproj(lo:hi,:,:))
     else
       allocate(vpr, mold=tothi)
       vpr = 0
     endif
 
-    ne   = real(self%ne)
-    temp = real(self%temp)
-    e_kT = real(self%e_kT)
-    tothi = real(self%tothi)
-    stark_pe = real(self%stark_pe)
+    ne   = real(self%ne(lo:hi,:,:))
+    temp = real(self%temp(lo:hi,:,:))
+    e_kT = real(self%e_kT(lo:hi,:,:))
+    tothi = real(self%tothi(lo:hi,:,:))
+    stark_pe = real(self%stark_pe(lo:hi,:,:))
+    allocate(vmic_c, source=self%vmic(lo:hi,:,:))
+    allocate(dxi_c,  source=self%dxi(lo:hi,:,:))
 
-    allocate(llam(nf))
-    llam = log(sp%lam)
+    if (present(llam_in)) then
+      llam => llam_in
+    else
+      allocate(llam_mem(nf))
+      llam_mem = log(sp%lam)
+      llam => llam_mem
+    endif
 
     ! Precompute once here (shared by all particles); guard non-positive continuum.
-    allocate(logref, mold=all_chi)
+    allocate(logref(nf, nn, m(2), m(3)))
     log_tol_over_voigt_peak = log(tolerance / voigt_peak)
-    where (all_chi > 0.)
-      logref = log_tol_over_voigt_peak + log(all_chi)
+    where (all_chi(:, lo:hi, :, :) > 0.)
+      logref = log_tol_over_voigt_peak + log(all_chi(:, lo:hi, :, :))
     elsewhere
       logref = -huge(1.)
     end where
@@ -1244,10 +1265,10 @@ contains
     call get_departure_coefficients(ion, dep)
     if (ion%in_linelist .and. ion%nline > 0 .and. &
         .not. (skip_lte .and. .not. associated(dep))) then
-      fo = self%fo
-      vbar2 = self%vbar2h
-      t3nhe = self%t3nhe
-      inv_df = element%inverse_doppler_factor(temp, self%vmic)
+      fo = self%fo(lo:hi,:,:)
+      vbar2 = self%vbar2h(lo:hi,:,:)
+      t3nhe = self%t3nhe(lo:hi,:,:)
+      inv_df = element%inverse_doppler_factor(temp, self%vmic(lo:hi,:,:))
 
       do l=1, ion%nline
         line => ion%line(l)
@@ -1258,11 +1279,11 @@ contains
           line%i = find_closest(dep%ev, 100*ion%j + line%lower_ev)
           line%j = find_closest(dep%ev, 100*ion%j + line%lower_ev + H_E*line%nu0)
         endif
-        ni = ion%levels(line%i)%n
-        nj = ion%levels(line%j)%n
+        ni = ion%levels(line%i)%n(lo:hi,:,:)
+        nj = ion%levels(line%j)%n(lo:hi,:,:)
         if (H_occupation_probability) then
-          ni = ni * ion%levels(line%j)%w
-          nj = nj * ion%levels(line%j)%w
+          ni = ni * ion%levels(line%j)%w(lo:hi,:,:)
+          nj = nj * ion%levels(line%j)%w(lo:hi,:,:)
         endif
         do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
         if (do_nlte) then
@@ -1270,7 +1291,7 @@ contains
           bj => dep%mem(:,:,:,line%j)
         endif
         call add_h_opacities(line, f0, sp%nu, vpr, inv_df, temp, &
-          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte)
+          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte, lo, hi)
       end do
     endif
 
@@ -1288,15 +1309,29 @@ contains
 
     do k=1, m(3)
       do j=1, m(2)
-        do i=1, m(1)
+        do i=lo, hi
+          io = i - lo + 1
           do f=1, nf
-            all_eta(f,i,j,k) = all_eta(f,i,j,k) + eta_l(f,i,j,k)
-            all_chi(f,i,j,k) = all_chi(f,i,j,k) + chi_l(f,i,j,k)
+            all_eta(f,i,j,k) = all_eta(f,i,j,k) + eta_l(f,io,j,k)
+            all_chi(f,i,j,k) = all_chi(f,i,j,k) + chi_l(f,io,j,k)
           end do
         end do
       end do
     end do
-    if (.not. present(vproj)) deallocate(vpr)
+    deallocate(vpr)
+
+    ! working units -> physical extinction for the scattering component
+    if (present(chi_scat) .and. present(beta)) then
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=lo, hi
+            do f=1, nf
+              chi_scat(f,i,j,k) = chi_scat(f,i,j,k) * (1 - beta(f,i,j,k))
+            end do
+          end do
+        end do
+      end do
+    endif
 
     if (ll_profile) then
       print '(a,3(a,i0),a,f7.2,a,f6.2)', 'll_profile (cumulative):', &
@@ -1340,20 +1375,21 @@ contains
       ! work arrays and the departure lookup, and hand the resolved dep arrays in.
       if (associated(dep)) then
         ! NLTE species: departure-coefficient source, no scattering split
-        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
-          .true., sp%equidistant)
+          .true., sp%equidistant, i0=lo, i1=hi)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
-        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
-          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat)
+          one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
+          i0=lo, i1=hi)
       else
-        call add_particle_opacity(ptc, temp, self%vmic, self%dxi, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
-          .false., sp%equidistant)
+          .false., sp%equidistant, i0=lo, i1=hi)
       endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2
@@ -1521,7 +1557,10 @@ contains
     allocate(self%chi500(m(1),m(2),m(3)))
     chi500(1:1,1:m(1),1:m(2),1:m(3)) => self%chi500
     call ref_sp%reset(lam=[air2vac(ref_lam)])
-    call self%absorption(ref_sp, chi500, sorted=.true.)
+    ! chi500 is the *total* extinction: it is the tau500 scale and the
+    ! normalisation of every sampled opacity table
+    call self%opacity(ref_sp, chi500, include_absmet=.false., include_llist=.false., &
+      sorted=.true.)
 
     if (debug_opac > 0) then
       nudebug = HZ_TO_AA / air2vac(debug_opac)
@@ -2085,127 +2124,278 @@ contains
     end do
   END SUBROUTINE compute_damping_aux
 
-  !===============================================================================
-  SUBROUTINE absorption(self, sp, chi, beta, include_absmet, sorted)
-    !use phys_mod, only:planck
+  !=============================================================================
+  ! Boltzmann factor beta = exp(-h nu / kT), clamped to the smallest positive
+  ! real(4) so that ehat = eta/beta can never divide by zero.  beta is the one
+  ! quantity that converts between physical extinction and the working
+  ! (xhat, ehat) pair, so every routine below takes it as an argument rather
+  ! than recomputing the exponential.
+  !=============================================================================
+  SUBROUTINE boltzmann_factor(self, sp, beta, temp)
+    class(composition_type), target :: self
+    class(spectrum_type), intent(in) :: sp
+    real(4), dimension(:,:,:,:), contiguous, intent(out) :: beta
+    real(dp), dimension(:,:,:), intent(in), optional, target :: temp
+    real(dp), dimension(:,:,:), pointer :: t
+    integer :: x, y, z, f, nf, m(3)
+    real(8) :: hk_T
+    !---------------------------------------------------------------------------
+    if (present(temp)) then
+      t => temp
+    else
+      t => self%temp
+    endif
+    m = shape(t)
+    nf = size(beta, 1)
+    if (size(beta, 2) /= m(1)) &
+      error stop 'boltzmann_factor: beta and temp span different cells'
+    ! h/(k T) is frequency-independent: hoist the division out of the frequency
+    ! loop so the inner loop is one multiply plus the exponential.
+    do z=1, m(3)
+      do y=1, m(2)
+        do x=1, m(1)
+          hk_T = h_k / t(x,y,z)
+          do f=1, nf
+            beta(f,x,y,z) = max(real(exp(-sp%nu(f) * hk_T), 4), tiny(1.0))
+          end do
+        end do
+      end do
+    end do
+  END SUBROUTINE boltzmann_factor
+
+  !=============================================================================
+  ! OPACITY PIPELINE
+  !
+  ! Three primitives -- continuum_opacities, add_absmet_opacities and
+  ! add_linelist_opacities2 -- accumulate onto the same two buffers, and
+  ! `opacity` below is a thin wrapper that runs all three for the callers that
+  ! want one call.  The anisotropic rt_patch foreground drives the same
+  ! primitives directly, interleaved with its bound-free/bound-bound kernels, so
+  ! both paths share one implementation.
+  !
+  ! Two accumulators, in two different unit systems, deliberately:
+  !
+  !   xhat, ehat  working units.  xhat = chi + eta, ehat = eta/beta, so that a
+  !               line adds R*b_i to xhat and R*b_j to ehat -- two positive
+  !               population-weighted sums, with the subtractive
+  !               chi = xhat - ehat*beta formed once at the end instead of per
+  !               line.  In LTE the two coincide, xhat = ehat = chi/(1-beta),
+  !               and that is also the pre-stimulated-emission accumulation.
+  !
+  !   sigma       coherent scattering, in physical 1/cm.  It NEVER enters the
+  !               (xhat, ehat) transform: a pure scatterer has no thermal source
+  !               of its own, and its emission depends on Jnu, which the
+  !               transfer solution supplies later.  Keeping it a separate,
+  !               purely additive accumulator is what makes
+  !                   sigma <= chi_total = chi_true + sigma
+  !               structural rather than something to clamp.
+  !=============================================================================
+  ! Continuum true absorption in the LTE working form, plus the continuum
+  ! scattering opacity:
+  !
+  !   xhat = ehat = chi_true_cont / (1 - beta)   [working units]
+  !   sigma       = electron + Rayleigh          [1/cm]
+  !
+  ! The working form is the *cheaper* output, not the more expensive one: the
+  ! opacity tables do not carry stimulated emission, so their raw sum already is
+  ! xhat.  Only transitions flagged istim arrive stim-corrected and have to be
+  ! lifted by 1/(1-beta); they go through a separate buffer so the dominant term
+  ! never round-trips through a small 1-beta.
+  !=============================================================================
+  SUBROUTINE continuum_opacities(self, sp, xhat, sigma, beta, sorted, i0, i1)
     class(composition_type), target :: self
     class(spectrum_type), intent(in) :: sp
     class(bftrans_type), pointer :: trans
     class(ion_type), pointer :: HeI
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
-    real(4), dimension(:,:,:,:), contiguous, intent(in), optional :: beta
-    real(dp), dimension(:), allocatable :: lam, hnu_e
-    logical, optional :: include_absmet, sorted
-    real(dp) :: xray2, epsln, stim
-    integer :: i, x, y, z, f, nf, nx, ny, nz
-    integer :: p(4)=pp, itimer=0, itimer2=0
-    logical :: ok
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: xhat
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma
+    real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta
+    logical, optional :: sorted
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
+    real(4), dimension(:,:,:,:), pointer, contiguous :: bet
+    real(4), dimension(:,:,:,:), allocatable, target :: bet_mem
+    real(4), dimension(:,:,:,:), allocatable :: tmp
+    logical :: any_istim
+    integer :: i, x, y, z, f, nf, nx, ny, nz, lo, hi, nn, boff
+    integer, save :: itimer=0
     !---------------------------------------------------------------------------
-    call trace%begin ('composition_type%absorption', itimer=itimer)
-    allocate(lam, hnu_e, mold=sp%nu)
+    call trace%begin ('composition_type%continuum_opacities', itimer=itimer)
     call self%ion_by_id('HE I', HeI)
-
     nx = size(self%temp, 1)
     ny = size(self%temp, 2)
     nz = size(self%temp, 3)
     nf = size(sp%nu, 1)
-    hnu_e = h_e * sp%nu
-    chi = 0
-    call self%add_hrest(chi, sp%lam)
-
-    ! add absorption from all tables, which do not include stimulated emission
-    do i=1, size(self%trans)
-      trans => self%trans(i)
-      if (.not. trans%istim) then
-        call trans%add_absorption(chi, sp%lam, self%temp, self%e_kT, self%teta, &
-          self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, sorted=sorted)
-      endif
-    end do
-
-    if (present(beta)) then
-      do z=1, nz
-        do y=1, ny
-          do x=1, nx
-            do f=1, nf
-              ! all continua above are multiplied by stim
-              !--------------------------------------------------------------------------------
-              !stim = 1. - exp(-28556.*self%teta/lam(f))
-              stim = 1. - beta(f,x,y,z)
-              chi(f,x,y,z) = chi(f,x,y,z) * stim
-            end do
-          end do
-        end do
-      end do
-    else
-      do z=1, nz
-        do y=1, ny
-          do x=1, nx
-            do f=1, nf
-              stim = 1. - exp(-hnu_e(f) * self%e_kT(x,y,z))
-              chi(f,x,y,z) = chi(f,x,y,z) * stim
-            end do
-          end do
-        end do
-      end do
+    lo = 1; hi = nx
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
+    nn = hi - lo + 1
+    if (size(xhat, 2) /= nx) error stop 'continuum_opacities: xhat must be whole-tile'
+    if (present(sigma)) then
+      if (size(sigma, 2) /= nx) error stop 'continuum_opacities: sigma must be whole-tile'
     endif
 
+    ! the tables below carry no stimulated emission, so their sum IS xhat = ehat.
+    xhat(:,lo:hi,:,:) = 0
+    call self%add_hrest(xhat, sp%lam, lo, hi)
+    any_istim = .false.
     do i=1, size(self%trans)
       trans => self%trans(i)
       if (trans%istim) then
-        call trans%add_absorption(chi, sp%lam, self%temp, self%e_kT, self%teta, &
-          self%pe, self%dxi, sorted=sorted)
+        any_istim = .true.
+      else
+        call trans%add_absorption(xhat, sp%lam, self%temp, self%e_kT, self%teta, &
+          self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, sorted=sorted, i0=lo, i1=hi)
       endif
     end do
 
-    if (scattering_absorption) then
-      call self%electron_scattering(chi)
-      call self%rayleigh_scattering(sp%lam, chi)
+    if (any_istim) then
+      boff = lo - 1
+      if (present(beta)) then
+        bet => beta
+        if (size(bet, 2) == nx) then
+          boff = 0
+        else if (size(bet, 2) /= nn) then
+          error stop 'continuum_opacities: beta is neither whole-tile nor chunk-local'
+        endif
+      else
+        allocate(bet_mem(nf, nn, ny, nz))
+        call self%boltzmann_factor(sp, bet_mem, self%temp(lo:hi,:,:))
+        bet => bet_mem
+      endif
+      allocate(tmp(nf, nn, ny, nz))
+      tmp = 0
+      do i=1, size(self%trans)
+        trans => self%trans(i)
+        if (trans%istim) then
+          call trans%add_absorption(tmp, sp%lam, self%temp, self%e_kT, self%teta, &
+            self%pe, self%dxi, ne=self%ne, nhe=HeI%n, shield=self%shield, &
+            sorted=sorted, i0=lo, i1=hi)
+        endif
+      end do
+      do z=1, nz
+        do y=1, ny
+          do x=lo, hi
+            do f=1, nf
+              xhat(f,x,y,z) = xhat(f,x,y,z) &
+                + tmp(f,x-lo+1,y,z) / (1 - bet(f,x-boff,y,z))
+            end do
+          end do
+        end do
+      end do
+      deallocate(tmp)
     endif
 
-    if (present(include_absmet)) then
-      if (osmet%initialised .and. include_absmet) then
-        call trace%begin('osmet%add_line_opacities', itimer=itimer2)
-        call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi)
-        call trace%end(itimer2)
-      endif
+    if (present(sigma)) then
+      sigma(:,lo:hi,:,:) = 0
+      call self%electron_scattering(sigma, lo, hi)
+      call self%rayleigh_scattering(sp%lam, sigma, lo, hi)
     endif
 
     call trace%end(itimer)
-  END SUBROUTINE absorption
+  END SUBROUTINE continuum_opacities
 
-  !===============================================================================
-  ! Total extinction chi and its scattering part scat, both [1/cm], on the
-  ! spectrum sp -- the one place where the continuum, the sampled metal-line
-  ! (absmet) and the line-list opacities are combined:
+  !=============================================================================
+  ! Add the sampled metal-line (absmet) opacity to the same two accumulators.
+  ! osmet%add_line_opacities returns *physical* extinction, so its thermal part
+  ! is lifted into the working form by 1/(1-beta):
   !
-  !   chi  = continuum (electron + Rayleigh included when scattering_absorption)
-  !          + absmet (include_absmet) + line list (include_llist)
-  !   scat = electron + Rayleigh, plus -- when line_scat -- the scattering
-  !          fraction (1-eps) of the absmet and of the LTE line-list opacity.
-  !          Lines carrying departure coefficients are left out: their
-  !          scattering lives in the NLTE rate equations.
+  !   xhat  += eps*chi_met/(1 - beta)      sigma += (1-eps)*chi_met
   !
-  ! scat always holds the full electron+Rayleigh pair, also when
-  ! scattering_absorption is off and chi therefore does not contain it -- that
-  ! is what save_opac_table has always written into the 'scat' table.
+  ! split governs the eps split, and follows line_scattering just as it does for
+  ! the line list -- absmet opacities *are* line opacities.  With split=.false.
+  ! metal lines are pure absorbers (eps = 1), which is what line_scattering=F
+  ! means everywhere else in the code.
+  !=============================================================================
+  SUBROUTINE add_absmet_opacities(self, sp, xhat, beta, sigma, split)
+    class(composition_type), target :: self
+    class(spectrum_type), intent(in) :: sp
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: xhat
+    real(4), dimension(:,:,:,:), contiguous, intent(in) :: beta
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma
+    logical, intent(in), optional :: split
+    real(4), dimension(:,:,:,:), allocatable :: chi_met, epsln
+    logical :: do_split
+    integer :: i, j, k, f, nf, m(3)
+    integer, save :: itimer=0
+    !---------------------------------------------------------------------------
+    if (.not. osmet%initialised) return
+    call trace%begin ('composition_type%add_absmet_opacities', itimer=itimer)
+    m = shape(self%temp)
+    nf = size(xhat, 1)
+    do_split = .false.
+    if (present(split)) do_split = split .and. present(sigma)
+
+    allocate(chi_met, mold=xhat)
+    chi_met = 0
+    call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi_met)
+
+    if (do_split) then
+      allocate(epsln, mold=xhat)
+      call osmet%compute_epsilon(sp%nu, self%temp, self%ne, epsln)
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              xhat (f,i,j,k) = xhat (f,i,j,k) &
+                + epsln(f,i,j,k)*chi_met(f,i,j,k) / (1 - beta(f,i,j,k))
+              sigma(f,i,j,k) = sigma(f,i,j,k) &
+                + (1 - epsln(f,i,j,k))*chi_met(f,i,j,k)
+            end do
+          end do
+        end do
+      end do
+      deallocate(epsln)
+    else
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              xhat(f,i,j,k) = xhat(f,i,j,k) + chi_met(f,i,j,k) / (1 - beta(f,i,j,k))
+            end do
+          end do
+        end do
+      end do
+    endif
+    deallocate(chi_met)
+    call trace%end(itimer)
+  END SUBROUTINE add_absmet_opacities
+
+  !=============================================================================
+  ! One call over the whole pipeline, for the callers that want the finished
+  ! numbers: the standalone/Python API, chi500, and the opacity-table builders.
   !
-  ! The line kernels accumulate in the working (xhat, ehat) units, so chi is
-  ! transformed in and back out around add_linelist_opacities2; chi_scat comes
-  ! back in those units too, hence the (1-beta) factor when it enters scat.
-  !===============================================================================
+  !   chi   total extinction chi_true + scat   [1/cm]   (disjoint=.false., default)
+  !         true absorption alone              [1/cm]   (disjoint=.true.)
+  !   scat  electron + Rayleigh, plus -- when line_scat -- the (1-eps) fraction
+  !         of the absmet and of the LTE line-list opacity.  Lines carrying
+  !         departure coefficients are left out: their scattering lives in the
+  !         NLTE rate equations.
+  !
+  ! The default keeps the published meaning of hop.opacity() and of the
+  ! opa/scat tables: chi is the total, scat the scattering part *of* it.
+  ! disjoint=.true. is for the sampled background table, where tabulating the
+  ! two components separately and summing after interpolation is what makes the
+  ! interpolated albedo scat/chi_total <= 1 by construction.
+  !
+  ! beta is optional; supply it (the rt path has it stored) to skip nf*ncell
+  ! exponentials.
+  !=============================================================================
   SUBROUTINE opacity (self, sp, chi, scat, include_absmet, include_llist, dlam, &
-                      sorted, line_scat, vproj, departures)
+                      sorted, line_scat, vproj, departures, beta, disjoint)
     class(composition_type), target :: self
     class(spectrum_type), intent(in) :: sp
     real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
-    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: scat
-    logical, optional :: include_absmet, include_llist, sorted, line_scat
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional, target :: scat
+    logical, optional :: include_absmet, include_llist, sorted, line_scat, disjoint
     real(8), intent(in), optional :: dlam
     real(4), dimension(:,:,:), intent(in), contiguous, target, optional :: vproj
     class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
-    real(4), dimension(:,:,:,:), allocatable :: eta, beta, chi_met, epsln, chi_scat
+    real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta
+    real(4), dimension(:,:,:,:), pointer, contiguous :: bet, sig
+    real(4), dimension(:,:,:,:), allocatable, target :: bet_mem, sig_mem
+    real(4), dimension(:,:,:,:), allocatable :: ehat, chi_scat
     real(4), dimension(:,:,:,:,:), allocatable :: one_m_eps
-    logical :: do_absmet, do_llist, do_split
+    logical :: do_absmet, do_llist, do_split, do_disjoint
     real(8) :: dl
     integer :: i, j, k, f, nf, m(3)
     integer, save :: itimer=0
@@ -2222,134 +2412,85 @@ contains
     do_split = line_scattering
     if (present(line_scat)) do_split = line_scat
     do_split = do_split .and. present(scat)
+    do_disjoint = .false.
+    if (present(disjoint)) do_disjoint = disjoint .and. present(scat)
 
-    ! continuum; absmet is handled below so that its scattering part can be split
-    call self%absorption(sp, chi, sorted=sorted)
-
+    if (present(beta)) then
+      bet => beta
+    else
+      allocate(bet_mem, mold=chi)
+      call self%boltzmann_factor(sp, bet_mem)
+      bet => bet_mem
+    endif
     if (present(scat)) then
-      scat = 0
-      call self%electron_scattering(scat)
-      call self%rayleigh_scattering(sp%lam, scat)
+      sig => scat
+    else
+      allocate(sig_mem, mold=chi)
+      sig => sig_mem
     endif
 
-    if (do_absmet) then
-      if (do_split) then
-        allocate(chi_met, epsln, mold=chi)
-        chi_met = 0
-        call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi_met)
-        call osmet%compute_epsilon(sp%nu, self%temp, self%ne, epsln)
-        do k=1, m(3)
-          do j=1, m(2)
-            do i=1, m(1)
-              do f=1, nf
-                chi (f,i,j,k) = chi (f,i,j,k) + chi_met(f,i,j,k)
-                scat(f,i,j,k) = scat(f,i,j,k) + chi_met(f,i,j,k)*(1 - epsln(f,i,j,k))
-              end do
-            end do
-          end do
-        end do
-        deallocate(chi_met, epsln)
-      else
-        call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi)
-      endif
-    endif
+    ! chi is the working xhat from here until the single back-conversion below
+    call self%continuum_opacities(sp, chi, sigma=sig, beta=bet, sorted=sorted)
+    if (do_absmet) call self%add_absmet_opacities(sp, chi, bet, sigma=sig, split=do_split)
 
     if (do_llist) then
-      allocate(eta, beta, mold=chi)
+      allocate(ehat, mold=chi)
+      ehat = chi                       ! in LTE the continuum's two forms coincide
       if (do_split) then
         allocate(chi_scat, mold=chi)
         allocate(one_m_eps(nf, m(1), m(2), m(3), 2))
         chi_scat = 0
         call compute_epsilon_stage(1, sp%nu, self%temp, self%ne, one_m_eps(:,:,:,:,1))
         call compute_epsilon_stage(2, sp%nu, self%temp, self%ne, one_m_eps(:,:,:,:,2))
-      endif
-      ! chi -> (xhat, ehat), add the lines, then back to chi = xhat - ehat*beta
-      do k=1, m(3)
-        do j=1, m(2)
-          do i=1, m(1)
-            associate(c1=>chi(:,i,j,k), e1=>eta(:,i,j,k), b1=>beta(:,i,j,k), &
-                      xhat=>chi(:,i,j,k), ehat=>eta(:,i,j,k))
-              b1   = exp(-h_k * sp%nu / self%temp(i,j,k))
-              ehat = c1 / (1 - b1)
-              xhat = c1 + ehat*b1
-            end associate
-          end do
-        end do
-      end do
-      if (do_split) then
-        call self%add_linelist_opacities2(sp, chi, eta, dl, vproj, departures=departures, &
-          one_m_eps=one_m_eps, chi_scat=chi_scat)
-      else
-        call self%add_linelist_opacities2(sp, chi, eta, dl, vproj, departures=departures)
-      endif
-      do k=1, m(3)
-        do j=1, m(2)
-          do i=1, m(1)
-            associate(c1=>chi(:,i,j,k), e1=>eta(:,i,j,k), b1=>beta(:,i,j,k), &
-                      xhat=>chi(:,i,j,k), ehat=>eta(:,i,j,k))
-              e1 = ehat * b1
-              c1 = xhat - e1
-            end associate
-          end do
-        end do
-      end do
-      if (do_split) then
+        call self%add_linelist_opacities2(sp, chi, ehat, dl, vproj, departures=departures, &
+          one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet)
         do k=1, m(3)
           do j=1, m(2)
             do i=1, m(1)
               do f=1, nf
-                scat(f,i,j,k) = scat(f,i,j,k) + chi_scat(f,i,j,k)*(1 - beta(f,i,j,k))
+                sig(f,i,j,k) = sig(f,i,j,k) + chi_scat(f,i,j,k)
               end do
             end do
           end do
         end do
+      else
+        call self%add_linelist_opacities2(sp, chi, ehat, dl, vproj, departures=departures)
       endif
-    endif
-    call trace%end(itimer)
-  END SUBROUTINE opacity
-
-  !===============================================================================
-  SUBROUTINE scattering (self, sp, eta, Jnu, include_absmet)
-    class(composition_type), target :: self
-    class(spectrum_type), intent(in) :: sp
-    real(4), dimension(:,:,:,:), intent(inout) :: eta
-    real(4), dimension(:,:,:,:), intent(in) :: Jnu
-    logical, optional :: include_absmet
-    real(4), dimension(:,:,:,:), allocatable :: sumsca, epsln
-    real(4) :: bnu
-    integer :: f, i, j, k, n(4)
-    !---------------------------------------------------------------------------
-    n = shape(Jnu)
-    allocate(sumsca, mold=Jnu)
-    sumsca = 0
-    if (present(include_absmet)) then
-      if (osmet%initialised .and. include_absmet) then
-        allocate(epsln, mold=Jnu)
-        call osmet%compute_epsilon(sp%nu, self%temp, self%ne, epsln)
-        call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, sumsca)
-        do k=1, n(4)
-          do j=1, n(3)
-            do i=1, n(2)
-              do f=1, n(1)
-                sumsca(f,i,j,k) = sumsca(f,i,j,k) * (1 - epsln(f,i,j,k))
-              end do
+      ! (xhat, ehat) -> physical true absorption, once
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              chi(f,i,j,k) = chi(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k)
             end do
-          end do
-        end do
-      endif
-    endif
-    call self%electron_scattering(sumsca)
-    call self%rayleigh_scattering(sp%lam, sumsca)
-    do k=1, n(4)
-      do j=1, n(3)
-        do i=1, n(2)
-          do f=1, n(1)
-            eta(f,i,j,k) = eta(f,i,j,k) + sumsca(f,i,j,k) * Jnu(f,i,j,k)
           end do
         end do
       end do
-    end do
-  END SUBROUTINE scattering
+    else
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              chi(f,i,j,k) = chi(f,i,j,k) * (1 - bet(f,i,j,k))
+            end do
+          end do
+        end do
+      end do
+    endif
+
+    if (.not. do_disjoint) then
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              chi(f,i,j,k) = chi(f,i,j,k) + sig(f,i,j,k)
+            end do
+          end do
+        end do
+      end do
+    endif
+    call trace%end(itimer)
+  END SUBROUTINE opacity
 
   !===============================================================================
   SUBROUTINE get_totn(self, id, abund, totn, el, mol)
@@ -2650,23 +2791,27 @@ contains
   END SUBROUTINE overwrite_abundance
 
   !=========================================================================
-  SUBROUTINE add_hrest(self, chi, lam)
+  SUBROUTINE add_hrest(self, chi, lam, i0, i1)
     class(composition_type), target :: self
     class(ion_type), pointer :: HI
     real(4), dimension(:,:,:,:), intent(inout) :: chi
     real(dp), dimension(:), intent(in) :: lam
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: lam3
     real(dp) :: hrest, umc, fakt, e_kT, dxi
     real(dp), parameter :: nniv2 = 15.5**2
-    integer :: f, x,y,z
+    integer :: f, x,y,z, xlo, xhi
     integer :: p(4)=pp
     !---------------------------------------------------------------------
     call self%ion_by_id('H I', HI)
     allocate(lam3, mold=lam)
     lam3 = lam**3
+    xlo = 1; xhi = size(self%temp,1)
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
     do z=1, size(self%temp,3)
       do y=1, size(self%temp,2)
-        do x=1, size(self%temp,1)
+        do x=xlo, xhi
           e_kT = self%e_kT(x,y,z)
           dxi = self%dxi(x,y,z)
           fakt = exp(-e_kT*(HI%xion - dxi) - HI%part(x,y,z))
@@ -2688,16 +2833,20 @@ contains
   END SUBROUTINE add_hrest
 
   !=========================================================================
-  SUBROUTINE electron_scattering(self, chi)
+  SUBROUTINE electron_scattering(self, chi, i0, i1)
     class(composition_type), target :: self
     real(4), dimension(:,:,:,:), intent(inout) :: chi
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), parameter :: thomson = 8./3.*PI*(EC**2/(EM*CC**2))**2
     real(dp) :: els
-    integer :: f, x, y, z
+    integer :: f, x, y, z, lo, hi
     !---------------------------------------------------------------------
+    lo = 1; hi = size(chi, 2)
+    if (present(i0)) lo = i0
+    if (present(i1)) hi = i1
     do z=1, size(chi, 4)
       do y=1, size(chi, 3)
-        do x=1, size(chi, 2)
+        do x=lo, hi
           !els = 4.8206e-9 * self%pe / self%temp
           els = thomson * self%ne(x,y,z)
           chi(:,x,y,z) = chi(:,x,y,z) + els
@@ -2707,18 +2856,22 @@ contains
   END SUBROUTINE electron_scattering
 
   !=========================================================================
-  SUBROUTINE rayleigh_scattering(self, lam, chi)
+  SUBROUTINE rayleigh_scattering(self, lam, chi, i0, i1)
     class(composition_type), target :: self
     class(molec_type), pointer :: H2
     class(ion_type), pointer :: HI, HE
     real(dp), dimension(:), intent(in) :: lam
     real(4), dimension(:,:,:,:), intent(inout) :: chi
+    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: xray2, HeIscat
     real(dp) :: xr, ll, scalar, h2ray, rayh, rayh2, nHI, nH2, nHE
     logical :: do_H2
-    integer :: f, x, y, z
+    integer :: f, x, y, z, xlo, xhi
     !---------------------------------------------------------------------
     allocate(xray2, HeIscat,  mold=lam)
+    xlo = 1; xhi = size(chi, 2)
+    if (present(i0)) xlo = i0
+    if (present(i1)) xhi = i1
 
     ! rayleigh scattering
     call self%ion_by_id('H I', HI)
@@ -2739,7 +2892,7 @@ contains
 
     do z=1, size(chi, 4)
       do y=1, size(chi, 3)
-        do x=1, size(chi, 2)
+        do x=xlo, xhi
           nHI = HI%n(x,y,z)
           nHE = HE%n(x,y,z)
           if (do_H2) then
