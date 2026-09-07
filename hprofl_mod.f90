@@ -1,5 +1,6 @@
 MODULE hprofl_mod
-  USE bbtrans_mod, only: voigt_function2, bbtrans_type, disable_ga, disable_stark, disable_vdw
+  USE bbtrans_mod, only: bbtrans_type, disable_ga, disable_stark, disable_vdw
+  USE qlg, only: qlg_bot_phi          ! the one Voigt kernel; see linelist_mod's kernel note
   USE prec_mod, only: RYD
   USE const_mod
   USE interpol_mod, only: interp1d_sorted
@@ -189,7 +190,7 @@ contains
           nlo = ni(i,j,k)
           nup = nj(i,j,k)
 
-          ! we include the idf normalisation factor along with voigt_function2
+          ! we include the idf normalisation factor along with qlg_bot_phi
           ! as stark1 is normalised differently, therefore we do not multiply by idf here
           Rij = nlo * self%Bij
           if (do_nlte) then
@@ -333,7 +334,7 @@ contains
     !  Including fine structure
     do i=1, self%io
       vs = (q - self%dq(i)) * idf
-      xv = voigt_function2(a,vs) * idf
+      xv = qlg_bot_phi(a,vs) * idf
       phi = phi + self%wt(i)*xv
     end do
   END FUNCTION
@@ -388,7 +389,7 @@ contains
       vs = (q - self%dq(i)) * idf
       !  if INSIDE HFWID WE USE VOIGT FUNCTION WITH DOP, STARK AND LOR
       !  if OUTSIDE JUST ADD THE DOPPLER PART - REST IS ADDED LATER IN DETAIL
-      xv = voigt_function2(a,vs) * idf
+      xv = qlg_bot_phi(a,vs) * idf
       phi = phi + self%wt(i)*xv
     end do
 

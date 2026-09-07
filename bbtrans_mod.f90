@@ -4,6 +4,7 @@ MODULE bbtrans_mod
   USE op_math_mod, only: searchsorted, find_closest
   USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: find_closest_from_center
+  USE qlg, only: qlg_bot_phi          ! the one Voigt kernel; see the note below add_opacities
   implicit none
 
   type :: bbtrans_type
@@ -44,8 +45,6 @@ MODULE bbtrans_mod
   logical, public :: ga_fallback=.false.
   real(4), public, save :: tolerance=1e-4
   real(4), parameter :: pqs  = 1.128379167  ! 2./pi**0.5
-  real(4), parameter :: isqp = 0.5641895835 ! 1/pi**0.5
-  real(4), parameter :: ipi  = 0.3183098862 ! 1/pi
   real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3
 
 contains
@@ -131,7 +130,7 @@ contains
             ref = tolerance * cont(f0,i,j,k)
 
             vs = (nu(f0) - v) * idf_nu
-            phi = voigt_function2(a, vs)
+            phi = qlg_bot_phi(a, vs)
             lchi = phi * cchi
             leta = phi * ceta
             if (lchi > ref) then
@@ -144,7 +143,7 @@ contains
               f = f0+1
               do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
                 vs = (nu(f) - v) * idf_nu
-                phi = voigt_function2(a, vs)
+                phi = qlg_bot_phi(a, vs)
                 lchi = phi * cchi
                 leta = phi * ceta
                 chi(f,i,j,k) = chi(f,i,j,k) + lchi
@@ -156,7 +155,7 @@ contains
               lchi = ref
               do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
                 vs = (nu(f) - v) * idf_nu
-                phi = voigt_function2(a, vs)
+                phi = qlg_bot_phi(a, vs)
                 lchi = phi * cchi
                 leta = phi * ceta
                 chi(f,i,j,k) = chi(f,i,j,k) + lchi
@@ -177,302 +176,21 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
-  !DIR$ ATTRIBUTES FORCEINLINE :: voigt_function2
-  ELEMENTAL FUNCTION voigt_function2(as,vs) result(h)
-    !---------------------------------------------------------------------
-    !  computes a voigt function  h = h(a,v) / sqrt(pi)
-    !  a=gamma/(4*pi*dnud)   and  v=(nu-nu0)/dnud.  this  is  done after
-    !  traving (landolt-b\rnstein, p. 449).
-    !  coded by: kjell eriksson  (apr-1974). revised: (july-1975).
-    !---------------------------------------------------------------------
-    real(4), intent(in) :: as,vs
-    real(4) :: h, a
-    real(4) :: v,u,v2,v4,ex
-    real(4) :: a2,u2
-    complex(8) :: tav,uav,w4,num,den
-    !----------------------------------------------------------------------------------
-    v = abs(vs)
-    a = as
-    u = v + a
-    v2 = v*v
-
-    if (a > 0.2) then
-      if (a > 1.4 .or. u > 3.2) then
-        a2 = a*a
-        u = 1 / (a2 + v2)
-        u2 = 0.5 * u*u
-        ! a gt 1.4  or  a + v gt 3.2
-        ! make sure to never compute a2**2 as this may overflow
-        h = ipi*a*u * (1. + u2*(7.5 - a2 + 3.*v2 - 12*u2*a2*a2))
-
-      else
-        tav = cmplx(a,-v)
-        if (a >= 0.195e0*v - 0.176e0) then
-          num = 16.4955e0 + tav*(20.20933e0 + tav*(11.96482e0      &
-            + tav*(3.778987e0 + tav*0.5642236e0)))
-          den = 16.4955e0 + tav*(38.82363e0 + tav*(39.27121e0 &
-            + tav*(21.69274e0 + tav*(6.699398e0 + tav))))
-          w4 = num/den
-        else
-          uav = tav*tav
-          num = tav*(36183.31e0 - uav*(3321.9905e0 - uav*(1540.787e0 &
-            - uav*(219.0313e0 - uav*( 35.76683e0 - uav*(1.320522e0 &
-            - uav*0.56419e0))))))
-          den = (32066.6e0 - uav*(24322.84e0 - uav*(9022.228e0       &
-            - uav*(2186.181e0 - uav*(364.2191e0                    &
-            - uav*(61.57037e0 - uav*(1.841439e0 - uav)))))))
-          w4 = num/den
-          w4 = exp(uav) - w4
-        endif
-        h = real(w4) * isqp
-      endif
-
-    elseif (v >= 5.0) then
-      v4 = 4*v2*v2
-      h = ipi * a*(15. + 6.*v2 + v4) / (v4*v2)
-
-    else
-      if (v >= 2.4) then
-        h = 1./(v2 - 1.5) * (0.554153432 + v*(0.278711796 + v*(-0.188325687 + v*(0.042991293 + v*-0.003278278))))
-      elseif (v >= 1.3) then
-        h = -4.48480194 + v*(9.39456063 + v*(-6.61487486 + v*(1.98919585 + v*-0.22041650)))
-      else
-        h = -1.12470432 + v*(-0.15516677 + v*(3.28867591 + v*(-2.34357915 + v*0.42139162)))
-      endif
-
-      ! a le 0.2  and v lt 5.
-      ex = exp(-v2)
-      h = (h*a + ex*(1. + a*a*(1. - 2.*v2))) * isqp
-    endif
-  END FUNCTION voigt_function2
+  ! THE VOIGT ROUTINES USED TO LIVE HERE.
+  !
+  ! voigt_function2 (Traving / Eriksson 1974, after Landolt-Bornstein) and voigt_profile
+  ! (the same branch tree on the relative-frequency abscissa, with the nu/nu0 Jacobian)
+  ! were this module's pointwise Voigt evaluations, and the three unused variants beside
+  ! them -- voigt_function, new_voigt, dirty_voigt -- their earlier drafts.
+  !
+  ! All five are gone. HOP/qlg_mod.f90 is the one Voigt kernel now: qlg_bot_sweep for a
+  ! whole line window, and qlg_bot_phi / qlg_bot_profile for a single point in the two
+  ! conventions the first two had. See linelist_mod's kernel note for why QLG-bot, and
+  ! the `voigt-kernel-zoo` branch for what it was measured against.
+  !
+  ! pseudo_voigt, further down, is a different thing -- a fitted line shape for the
+  ! convolution kernels -- and stays.
   !------------------------------------------------------------------------------------
-
-  !====================================================================================
-  !DIR$ ATTRIBUTES FORCEINLINE :: voigt_profile
-  ELEMENTAL FUNCTION voigt_profile(a,q,vpr,idf) result(h)
-    !---------------------------------------------------------------------
-    !  computes a normalised voigt profile  h = h(a,v) / sqrt(pi) * nu/dnud
-    !  a=gamma/(4*pi*dnud)   and  q=(nu-nu0)/nu0.  this  is  done after
-    !---------------------------------------------------------------------
-    real(4), intent(in) :: a,q,vpr,idf
-    real(4) :: h
-    real(4) :: v,u,v2,v4,ex
-    real(4) :: a2,u2
-    complex(8) :: tav,uav,w4,num,den
-    !----------------------------------------------------------------------------------
-    v = abs(q - vpr) * idf
-    u = a + v
-    v2 = v*v
-
-    if (a > 0.2) then
-      if (a > 1.4 .or. u > 3.2) then
-        a2 = a*a
-        u = 1 / (a2 + v2)
-        u2 = 0.5 * u*u
-        ! a gt 1.4  or  a + v gt 3.2
-        h = ipi*a*u * (1. + u2*((3.*v2 - a2) + u2*(15.*v2*v2 - 30.*v2*a2 + 3.*a2*a2)))
-
-      else
-        tav = cmplx(a,-v)
-        if (a >= 0.195e0*v - 0.176e0) then
-          num = 16.4955e0 + tav*(20.20933e0 + tav*(11.96482e0      &
-            + tav*(3.778987e0 + tav*0.5642236e0)))
-          den = 16.4955e0 + tav*(38.82363e0 + tav*(39.27121e0 &
-            + tav*(21.69274e0 + tav*(6.699398e0 + tav))))
-          w4 = num/den
-        else
-          uav = tav*tav
-          num = tav*(36183.31e0 - uav*(3321.9905e0 - uav*(1540.787e0 &
-            - uav*(219.0313e0 - uav*( 35.76683e0 - uav*(1.320522e0 &
-            - uav*0.56419e0))))))
-          den = (32066.6e0 - uav*(24322.84e0 - uav*(9022.228e0       &
-            - uav*(2186.181e0 - uav*(364.2191e0                    &
-            - uav*(61.57037e0 - uav*(1.841439e0 - uav)))))))
-          w4 = num/den
-          w4 = exp(uav) - w4
-        endif
-        h = real(w4) * isqp
-      endif
-
-    elseif (v >= 5.0) then
-      v4 = 4*v2*v2
-      h = ipi * a*(15. + 6.*v2 + v4) / (v4*v2)
-
-    else
-      if (v >= 2.4) then
-        h = 1./(v2 - 1.5) * (0.554153432 + v*(0.278711796 + v*(-0.188325687 + v*(0.042991293 + v*-0.003278278))))
-      elseif (v >= 1.3) then
-        h = -4.48480194 + v*(9.39456063 + v*(-6.61487486 + v*(1.98919585 + v*-0.22041650)))
-      else
-        h = -1.12470432 + v*(-0.15516677 + v*(3.28867591 + v*(-2.34357915 + v*0.42139162)))
-      endif
-
-      ! a le 0.2  and v lt 5.
-      ex = exp(-v2)
-      h = (h*a + ex*(1. + a*a*(1. - 2.*v2))) * isqp
-    endif
-    h = h * idf * (q + 1)
-  END FUNCTION voigt_profile
-  !------------------------------------------------------------------------------------
-
-  !====================================================================================
-  ELEMENTAL FUNCTION voigt_function(a,vs) result(h)
-    !---------------------------------------------------------------------
-    !  computes a voigt function  h = h(a,v)
-    !  a=gamma/(4*pi*dnud)   and  v=(nu-nu0)/dnud.  this  is  done after
-    !  traving (landolt-b\rnstein, p. 449).
-    !  coded by: kjell eriksson  (apr-1974). revised: (july-1975).
-    !---------------------------------------------------------------------
-    real(4), intent(in) :: a,vs
-    real(4) :: h
-    integer :: k,m,i
-    real(8),dimension(5) :: a1
-    real(8) :: v,u,v2,ex,quo,h1,pqs,h1p,h2p,h3p,h4p,psi
-    real(8) :: a2,u2
-
-    real(8),dimension(19),parameter :: ak = (/ &
-      -1.12470432, -0.15516677,  3.28867591, -2.34357915,             &
-      0.42139162, -4.48480194,  9.39456063, -6.61487486,  1.98919585,&
-      -0.22041650, 0.554153432, 0.278711796,-0.188325687, 0.042991293,&
-      -0.003278278, 0.979895023,-0.962846325, 0.532770573,-0.122727278 /)
-
-    real(8),parameter :: sqp = 1.772453851
-    real(8),parameter :: sq2 = 1.414213562
-    !----------------------------------------------------------------------------------
-    v = abs(vs)
-    u = a + v
-    v2 = v*v
-
-    k = 1
-
-    if (a == 0.0) then
-      h=0.
-      if(v2.lt.100.)h=exp(-v2)
-      return
-
-    elseif (a > 0.2) then
-      if (a > 1.4 .or. u > 3.2) then
-        a2 = a*a
-        u = sq2*(a2 + v2)
-        u2 = 1./(u*u)
-        ! a gt 1.4  or  a + v gt 3.2
-        h = sq2/sqp*a/u*(1. + u2*(3.*v2 - a2) + &
-          u2*u2*(15.*v2*v2 - 30.*v2*a2 + 3.*a2*a2))
-        return
-      else
-        k = 2
-      endif
-    elseif (v >= 5.0) then
-      h = a*(15. + 6.*v2 + 4.*v2*v2)/(4.*v2*v2*v2*sqp)
-      return
-    endif
-
-    ex=0.
-    if(v2 < 100.) ex = exp(-v2)
-
-    quo = 1.
-    if (v >= 2.4) then
-      quo = 1./(v2 - 1.5)
-      m = 11
-    else
-      m = 6
-      if (v < 1.3) m = 1
-    endif
-
-    do i=1,5
-      a1(i) = ak(m)
-      m = m + 1
-    end do
-
-    h1 = quo*(a1(1) + v*(a1(2) + v*(a1(3) + v*(a1(4) + v*a1(5)))))
-
-    if (k==1) then
-      ! a le 0.2  and v lt 5.
-      h = h1*a + ex*(1. + a*a*(1. - 2.*v2))
-      return
-    endif
-
-    pqs = 2./sqp
-    h1p = h1 + pqs*ex
-    h2p = pqs*h1p - 2.*v2*ex
-    h3p = (pqs*(1. - ex*(1. - 2.*v2)) - 2.*v2*h1p)/3. + pqs*h2p
-    h4p = (2.*v2*v2*ex - pqs*h1p)/3. + pqs*h3p
-    psi = ak(16) + a*(ak(17) + a*(ak(18) + a*ak(19)))
-    ! 0.2 < a <= 1.4  and  a + v <= 3.2
-    h = psi*(ex + a*(h1p + a*(h2p + a*(h3p + a*h4p))))
-    return
-  END FUNCTION voigt_function
-  !------------------------------------------------------------------------------------
-
-  !====================================================================================
-  ELEMENTAL FUNCTION new_voigt(a,v) result(h)
-    ! Champion Voigt routine in speed and accuracy test by BE+NP 97-11-18
-    !  VOIGT FUNCTION CALCULATION: HUMLICEK'S APPROXIMATION
-    ! The results are normalized to an area of 1/sqrt(pi).
-    real(4), intent(in) :: a, v
-    complex(8) :: tav,uav,w4,v4
-    real(4)    :: sav,aa,vv,h
-    integer :: i,j,k
-    !----------------------------------------------------------------------------------
-    aa = 0.01! a
-    vv = abs(v)
-    tav = cmplx(aa,-vv)
-    sav = vv + aa
-    uav = tav*tav
-    if (sav >= 15.e0) then
-      w4 = tav*0.5641896e0 / (0.5e0 + uav)
-    elseif (sav >= 5.5e0) then
-      w4 = tav*(1.410474e0 + uav*0.5641896e0) / (0.75e0 + uav*(3.e0 + uav))
-    elseif (aa >= 0.195e0*vv - 0.176e0) then
-      w4 = (16.4955e0 + tav*(20.20933e0 + tav*(11.96482e0       &
-        +  tav*(3.778987e0 + tav*0.5642236e0)))) / (16.4955e0  &
-        +  tav*(38.82363e0 + tav*(39.27121e0 + tav*(21.69274e0 &
-        +  tav*(6.699398e0 + tav)))))
-    else
-      w4 = tav*(36183.31e0 - uav*(3321.9905e0 - uav*(1540.787e0 &
-        - uav*(219.0313e0 - uav*( 35.76683e0 - uav*(1.320522e0 &
-        - uav*0.56419e0))))))
-      v4 = (32066.6e0 - uav*(24322.84e0 - uav*(9022.228e0       &
-        - uav*(2186.181e0 - uav*(364.2191e0                    &
-        - uav*(61.57037e0 - uav*(1.841439e0 - uav)))))))
-      w4 = exp(uav) - w4/v4
-    endif
-    h = real(w4) * isqp
-  END FUNCTION new_voigt
-  !------------------------------------------------------------------------------------
-
-  !====================================================================================
-  ELEMENTAL FUNCTION dirty_voigt(a, x) result(h)
-    real(4), intent(in) :: a, x
-    real(4) :: h, z
-    ! Coefficients for the approximation function (Table A1, Smith+15)
-    real(4), parameter :: A0 = 15.75328153963877
-    real(4), parameter :: A1 = 286.9341762324778
-    real(4), parameter :: A2 = 19.05706700907019
-    real(4), parameter :: A3 = 28.22644017233441
-    real(4), parameter :: A4 = 9.526399802414186
-    real(4), parameter :: A5 = 35.29217026286130
-    real(4), parameter :: A6 = 0.8681020834678775
-    real(4), parameter :: B0 = 0.0003300469163682737
-    real(4), parameter :: B1 = 0.5403095364583999
-    real(4), parameter :: B2 = 2.676724102580895
-    real(4), parameter :: B3 = 12.82026082606220
-    real(4), parameter :: B4 = 3.21166435627278
-    real(4), parameter :: B5 = 32.032981933420
-    real(4), parameter :: B6 = 9.0328158696
-    real(4), parameter :: B7 = 23.7489999060
-    real(4), parameter :: B8 = 1.82106170570
-    !----------------------------------------------------------------------------------
-    z = x * x
-    if (z <= 3.0) then
-      h = exp(-z) * (1.0 - a * (A0 + A1 / (z - A2 + A3 / (z - A4 + A5 / (z - A6)))))
-    else if (z < 25.0) then
-      h = exp(-z) + a * (B0 + B1 / (z - B2 + B3 / (z + B4 + B5 / (z - B6 + B7 / (z - B8)))))
-    else
-      h = 0.5 * sqrt(2.0 / pi) * a / (z - 1.5 - 1.5 / (z - 3.5 - 5.0 / (z - 5.5)))
-    end if
-    h = h * isqp
-  END FUNCTION dirty_voigt
 
   !====================================================================================
   PURE ELEMENTAL SUBROUTINE line_damping (self, adamp, ne, tothi, vbar2, stark_pe, unsold)

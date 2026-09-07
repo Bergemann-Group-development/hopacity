@@ -26,7 +26,7 @@ MODULE hop_c_api
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
-  USE linelist_mod, only: ll_profile, voigt_kernel
+  USE linelist_mod, only: ll_profile, voigt_kernel, voigt_kernel_init
   USE osmet_mod,    only: eosmet
   USE handyfuncs_mod, only: lowercase
   USE prec_mod,     only: dp
@@ -197,6 +197,11 @@ CONTAINS
     iso_f    = c2f_string(isotope_file)
     molec_f  = c2f_string(molec_file)
 
+    ! QLG-bot's lookup tables. Must happen before any opacity or rate is accumulated:
+    ! the kernel is PURE and cannot check, so a missed call is a silently zero profile
+    ! rather than an error. Idempotent, a few ms, and independent of everything below.
+    call voigt_kernel_init
+
     allocate(master)
     master%verbose = init_verbose           ! no default initializer in the type
     master%initialised = .false.
@@ -345,6 +350,8 @@ CONTAINS
       call parse_logical(val, lv, status); if (status == 0) ll_profile = lv
     ! --- integers -----------------------------------------------------------
     case ('voigt_kernel')
+      ! parsed and stored, but nothing reads it: QLG-bot is the only kernel compiled in.
+      ! Kept so that callers still setting it keep working. See linelist_mod's kernel note.
       call parse_int(val, iv, status); if (status == 0) voigt_kernel = iv
     case ('switch')
       call parse_int(val, iv, status); if (status == 0) switch = iv

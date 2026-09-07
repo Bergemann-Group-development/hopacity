@@ -30,11 +30,14 @@ MODULE linelist_mod
   USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: air2vac, vac2air
   USE op_math_mod, only: find_closest
-  USE bbtrans_mod, only: voigt_function2, disable_ga, disable_stark, disable_vdw, &
+  USE bbtrans_mod, only: disable_ga, disable_stark, disable_vdw, &
                          f_conv, tol => tolerance, bbtrans_type
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
-  USE voigt_av_mod, only: voigt_av_t, voigt_av_setup, voigt_av_block
+  ! The one Voigt kernel. qlg_bot_sweep is the window form, used by add_opacity_equi;
+  ! qlg_bot_phi is the same profile at a single point, in the convention of the retired
+  ! voigt_function2, for the two routines here whose abscissa is not a uniform ramp.
+  USE qlg, only: qlg_init, qlg_bot_sweep, qlg_bot_phi
   implicit none
   private
 
@@ -42,20 +45,38 @@ MODULE linelist_mod
   public :: add_particle_opacity
   public :: append_line, add_rates, write_ll_header, write_ll_record, bij_const
   public :: reserve_linelist, print_ll_particle, print_ll_atom
+  public :: voigt_kernel_init
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
   real(dp), parameter :: over_h4pi = 1.0_dp / h_4pi
   real(4),  parameter :: over_pi   = 0.3183098862
   real(dp), parameter :: ex_cutoff = -85.0_dp  ! skip lines whose log(Rij) underflows
-  real(4), parameter  :: voigt_peak = 0.5641895835 ! 1/sqrt(pi): max of voigt_function2
+  ! 1/sqrt(pi): the peak of the profile in qlg_bot_phi's convention, at a = v = 0. The
+  ! tolerance pre-tests below rely on it being an exact upper bound.
+  real(4), parameter  :: voigt_peak = 0.5641895835
 
-  ! --- Voigt kernel selection (add_opacity_equi only) ---------------------------------
-  ! 0 = voigt_function2 (bbtrans_mod, Traving/Eriksson; the historical default)
-  ! 1 = voigt_av        (voigt_av_mod, branchless fp32; vectorises, and is the more
-  !                      accurate of the two for damped lines -- see voigt_av_mod header)
-  ! Selecting 1 shifts spectra by ~2e-4 in the weak-line regime and by up to a few
-  ! percent for a > 0.2 lines, where voigt_function2 is the one that was wrong.
+  ! --- The Voigt kernel ---------------------------------------------------------------
+  ! QLG-bot (HOP/qlg_mod.f90), unconditionally, everywhere. It is the tabulated member of
+  ! the QLG family of the Voigt-QLG letter: three basis functions {q.G, q.Z(0.2), q.L^2}
+  ! at x-degree 1, six fitted constants, G and Z(0.2)/L^2 read from two rank-1 tables at
+  ! one shared snapped index. Synspec's cost for a much smaller flux error -- 5.7e-3 max
+  ! relative on the validation domain, which the kernel-vs-abundance study bounded at
+  ! 0.006 dex per line and 0.0007 dex per element, i.e. below anything this code resolves.
+  !
+  ! The comparison against the ~22 rival and QLG-family kernels this used to dispatch
+  ! between at runtime -- haw, mclean, moog, siu, synspec, w4, voigt21, the fp64
+  ! reference, and the QLG tiers and ablations -- lives on the `voigt-kernel-zoo` branch,
+  ! together with the voigt_kernel dispatch chain that selected them.
+  !
+  ! add_opacity_equi calls qlg_bot_sweep on the whole line window at once, which is where
+  ! QLG-bot's advantage lies: the per-line setup is amortised over the window and the
+  ! point loop vectorises. add_opacity and add_rates walk non-uniform abscissae and call
+  ! the one-point qlg_bot_phi instead.
+  !
+  ! voigt_kernel IS READ AND IGNORED. It stays only so that the ~900 namelists and the
+  ! standalone library's hop_set_option that still set it keep loading; there is nothing
+  ! left to select. Delete it once those have been swept.
   integer, public :: voigt_kernel = 0
 
   ! --- profiling work counters (add_opacity); cheap integer increments ----------------
@@ -74,6 +95,21 @@ contains
   ! assumed pre-sorted ascending in wavelength. If do_mask, only records with lam_air
   ! in [lam_min, lam_max] are kept (contiguous slice, located by bisection).
   !-------------------------------------------------------------------------------------
+  !=====================================================================================
+  ! Build QLG-bot's two lookup tables. MUST be called once before any opacity or rate is
+  ! accumulated: qlg_bot_sweep and qlg_bot_phi are PURE and cannot check, so an omitted
+  ! call is not an error but a silently zero profile. Idempotent, and a few milliseconds.
+  !
+  ! Entry points that must make it: SRC/composition_patch_mod.f90 after reading
+  ! &linelist_params, and the standalone library's hop_init.
+  !
+  ! The name is kept from when it built the tables of whichever kernel voigt_kernel had
+  ! selected; it is now a one-line forward to qlg_init.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE voigt_kernel_init
+    call qlg_init
+  END SUBROUTINE voigt_kernel_init
+
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
                             vbar2e4, do_mask, lam_min, lam_max)
     type(linelist_type), intent(inout) :: ll
@@ -388,7 +424,7 @@ contains
             ! (phi*Rij >= ref <=> phi*Rij*bi >= tol*cont) at no per-frequency cost
             ref = tol * cont(f0,i,j,k) / bi
 
-            ! exact pre-filter: voigt_function2 <= 1/sqrt(pi) everywhere, so if even the
+            ! exact pre-filter: the profile <= 1/sqrt(pi) everywhere, so if even the
             ! peak cannot reach the tolerance the whole line is negligible -- skip
             ! the damping and Voigt evaluations entirely (most lines drop out here).
             if (voigt_peak * Rij <= ref) cycle
@@ -432,7 +468,7 @@ contains
               ! LTE line (bi=bj=1) with the scattering fraction accumulated
               do f = fa, fb
                 vs   = idf * real(llam(f) - llc)
-                phi  = voigt_function2(a, vs)
+                phi  = qlg_bot_phi(a, vs)
                 lte  = phi * Rij
                 chi(f,i,j,k) = chi(f,i,j,k) + lte
                 eta(f,i,j,k) = eta(f,i,j,k) + lte
@@ -441,7 +477,7 @@ contains
             else
               do f = fa, fb
                 vs   = idf * real(llam(f) - llc)
-                phi  = voigt_function2(a, vs)
+                phi  = qlg_bot_phi(a, vs)
                 lte  = phi * Rij
                 chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
                 eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
@@ -496,11 +532,10 @@ contains
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart
     integer(8) :: c_visit, c_pass, c_voigt
-    ! voigt_kernel==1 scratch: per-line profile state, the window's K values, and the
-    ! fp32 abscissa ramp. Kbuf is an automatic array (stack) but only [1:nw] is ever
-    ! touched, and windows average ~8 points, so it stays L1-resident.
-    type(voigt_av_t) :: vst
-    real(4)  :: Kbuf(size(llam)), v0, dv, Rn
+    ! kernel scratch: the window's K values and the fp32 abscissa ramp. Kbuf is
+    ! an automatic array (stack) but only [1:nw] is ever touched, and windows average
+    ! ~8 points, so it stays L1-resident.
+    real(4)  :: Kbuf(size(llam)), v0, dv, Rn, nfac
     !-----------------------------------------------------------------------------------
     m  = shape(vproj)
     nf = size(llam)
@@ -522,6 +557,14 @@ contains
       do j = 1, m(2)
         do i = 1, m(1)
           idf      = inv_df(i,j,k)
+          ! CELL-INVARIANT PARTS OF THE PER-LINE WINDOW SETUP, hoisted out of the line
+          ! loop. dv is only a multiply the compiler is free to lift anyway, but nfac
+          ! replaces a DIVISION by idf that it is not: gfortran will not turn x/idf into
+          ! x*(1/idf) without -ffast-math, so `sqrt(vm2)/idf*inv_dllam` was a
+          ! reciprocal-latency chain on every line that survived the tolerance filters.
+          ! Every kernel pays it, so this moves the floor rather than the ranking.
+          nfac     = real(inv_dllam) / idf
+          dv       = idf * real(dllam)
           unsold_c = vbar2(i,j,k)**0.3 * tothi(i,j,k)
           lvb2     = log(vbar2(i,j,k))                    ! vb2**gw2 as exp(gw2*log(vb2))
           ekt      = e_kT(i,j,k)
@@ -566,11 +609,12 @@ contains
               bj = 1.0
             end if
 
-            ! folding b_i into ref makes every phi*Rij test an actual-opacity test
-            ! (phi*Rij >= ref <=> phi*Rij*bi >= tol*cont) at no per-frequency cost
-            ref = tol * cont(f0,i,j,k) / bi
+            ! here we test against the accumulated opacity, which already includes contributions
+            ! from other lines. Were are particularly careful and use tol^2 to avoid narrow overlapping
+            ! lines from cancelling broader weaker lines.
+            ref = tol * max(cont(f0,i,j,k), tol*chi(f0,i,j,k))
 
-            ! exact pre-filter: voigt_function2 <= 1/sqrt(pi) everywhere, so if even the
+            ! exact pre-filter: the profile <= 1/sqrt(pi) everywhere, so if even the
             ! peak cannot reach the tolerance the whole line is negligible -- skip
             ! the damping and Voigt evaluations entirely (most lines drop out here).
             if (voigt_peak * Rij <= ref) cycle
@@ -593,59 +637,57 @@ contains
             ll%used(l)     = .true.
             ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
 
-            ! analytic profile extent where phi*Rij drops to ref, in v-units: Gaussian
+            ! WINDOW EXTENT. Analytic, where phi*Rij drops to ref, in v-units: Gaussian
             ! core v^2 = arg - logref, Lorentz far wing v^2 = a*Rij/(pi*ref). On a
             ! uniform log(lambda) grid the half-width in llam is sqrt(vm2)/idf, so the
-            ! index half-width is that over dllam -- no bisection required.
+            ! index half-width is that over dllam -- no bisection required. nfac is
+            ! inv_dllam/idf, hoisted to the cell loop above.
+            !
+            ! THE ROUNDING IS nint, NOT int()+1, AND nw = 1 IS REACHABLE. f0 is the
+            ! NEAREST bin to the centre (nint, above), so the centre sits at some offset
+            ! d in [-0.5,0.5] bins from f0 and bin f0+n is |n+d| bins out. A symmetric
+            ! window covers every bin within W = sqrt(vm2)*nfac iff noff >= W + |d|, and
+            ! nint(W) = floor(W + 0.5) is the smallest integer that satisfies that for
+            ! every d -- tight and still conservative. The old floor(W)+1 exceeded it by
+            ! a bin per side whenever frac(W) < 0.5, and could never go below nw = 3: a
+            ! line whose profile dies within a twentieth of a bin was evaluated at three
+            ! points, two of them provably under tolerance. Sub-half-bin lines now cost
+            ! the one centre evaluation they are worth. Every kernel sweep is `do f=1,n`
+            ! and handles n = 1.
+            !
+            ! One thing this gives up: ref is sampled at f0 only (cont/chi vary across
+            ! the window), and the old +1 was an incidental one-bin cushion against that.
+            ! It is dropped exactly where it matters least -- narrow windows, over which
+            ! cont is flat.
+            !
             vm2  = max(real(arg - logref(f0,i,j,k)), a*Rij*over_pi/ref)
-            noff = int(sqrt(vm2) / idf * inv_dllam) + 1
+            noff = nint(sqrt(vm2) * nfac)
             fa   = max(1,  f0 - noff)
             fb   = min(nf, f0 + noff)
             c_voigt = c_voigt + fb - fa + 1
-
-            if (voigt_kernel == 1) then
-              ! Branchless fp32 kernel. The whole window is evaluated first, so the
-              ! profile loop and the accumulation loop each vectorise; K stays in L1.
-              ! The abscissa is a pure fp32 ramp -- on a uniform log(lambda) grid
-              ! llam(f) - llc = (llam(fa) - llc) + (f-fa)*dllam exactly, so the real(8)
-              ! llam stream drops out of the inner loop altogether.
-              nw = fb - fa + 1
-              v0 = idf * real(llam(fa) - llc)
-              dv = idf * real(dllam)
-              call voigt_av_setup (a, vst)
-              call voigt_av_block (vst, v0, dv, nw, Kbuf)
-              ! voigt_av returns K = H(a,v); voigt_function2 returns H(a,v)/sqrt(pi)
-              Rn = Rij * voigt_peak
-              if (do_scat .and. .not. nlte) then
-                do f = fa, fb
-                  lte = Kbuf(f-fa+1) * Rn
-                  chi(f,i,j,k) = chi(f,i,j,k) + lte
-                  eta(f,i,j,k) = eta(f,i,j,k) + lte
-                  chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
-                end do
-              else
-                do f = fa, fb
-                  lte = Kbuf(f-fa+1) * Rn
-                  chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
-                  eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
-                end do
-              end if
-
-            else if (do_scat .and. .not. nlte) then
-              ! LTE line (bi=bj=1) with the scattering fraction accumulated
+            ! Branchless fp32 kernel. The whole window is evaluated first, so the
+            ! profile loop and the accumulation loop each vectorise; K stays in L1.
+            ! The abscissa is a pure fp32 ramp -- on a uniform log(lambda) grid
+            ! llam(f) - llc = (llam(fa) - llc) + (f-fa)*dllam exactly, so the real(8)
+            ! llam stream drops out of the inner loop altogether. dv is cell-invariant
+            ! and hoisted with nfac.
+            nw = fb - fa + 1
+            v0 = idf * real(llam(fa) - llc)
+            call qlg_bot_sweep (a, v0, dv, nw, Kbuf)
+            ! qlg_bot_sweep returns K = H(a,v) in the K(0,0) = 1 normalisation, so
+            ! voigt_peak = 1/sqrt(pi) converts it to the per-Doppler-width profile the
+            ! accumulation below wants -- the historical Rij/sqrt(pi).
+            Rn = Rij * voigt_peak
+            if (do_scat .and. .not. nlte) then
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc)
-                phi  = voigt_function2(a, vs)
-                lte  = phi * Rij
+                lte = Kbuf(f-fa+1) * Rn
                 chi(f,i,j,k) = chi(f,i,j,k) + lte
                 eta(f,i,j,k) = eta(f,i,j,k) + lte
                 chi_scat(f,i,j,k) = chi_scat(f,i,j,k) + one_m_eps(f,i,j,k)*lte
               end do
             else
               do f = fa, fb
-                vs   = idf * real(llam(f) - llc)
-                phi  = voigt_function2(a, vs)
-                lte  = phi * Rij
+                lte = Kbuf(f-fa+1) * Rn
                 chi(f,i,j,k) = chi(f,i,j,k) + lte*bi
                 eta(f,i,j,k) = eta(f,i,j,k) + lte*bj
               end do
@@ -804,7 +846,7 @@ contains
   ! is identical to the opacity window and iteration-stable.
   !
   ! Correspondence with the old rt_patch bound_bound_rates (see voigt_profile, which
-  ! carries an extra idf*(nu/nu0) versus voigt_function2):
+  ! carries an extra idf*(nu/nu0) versus qlg_bot_phi):
   !   old sum_A = sum_f phi_old*wmu*wnu*Aij, wnu = trapz(nu)/(h_4pi*nu)
   !             ~ (wmu*Aij*idf/h_4pi) * sum_f phi*w,  w = trapz weight of log(lambda)
   !   (the smooth nu/nu0 factor across the profile is dropped; it largely cancels in
@@ -915,7 +957,7 @@ contains
 
             ! centre
             vs  = idf * real(llam(f0) - llc)
-            phi = voigt_function2(a, vs)
+            phi = qlg_bot_phi(a, vs)
             c_voigt = c_voigt + 1
             lte = phi * Rij
             if (lte <= ref) cycle
@@ -941,7 +983,7 @@ contains
 
             do f = f0+1, fb        ! red wing
               vs  = idf * real(llam(f) - llc)
-              phi = voigt_function2(a, vs)
+              phi = qlg_bot_phi(a, vs)
               w   = trapw(llam, ws, we, f)
               sA  = sA + phi * w
               sI  = sI + phi * w * Inu(f,i,j,k)
@@ -949,7 +991,7 @@ contains
             end do
             do f = fa, f0-1        ! blue wing
               vs  = idf * real(llam(f) - llc)
-              phi = voigt_function2(a, vs)
+              phi = qlg_bot_phi(a, vs)
               w   = trapw(llam, ws, we, f)
               sA  = sA + phi * w
               sI  = sI + phi * w * Inu(f,i,j,k)
