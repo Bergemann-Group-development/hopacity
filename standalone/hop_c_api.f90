@@ -723,8 +723,13 @@ CONTAINS
           if (do_llist) then
             if (do_split) then
               do f=1, nf
+                ! the line's (1-eps) share is already inside chi4 (the kernels add
+                ! the whole line and only record the share in chi_scat), so chi4
+                ! takes the continuum scattering alone while scat4 reports both --
+                ! the split partitions the extinction, it does not add to it
                 s = sig(f,i,j,k) + chi_scat(f,i,j,k)
-                chi4 (f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) + s
+                chi4 (f,i,j,k) = chi4(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) &
+                                               + sig(f,i,j,k)
                 scat4(f,i,j,k) = s
               end do
             else

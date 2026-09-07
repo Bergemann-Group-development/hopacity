@@ -2371,6 +2371,11 @@ contains
   !         departure coefficients are left out: their scattering lives in the
   !         NLTE rate equations.
   !
+  ! The eps split is a *partition*: scat is a share of an extinction that is
+  ! already whole, never an addition to it.  So chi at disjoint=.false. is
+  ! invariant under line_scat -- flipping the split moves opacity between the
+  ! two outputs and must not change their sum.
+  !
   ! The default keeps the published meaning of hop.opacity() and of the
   ! opa/scat tables: chi is the total, scat the scattering part *of* it.
   ! disjoint=.true. is for the sampled background table, where tabulating the
@@ -2456,16 +2461,35 @@ contains
       else
         call self%add_linelist_opacities2(sp, chi, ehat, dl, vproj, departures=departures)
       endif
-      ! (xhat, ehat) -> physical true absorption, once
-      do k=1, m(3)
-        do j=1, m(2)
-          do i=1, m(1)
-            do f=1, nf
-              chi(f,i,j,k) = chi(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k)
+      ! (xhat, ehat) -> physical true absorption, once.  The line kernels add the
+      ! whole LTE line to xhat and only *record* its (1-eps) share in chi_scat, so
+      ! with the split on that share is still sitting in chi while it is also being
+      ! handed to sig above.  Take it out here: the eps split is a partition of the
+      ! line opacity, not an addition to it, exactly as add_absmet_opacities does
+      ! for the sampled metal lines.  chi_scat is already physical (1/cm), the
+      ! kernels' working form having been undone with beta on the way out.
+      if (do_split) then
+        do k=1, m(3)
+          do j=1, m(2)
+            do i=1, m(1)
+              do f=1, nf
+                chi(f,i,j,k) = chi(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k) &
+                                            - chi_scat(f,i,j,k)
+              end do
             end do
           end do
         end do
-      end do
+      else
+        do k=1, m(3)
+          do j=1, m(2)
+            do i=1, m(1)
+              do f=1, nf
+                chi(f,i,j,k) = chi(f,i,j,k) - ehat(f,i,j,k)*bet(f,i,j,k)
+              end do
+            end do
+          end do
+        end do
+      endif
     else
       do k=1, m(3)
         do j=1, m(2)
