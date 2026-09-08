@@ -134,3 +134,44 @@ Only the lines within `dlam` of the requested wavelengths are read. A line list 
 ever be *added* to a HOP instance, so calling `opacity` with a different one (or over a
 wider window than before) rebuilds the instance and re-solves the state — repeated calls
 with the same list and window cost nothing extra.
+
+## Line strengths
+
+`line_strengths` returns one row per line — `ion`, `lam0` [AA, air], `evi` [eV], `loggf`,
+`strength` — for every line HOP used over the given wavelengths:
+
+```python
+hop.load_state(T, rho=rho)                       # a whole atmosphere, not one point
+lines = hop.line_strengths(lam, 'input/linelists/master_line.txt', dlam=2.0, vmic=1.0)
+lines.sort_values('strength', ascending=False).head()
+```
+
+`strength` is HOP's own diagnostic: the line's centre extinction over the continuum
+extinction, maximised over the cells of the loaded state
+(`linelist_mod`: `ll%strength(l) = max(..., voigt_peak*Rij / cont(f0,i,j,k))`). It is the
+same quantity a full `dispatch.x` run writes as the trailing column of `linelist_out.txt`,
+and it is the criterion HOP itself uses to decide which lines are worth computing.
+
+**Why it is the number to rank by.** It carries the element abundance, the ionization
+fraction, the molecular dissociation equilibrium and the partition function. A
+`lam0 * 10**loggf * exp(-evi*EK/T)` estimate carries none of them, so it cannot compare two
+species: over 5000–5002 AA in the Sun it puts TiO and C2 bands at the top of a window whose
+real order is Fe I 5001.87, Ni I 5000.34, Ti I 5001.01 — a rank correlation with the truth of
+0.2, no better than chance. Against `data/sed_3000-9000`'s own dump, with that run's line
+list, `line_strengths` matches all 155 lines in the window at Spearman 0.978, with a
+near-constant 1.21 offset from using a 1D MARCS structure in place of the run's own.
+
+**Cost**, for a single-file list on a 56-layer model: 0.08 s for 20 AA, 0.32 s for 100 AA,
+1.5 s for 500 AA. A folder of per-species lists is roughly 5x that, dominated by reading the
+files. Sample finely enough to resolve a line core (0.005 AA is safe in the optical); a
+coarser grid under-reads the peaks.
+
+The strengths are a by-product of computing opacity, so `line_strengths` runs one `opacity`
+call and then reads them back. They are zero before that call, and they *accumulate* across
+calls that share a loaded line list — a line's value is its own peak either way, but the set
+of lines returned grows to everything used since the list was read. Load a band once and
+compute over it in one call if you want exactly that band.
+
+The three C entry points behind it are `hop_linelist_count` (collects and sizes),
+`hop_get_linelist` (the columns, with a species index) and `hop_linelist_species` (the
+newline-separated species ids that index refers to). Call them in that order.

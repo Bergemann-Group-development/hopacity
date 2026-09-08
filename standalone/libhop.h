@@ -1,6 +1,7 @@
 int hop_free ();
 int hop_get_field (const char *name, int n, double *out);
 double hop_get_grph ();
+int hop_get_linelist (int n, double *lam_air, double *evi, double *loggf, double *strength, int *ispec);
 int hop_get_n ();
 int hop_get_species (const char *name, int n, double *out);
 int hop_holtsmark (int nbeta, const double *beta, double p, int n, int m, double *out);
@@ -8,6 +9,8 @@ int hop_init (const char *absdat_file, const char *abund_file, const char *isoto
 int hop_init_linelist (const char *linelist_file, double dlam, int nlam, const double *lam);
 int hop_keep_species (const char *name);
 int hop_last_error (char *buf, int buflen);
+int hop_linelist_count ();
+int hop_linelist_species (char *buf, int buflen);
 int hop_load_state (int n, const double *temp, double *ne, const double *rho, float vmic, int use_rho, int use_ne);
 int hop_omp_release ();
 int hop_opacity (int nlam, const double *lam, float *chi, float *scat, int include_absmet, int include_llist, double dlam, int line_scat);

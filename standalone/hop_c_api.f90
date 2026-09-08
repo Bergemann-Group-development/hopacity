@@ -29,7 +29,7 @@ MODULE hop_c_api
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
   USE linelist_mod, only: ll_profile, voigt_kernel, voigt_kernel_init
   USE osmet_mod,    only: eosmet, compute_epsilon_stage
-  USE handyfuncs_mod, only: lowercase
+  USE handyfuncs_mod, only: lowercase, vac2air
   USE prec_mod,     only: dp
   USE const_mod,    only: h_k
 #ifdef _OPENMP
@@ -58,6 +58,15 @@ MODULE hop_c_api
   ! stop/error stop sites inside HOP itself, which still kill the process.
   character(len=512), save :: last_error = ''
   integer, parameter :: MIN_CHUNK_CELLS = 1
+
+  ! The per-line strength collection, filled by hop_linelist_count and served to
+  ! hop_get_linelist / hop_linelist_species.  Collecting on the count call is what
+  ! makes the pair consistent: the caller has to ask how many lines there are before
+  ! it can size its buffers, and everything it then reads describes that same walk.
+  real(8), allocatable, save :: ll_lam(:), ll_evi(:), ll_loggf(:), ll_strength(:)
+  integer, allocatable, save :: ll_ispec(:)
+  character(len=8), allocatable, save :: ll_species(:)
+  integer, save :: ll_nspecies = 0
 
   !> Every option hop_set_option accepts, in the order hop_option_names reports them.
   !> Kept adjacent to the select case below -- the two must agree, and
@@ -131,6 +140,190 @@ CONTAINS
     !---------------------------------------------------------------------------
     call f2c_string(option_names, buf, buflen, status)
   END FUNCTION hop_option_names
+
+  !=============================================================================
+  ! Per-line strengths -- what the last hop_opacity call worked out about every line
+  ! it touched.
+  !
+  ! composition_type%opacity already computes, for each line, the maximum over the
+  ! solved cells of its line-centre extinction over the continuum extinction
+  ! (linelist_mod: ll%strength(l) = max(..., voigt_peak*Rij / cont(f0,i,j,k))).  That
+  ! number is the only line ranking that compares across species -- it carries the
+  ! abundance, the ionization fraction, the dissociation equilibrium and the partition
+  ! function, none of which a gf-and-Boltzmann estimate has -- and until now the only
+  ! way to see it was the linelist_out.txt diagnostic a full run writes.  These three
+  ! functions hand back the same numbers from a solved state in memory, so a caller
+  ! can rank the lines of a window at an arbitrary (T, rho) without a run and without
+  ! keeping a file.
+  !
+  ! Usage: hop_load_state, then hop_opacity over the window of interest (the strengths
+  ! are a by-product of that call and are zero before it), then hop_linelist_count to
+  ! collect and size, then hop_get_linelist / hop_linelist_species to read.  A line is
+  ! reported when it is active and was actually used, which is the same set
+  ! linelist_out.txt writes.
+  !=============================================================================
+  FUNCTION hop_linelist_count() RESULT(nout) BIND(c, name='hop_linelist_count')
+    integer(c_int) :: nout
+    !---------------------------------------------------------------------------
+    call collect_lines(nout)
+  END FUNCTION hop_linelist_count
+
+  !-----------------------------------------------------------------------------
+  ! The collection itself.  lam_air is Angstrom (as in the line-list files), evi the
+  ! lower-level energy [eV], strength the ratio above, and ispec a 0-based index into
+  ! the list hop_linelist_species reports.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_get_linelist(n, lam_air, evi, loggf, strength, ispec) RESULT(status) &
+           BIND(c, name='hop_get_linelist')
+    integer(c_int), value :: n
+    real(c_double), intent(out) :: lam_air(*), evi(*), loggf(*), strength(*)
+    integer(c_int), intent(out) :: ispec(*)
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    status = 0
+    if (.not. allocated(ll_lam)) then
+      call fail('hop_get_linelist: nothing collected; call hop_linelist_count first', &
+                3, status)
+      return
+    end if
+    if (n /= size(ll_lam)) then
+      call fail('hop_get_linelist: n differs from the collected line count', 3, status)
+      return
+    end if
+    if (n < 1) return
+    lam_air (1:n) = ll_lam(1:n)
+    evi     (1:n) = ll_evi(1:n)
+    loggf   (1:n) = ll_loggf(1:n)
+    strength(1:n) = ll_strength(1:n)
+    ispec   (1:n) = ll_ispec(1:n) - 1        ! 0-based for the C caller
+  END FUNCTION hop_get_linelist
+
+  !-----------------------------------------------------------------------------
+  ! The species ids the ispec column indexes, newline separated in index order.  Ids
+  ! carry the ionization stage ('Fe I', 'Fe II', 'TiO'), so they cannot be separated
+  ! by blanks the way hop_option_names does it.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_linelist_species(buf, buflen) RESULT(status) &
+           BIND(c, name='hop_linelist_species')
+    character(kind=c_char), intent(out) :: buf(*)
+    integer(c_int), value :: buflen
+    integer(c_int) :: status
+    character(len=:), allocatable :: text
+    integer :: i
+    !---------------------------------------------------------------------------
+    if (.not. allocated(ll_species) .or. ll_nspecies < 1) then
+      text = ''
+    else
+      text = trim(ll_species(1))
+      do i = 2, ll_nspecies
+        text = text // new_line('a') // trim(ll_species(i))
+      end do
+    end if
+    call f2c_string(text, buf, buflen, status)
+  END FUNCTION hop_linelist_species
+
+  !-----------------------------------------------------------------------------
+  ! Walk the solved composition and gather every reported line.  The order is the one
+  ! m3d_patch_t%print_linelist writes linelist_out.txt in -- each element's ions, then
+  ! the molecules -- so the two agree line for line, which is what makes the dump a
+  ! usable check on this.
+  !-----------------------------------------------------------------------------
+  SUBROUTINE collect_lines(nout)
+    integer(c_int), intent(out) :: nout
+    integer :: i, j, pass, ntot
+    !---------------------------------------------------------------------------
+    nout = 0
+    if (allocated(ll_lam)) deallocate(ll_lam, ll_evi, ll_loggf, ll_strength, ll_ispec)
+    if (allocated(ll_species)) deallocate(ll_species)
+    ll_nspecies = 0
+    if (.not. allocated(comp)) return
+    if (.not. allocated(comp%elements)) return
+
+    ! pass 1 counts so the buffers can be sized exactly, pass 2 fills them
+    do pass = 1, 2
+      ntot = 0
+      ll_nspecies = 0
+      do i = 1, comp%nel
+        if (.not. allocated(comp%elements(i)%ions)) cycle
+        do j = lbound(comp%elements(i)%ions, 1), ubound(comp%elements(i)%ions, 1)
+          call take_particle(comp%elements(i)%ions(j), pass, ntot)
+        end do
+      end do
+      if (allocated(comp%molecules)) then
+        do i = 1, comp%nmolec
+          call take_particle(comp%molecules(i), pass, ntot)
+        end do
+      end if
+      if (pass == 1) then
+        if (ntot < 1) return
+        allocate(ll_lam(ntot), ll_evi(ntot), ll_loggf(ntot), ll_strength(ntot), &
+                 ll_ispec(ntot))
+        allocate(ll_species(max(ll_nspecies, 1)))
+      end if
+    end do
+    nout = ntot
+  END SUBROUTINE collect_lines
+
+  !-----------------------------------------------------------------------------
+  ! One particle's reported lines: the bulk SoA linelists (one per isotope) and, when
+  ! it has them, the detailed AoS transitions (hydrogen and model-atom lines, whose
+  ! strength/used are pointers and may be unset).
+  !-----------------------------------------------------------------------------
+  SUBROUTINE take_particle(ptc, pass, ntot)
+    class(particle_type), intent(in) :: ptc
+    integer, intent(in) :: pass
+    integer, intent(inout) :: ntot
+    integer :: k, l, ispec
+    !---------------------------------------------------------------------------
+    ispec = 0
+    if (allocated(ptc%line)) then
+      do l = 1, ptc%nline
+        associate(line => ptc%line(l))
+          if (.not. line%active) cycle
+          if (.not. associated(line%used)) cycle
+          if (.not. line%used) cycle
+          if (.not. associated(line%strength)) cycle
+          call emit(ptc%id, ispec, pass, ntot, line%lam_air, line%lower_ev, &
+                    line%loggf, line%strength)
+        end associate
+      end do
+    end if
+    if (.not. allocated(ptc%ll)) return
+    do k = lbound(ptc%ll, 1), ubound(ptc%ll, 1)
+      associate(sll => ptc%ll(k))
+        if (.not. allocated(sll%strength)) cycle
+        do l = 1, sll%nline
+          if (.not. (sll%active(l) .and. sll%used(l))) cycle
+          call emit(ptc%id, ispec, pass, ntot, vac2air(exp(sll%llam0(l))), &
+                    dble(sll%lower_ev(l)), dble(sll%loggf(l)), dble(sll%strength(l)))
+        end do
+      end associate
+    end do
+  END SUBROUTINE take_particle
+
+  !-----------------------------------------------------------------------------
+  ! Record one line.  ispec is the particle's index in ll_species, claimed lazily so a
+  ! species that reports nothing takes no slot.
+  !-----------------------------------------------------------------------------
+  SUBROUTINE emit(id, ispec, pass, ntot, lam_air, evi, loggf, strength)
+    character(len=*), intent(in) :: id
+    integer, intent(inout) :: ispec, ntot
+    integer, intent(in) :: pass
+    real(8), intent(in) :: lam_air, evi, loggf, strength
+    !---------------------------------------------------------------------------
+    ntot = ntot + 1
+    if (ispec == 0) then
+      ll_nspecies = ll_nspecies + 1
+      ispec = ll_nspecies
+      if (pass == 2) ll_species(ispec) = id
+    end if
+    if (pass /= 2) return
+    ll_lam(ntot) = lam_air
+    ll_evi(ntot) = evi
+    ll_loggf(ntot) = loggf
+    ll_strength(ntot) = strength
+    ll_ispec(ntot) = ispec
+  END SUBROUTINE emit
 
   !=============================================================================
   ! Helpers
