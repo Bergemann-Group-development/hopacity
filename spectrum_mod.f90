@@ -17,6 +17,10 @@ MODULE spectrum_mod
         ! enables the arithmetic (march/bisection-free) opacity kernel add_opacity_equi
         logical :: equidistant=.false.
         character(len=32) :: name=''
+        ! Segment metadata for multi-window grids (A2)
+        integer :: n_segments=0
+        integer, dimension(:), allocatable :: segment_first, segment_last
+        real(8), dimension(:), allocatable :: segment_blue_vac, segment_red_vac
     contains
       procedure :: init
       procedure :: reset
@@ -33,13 +37,258 @@ MODULE spectrum_mod
     logical :: in_log=.false.
     real(8) :: daa=0, aa_red=0, aa_blue=0, R=0
     integer :: nnu=0
-    character(len=256) :: lam_file=''
+    character(len=256) :: lam_file='', window_file=''
+    ! window_file (A1/A2): Path to file with multi-window specification. One window per
+    ! non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
+    ! Requires R > 0 for constant-R grid construction. Windows are validated, sorted,
+    ! merged (overlapping/touching), then each generates a constant-R segment. Segment
+    ! metadata is stored in spectrum_type%segment_* arrays (A2).
+    ! Mutually exclusive with lam_file and give_lam; incompatible with R=0.
+    !
     ! A bare aa_red/aa_blue (no daa/nnu/R/lam_file) requests the atom-native output grid
     ! cropped to this vacuum window instead of a fresh uniform grid -- see init / crop.
     logical, public :: crop_output=.false.
     real(8), public :: crop_blue=0, crop_red=0
 
   contains
+    !===============================================================================
+    ! Read and validate window_file, build segmented constant-R grid.
+    ! Input: window_file path, in_air flag, R (sampling resolution)
+    ! Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
+    !===============================================================================
+    SUBROUTINE build_segmented_grid(wfile, in_air_flag, R_val, lam, nnu_out, self)
+      character(len=*), intent(in) :: wfile
+      logical, intent(in) :: in_air_flag
+      real(8), intent(in) :: R_val
+      real(8), dimension(:), allocatable, intent(out) :: lam
+      integer, intent(out) :: nnu_out
+      class(spectrum_type), intent(inout) :: self
+
+      real(8), dimension(:,:), allocatable :: windows
+      integer :: i, j, n_windows, nnu_seg, lunit, iostat, n_kept
+      real(8) :: blue, red, fac, blue_vac, red_vac
+      real(8), dimension(:), allocatable :: lam_seg, all_lam
+      integer, dimension(:), allocatable :: seg_first, seg_last
+      real(8), dimension(:), allocatable :: seg_blue, seg_red
+      character(len=256) :: line
+      logical :: is_comment
+
+      ! Read window file
+      call os%check_file(wfile)
+      open(newunit=lunit, file=trim(wfile), form='FORMATTED')
+
+      ! First pass: count non-comment lines
+      n_windows = 0
+      do
+        read(lunit, '(A)', iostat=iostat) line
+        if (iostat /= 0) exit
+        ! Skip empty lines and comments
+        if (len_trim(line) == 0) cycle
+        if (line(1:1) == '#') cycle
+        n_windows = n_windows + 1
+      end do
+
+      if (n_windows == 0) then
+        stop 'window_file is empty (all comments or blank lines)'
+      endif
+
+      ! Allocate and read windows
+      allocate(windows(n_windows, 2))
+      rewind(lunit)
+      n_windows = 0
+      do
+        read(lunit, '(A)', iostat=iostat) line
+        if (iostat /= 0) exit
+        if (len_trim(line) == 0) cycle
+        if (line(1:1) == '#') cycle
+        n_windows = n_windows + 1
+        read(line, *) windows(n_windows, 1), windows(n_windows, 2)
+      end do
+      close(lunit)
+
+      ! Validate windows
+      do i = 1, n_windows
+        blue = windows(i, 1)
+        red = windows(i, 2)
+
+        if (.not. (blue > 0 .and. red > 0 .and. isfinite(blue) .and. isfinite(red))) then
+          stop 'window_file: endpoints must be finite and positive'
+        endif
+
+        if (red <= blue) then
+          stop 'window_file: red edge must be > blue edge'
+        endif
+      end do
+
+      ! Sort windows by blue edge
+      call sort_windows(windows, n_windows)
+
+      ! Merge overlapping or touching windows
+      call merge_overlapping_windows(windows, n_windows)
+
+      if (n_windows == 0) then
+        stop 'window_file: all windows were rejected during merging'
+      endif
+
+      ! Convert endpoints to vacuum if needed
+      if (in_air_flag) then
+        windows(:, 1) = air2vac(windows(:, 1))
+        windows(:, 2) = air2vac(windows(:, 2))
+      endif
+
+      ! Allocate storage for segment metadata
+      allocate(seg_first(n_windows))
+      allocate(seg_last(n_windows))
+      allocate(seg_blue(n_windows))
+      allocate(seg_red(n_windows))
+      allocate(all_lam(0))
+
+      nnu_out = 0
+
+      ! Build constant-R grid for each window and concatenate
+      do i = 1, n_windows
+        blue_vac = windows(i, 1)
+        red_vac = windows(i, 2)
+
+        ! Build constant-R grid for this window.
+        ! Red-edge rule: start at blue edge and multiply by (1 + 1/R) until first sample
+        ! at or beyond red edge. This ensures consistent spacing and matches the existing
+        ! single-window constant-R behavior (spectrum_mod.f90:115-121).
+        fac = 1d0 + 1d0/R_val
+        nnu_seg = ceiling(log(red_vac/blue_vac) / log(fac)) + 1
+
+        if (nnu_seg < 2) then
+          write(*,*) 'window ', i, ': blue=', blue_vac, ' red=', red_vac, ' -> ', nnu_seg, ' points'
+          stop 'window_file: each window must have at least 2 points'
+        endif
+
+        allocate(lam_seg(nnu_seg))
+        lam_seg(1) = blue_vac
+        do j = 2, nnu_seg
+          lam_seg(j) = lam_seg(j-1) * fac
+        end do
+
+        ! Record segment boundaries
+        seg_first(i) = nnu_out + 1
+        seg_last(i) = nnu_out + nnu_seg
+        seg_blue(i) = blue_vac
+        seg_red(i) = red_vac
+
+        ! Append to global wavelength array
+        call append_to_array(all_lam, lam_seg)
+        nnu_out = nnu_out + nnu_seg
+
+        deallocate(lam_seg)
+      end do
+
+      ! Verify grid is strictly ascending (no gaps allowed, but concatenated segments are)
+      do i = 2, size(all_lam)
+        if (all_lam(i) <= all_lam(i-1)) then
+          stop 'build_segmented_grid: grid not strictly ascending after concatenation'
+        endif
+      end do
+
+      ! Set up spectrum segment metadata
+      self%n_segments = n_windows
+      allocate(self%segment_first, source=seg_first)
+      allocate(self%segment_last, source=seg_last)
+      allocate(self%segment_blue_vac, source=seg_blue)
+      allocate(self%segment_red_vac, source=seg_red)
+
+      ! Return the concatenated wavelength array
+      allocate(lam, source=all_lam)
+
+      deallocate(windows, seg_first, seg_last, seg_blue, seg_red, all_lam)
+    END SUBROUTINE build_segmented_grid
+
+    !===============================================================================
+    ! Sort windows by blue edge in ascending order (simple bubble sort for small n)
+    !===============================================================================
+    SUBROUTINE sort_windows(windows, n)
+      real(8), intent(inout) :: windows(:, :)
+      integer, intent(in) :: n
+      integer :: i, j
+      real(8) :: tmp_blue, tmp_red
+
+      do i = 1, n-1
+        do j = i+1, n
+          if (windows(j, 1) < windows(i, 1)) then
+            tmp_blue = windows(i, 1)
+            tmp_red = windows(i, 2)
+            windows(i, 1) = windows(j, 1)
+            windows(i, 2) = windows(j, 2)
+            windows(j, 1) = tmp_blue
+            windows(j, 2) = tmp_red
+          endif
+        end do
+      end do
+    END SUBROUTINE sort_windows
+
+    !===============================================================================
+    ! Merge overlapping or touching windows. Windows must be sorted by blue edge.
+    ! Updates the windows array in place and reduces n.
+    !===============================================================================
+    SUBROUTINE merge_overlapping_windows(windows, n)
+      real(8), intent(inout) :: windows(:, :)
+      integer, intent(inout) :: n
+      integer :: i, j
+      real(8), parameter :: merge_tol = 1d-10
+
+      i = 1
+      do while (i < n)
+        ! Check if window i and i+1 overlap or touch
+        if (windows(i+1, 1) <= windows(i, 2) + merge_tol) then
+          ! Merge: extend window i's red edge to the maximum of the two
+          windows(i, 2) = max(windows(i, 2), windows(i+1, 2))
+          ! Remove window i+1 by shifting
+          do j = i+1, n-1
+            windows(j, 1) = windows(j+1, 1)
+            windows(j, 2) = windows(j+1, 2)
+          end do
+          n = n - 1
+        else
+          i = i + 1
+        endif
+      end do
+    END SUBROUTINE merge_overlapping_windows
+
+    !===============================================================================
+    ! Append array b to array a, growing a in place
+    !===============================================================================
+    SUBROUTINE append_to_array(a, b)
+      real(8), dimension(:), allocatable, intent(inout) :: a
+      real(8), dimension(:), intent(in) :: b
+      real(8), dimension(:), allocatable :: tmp
+      integer :: na, nb
+
+      na = size(a)
+      nb = size(b)
+
+      if (nb == 0) return
+
+      if (na == 0) then
+        if (allocated(a)) deallocate(a)
+        allocate(a(nb))
+        a = b
+      else
+        allocate(tmp(na + nb))
+        tmp(1:na) = a
+        tmp(na+1:na+nb) = b
+        deallocate(a)
+        allocate(a(na+nb))
+        a = tmp
+        deallocate(tmp)
+      endif
+    END SUBROUTINE append_to_array
+
+    !===============================================================================
+    ! Check if a real number is finite (not inf or nan)
+    !===============================================================================
+    PURE LOGICAL FUNCTION isfinite(x) result(res)
+      real(8), intent(in) :: x
+      res = x == x .and. abs(x) < huge(x)
+    END FUNCTION isfinite
+
     !===============================================================================
     SUBROUTINE init(self)
       class(spectrum_type) :: self
@@ -48,7 +297,7 @@ MODULE spectrum_mod
       integer :: iostat, i, lunit
       logical :: grid_in_vac
       namelist /spectrum_params/ daa, aa_red, aa_blue, nnu, give_lam, in_log, R, &
-      lam_file, in_air
+      lam_file, window_file, in_air
       namelist /sp_wavelengths/ lam
       !-----------------------------------------------------------------------------
       grid_in_vac = .false.
@@ -61,10 +310,10 @@ MODULE spectrum_mod
       call io%namelist_warning ('spectrum_params', iostat)
       write (io%namelist, spectrum_params)
 
-      ! No explicit sampling grid (daa/nnu/R/lam_file). If a bare window is given, request
+      ! No explicit sampling grid (daa/nnu/R/lam_file/window_file). If a bare window is given, request
       ! cropping the atom-native output grid (built later from the model atom's transitions)
       ! to [aa_blue, aa_red]; otherwise the output grid spans the atom's full range.
-      if (daa==0 .and. nnu==0 .and. R==0 .and. lam_file=='') then
+      if (daa==0 .and. nnu==0 .and. R==0 .and. lam_file=='' .and. window_file=='') then
         crop_output = aa_red /= 0 .and. aa_blue /= 0
         if (crop_output) then
           crop_blue = aa_blue
@@ -76,6 +325,22 @@ MODULE spectrum_mod
         endif
         return
       endif
+
+      ! Validate that window_file is not used with incompatible options
+      if (window_file /= '') then
+        if (R <= 0) then
+          stop 'window_file requires R > 0 for constant-R grid construction'
+        endif
+        if (lam_file /= '') then
+          stop 'window_file and lam_file are mutually exclusive'
+        endif
+        if (give_lam) then
+          stop 'window_file and give_lam are mutually exclusive'
+        endif
+        if (in_log) then
+          stop 'window_file and in_log are mutually exclusive; grid is built in linear vacuum wavelength'
+        endif
+      endif
       if (give_lam .and. nnu>0) then
         allocate(lam(nnu))
         rewind (io%input)
@@ -86,6 +351,9 @@ MODULE spectrum_mod
         end if
         call io%namelist_warning ('spectrum_params', iostat)
         write (io%namelist, sp_wavelengths)
+      elseif (window_file /= '') then
+        call build_segmented_grid(window_file, in_air, R, lam, nnu, self)
+        grid_in_vac = .true.
       elseif (lam_file /= '') then
         nnu = 0
         call os%check_file(lam_file)
@@ -145,6 +413,8 @@ MODULE spectrum_mod
       class(spectrum_type) :: self
       real(8), intent(in), dimension(:), optional :: lam, nu
       real(8), allocatable, dimension(:) :: tmp_lam, tmp_nu
+      integer :: i
+      logical :: segments_valid
       !-----------------------------------------------------------------------------
       ! 1. Capture inputs into local temporaries immediately
       if (present(lam)) allocate(tmp_lam, source=lam)
@@ -152,7 +422,7 @@ MODULE spectrum_mod
 
       if (allocated(self%lam)) deallocate(self%lam)
       if (allocated(self%nu)) deallocate(self%nu)
-      
+
       if (present(lam)) then
         allocate(self%lam, source=tmp_lam)
         allocate(self%nu, source=HZ_TO_AA / self%lam)
@@ -163,6 +433,39 @@ MODULE spectrum_mod
       endif
       self%nnu = size(self%nu)
       self%equidistant = is_log_equidistant(self%lam)
+
+      ! Validate segment metadata invariant: the stored metadata is valid exactly when
+      ! segment_last(n_segments) equals the installed grid size and the segment ranges
+      ! tile 1..nnu without gaps or overlaps.
+      if (self%n_segments > 0) then
+        segments_valid = .false.
+        if (self%nnu > 0 .and. allocated(self%segment_first) .and. allocated(self%segment_last)) then
+          ! Check the main invariant: last segment ends at grid boundary
+          if (self%segment_last(self%n_segments) == self%nnu) then
+            ! First segment must start at 1
+            if (self%segment_first(1) == 1) then
+              ! Check for gaps or overlaps between segments
+              segments_valid = .true.
+              do i = 1, self%n_segments - 1
+                if (self%segment_last(i) + 1 /= self%segment_first(i+1)) then
+                  segments_valid = .false.
+                  exit
+                endif
+              end do
+            endif
+          endif
+        endif
+
+        ! Invalidate if the invariant is violated
+        if (.not. segments_valid) then
+          if (allocated(self%segment_first)) deallocate(self%segment_first)
+          if (allocated(self%segment_last)) deallocate(self%segment_last)
+          if (allocated(self%segment_blue_vac)) deallocate(self%segment_blue_vac)
+          if (allocated(self%segment_red_vac)) deallocate(self%segment_red_vac)
+          call io%warning('spectrum_type%reset: grid size changed; segment metadata invalidated')
+          self%n_segments = 0
+        endif
+      endif
     END SUBROUTINE reset
 
     !===============================================================================

@@ -795,7 +795,8 @@ contains
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_particle_opacity(ptc, temp, vmic, dxi, llam, chi, eta, cont, logref, &
                                   vproj, e_kT, ne, tothi, stark_pe, dep_ev, dep_mem, &
-                                  do_nlte, equidistant, one_m_eps, chi_scat, i0, i1)
+                                  do_nlte, equidistant, one_m_eps, chi_scat, i0, i1, &
+                                  population, population_scale)
     class(particle_type), intent(inout) :: ptc
     real(4),  dimension(:,:,:),   intent(in)    :: temp, vmic, vproj, e_kT, ne, tothi, stark_pe
     real(dp), dimension(:,:,:),   intent(in)    :: dxi
@@ -810,11 +811,13 @@ contains
     real(4), dimension(:,:,:,:), intent(in),    optional :: one_m_eps
     real(4), dimension(:,:,:,:), intent(inout), optional :: chi_scat
     integer, intent(in), optional :: i0, i1
+    real(dp), dimension(:,:,:), pointer, intent(in), optional :: population
+    real(dp), intent(in), optional :: population_scale
     real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
     real(4)  :: eps_dummy(0,0,0,0), scat_dummy(0,0,0,0)
     real(dp) :: iso_frac
     integer  :: m(3), kiso, ll_n, l, lo, hi
-    logical  :: do_scat
+    logical  :: do_scat, use_population
     !-----------------------------------------------------------------------------------
     m = shape(temp)
     lo = 1;  hi = size(ptc%n, 1)
@@ -823,6 +826,8 @@ contains
     if (hi - lo + 1 /= m(1)) error stop 'add_particle_opacity: cell range does not match the per-cell arrays'
     allocate(idf3(m(1),m(2),m(3)), vb3(m(1),m(2),m(3)), lnbase(m(1),m(2),m(3),1))
     do_scat = present(one_m_eps) .and. present(chi_scat)
+    use_population = .false.
+    if (present(population)) use_population = associated(population)
 
     ! one kernel call per isotope: its own line list ll(kiso), Doppler width, mean
     ! velocity and isotope fraction (the fraction is applied here, per isotope, rather
@@ -847,7 +852,14 @@ contains
         ! the log: molecules are legitimately absent (n==0) where they do not form, and
         ! log(0)=-Inf raises the divide-by-zero FP trap under full_debug. The floored value
         ! gives a large negative lnbase -> exp(lnbase)=0 downstream, i.e. no opacity.
-        lnbase(:,:,:,1) = log(max(ptc%n(lo:hi,:,:), tiny(1.0_dp))) - ptc%part(lo:hi,:,:) &
+        if (use_population) then
+          lnbase(:,:,:,1) = log(max(population(lo:hi,:,:), tiny(1.0_dp)))
+        else
+          lnbase(:,:,:,1) = log(max(ptc%n(lo:hi,:,:), tiny(1.0_dp)))
+          if (present(population_scale)) &
+            lnbase(:,:,:,1) = lnbase(:,:,:,1) + real(log(population_scale),4)
+        endif
+        lnbase(:,:,:,1) = lnbase(:,:,:,1) - ptc%part(lo:hi,:,:) &
                         + real(dxi) * (ptc%j-1) * e_kT + log(idf3) &
                         + real(log(iso_frac), 4)
 

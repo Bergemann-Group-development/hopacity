@@ -22,6 +22,18 @@ MODULE composition_mod
   implicit none
   private
 
+  ! One species' answer for one abundance set: either the populations a
+  ! molecular re-solve produced, or -- for an element outside the network, whose
+  ! stages simply follow its abundance at fixed (T, ne) -- the scalar that
+  ! multiplies the base populations. Both are resolved when the sets are
+  ! prepared, so the opacity loop only ever matches an id against this table.
+  type :: set_population_t
+    integer :: i_set=0
+    character(len=6) :: id=''
+    real(dp) :: scale=1d0
+    real(dp), dimension(:,:,:), pointer :: n => null()
+  end type set_population_t
+
   type, public :: composition_type
     logical :: initialised, ll_initialised=.false., loaded=.false.
     integer :: nel, nmolec, nline, verbose
@@ -38,6 +50,12 @@ MODULE composition_mod
     ! calls (the ne iteration re-solves the same cells with nearly the
     ! same state); allocated and maintained by molecular_equilibrium
     real(dp), dimension(:,:,:,:), allocatable :: moleq_seed
+    ! electron fraction per hydrogen nucleus the last molecular equilibrium
+    ! converged on. It is not ne/toth: toth is rebuilt from the model's own rho,
+    ! while this is the fe that balanced the molecules, and re-entering the
+    ! solver with anything else moves a converged state (see
+    ! prepare_abundance_sets)
+    real(dp), dimension(:,:,:), allocatable :: moleq_fe
     ! set by set_aux_data: temp identical to the previous call's, so
     ! temp-only derived quantities (molecular part/dis) may be reused
     logical :: same_temp = .false.
@@ -61,6 +79,9 @@ MODULE composition_mod
     ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
     ! ferried from init_tabulated_comp down to each rt_patch's opac table
     type(pca_transform_type) :: pca
+    real(dp), allocatable :: set_da(:,:)       ! (atomic number, output set)
+    logical, allocatable :: set_element(:,:)   ! explicit manifest entries
+    type(set_population_t), allocatable :: set_pop(:)
   contains
     procedure :: init => injon
     procedure :: load_state_variables
@@ -98,6 +119,9 @@ MODULE composition_mod
     procedure :: parse_mol_id
     procedure :: print_opacity_contributions
     procedure :: get_table_sp
+    procedure :: prepare_abundance_sets
+    procedure :: set_population
+    procedure :: population_ratio
   end type
 
   type, public :: departure_pointer_t
@@ -1166,7 +1190,8 @@ contains
   ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
-                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in)
+                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
+                                     i_set)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1189,6 +1214,7 @@ contains
     real(4), intent(inout), dimension(:,:,:,:),   optional :: chi_scat
     real(4), intent(in),    dimension(:,:,:,:),   optional :: beta
     integer, intent(in), optional :: i0, i1
+    integer, intent(in), optional :: i_set
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
@@ -1201,11 +1227,13 @@ contains
     real(4), dimension(:,:,:,:), allocatable :: dummy_dep, logref
     real(4), dimension(:,:,:), pointer, contiguous :: vpr
     real(4), dimension(:,:,:), pointer :: bi, bj
+    real(dp), dimension(:,:,:), pointer :: set_n
+    real(dp) :: set_scale
     real(8), dimension(:), allocatable, target :: llam_mem
     real(8), dimension(:), pointer :: llam
     real(8), intent(in), dimension(:), optional, target :: llam_in
     real(4) :: log_tol_over_voigt_peak
-    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn
+    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn, set_index
     logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
@@ -1216,6 +1244,8 @@ contains
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
     nn = hi - lo + 1
+    set_index = 0
+    if (present(i_set)) set_index = i_set
     allocate(tothi(nn,m(2),m(3)))
     allocate(stark_pe, ne, temp, e_kT, inv_df, vbar2, fo, t3nhe, &
              ni, nj, mold=tothi)
@@ -1281,6 +1311,16 @@ contains
         endif
         ni = ion%levels(line%i)%n(lo:hi,:,:)
         nj = ion%levels(line%j)%n(lo:hi,:,:)
+        call self%set_population(ion%id, set_index, set_n, set_scale)
+        if (associated(set_n)) then
+          where (ion%n(lo:hi,:,:) > 0d0)
+            ni = ni * real(set_n(lo:hi,:,:)/ion%n(lo:hi,:,:),4)
+            nj = nj * real(set_n(lo:hi,:,:)/ion%n(lo:hi,:,:),4)
+          endwhere
+        else
+          ni = ni * real(set_scale,4)
+          nj = nj * real(set_scale,4)
+        endif
         if (H_occupation_probability) then
           ni = ni * ion%levels(line%j)%w(lo:hi,:,:)
           nj = nj * ion%levels(line%j)%w(lo:hi,:,:)
@@ -1373,11 +1413,13 @@ contains
       ! the per-isotope population base / Doppler width construction and the kernel
       ! dispatch now live in linelist_mod (add_particle_opacity); we own only the patch
       ! work arrays and the departure lookup, and hand the resolved dep arrays in.
+      call self%set_population(ptc%id, set_index, set_n, set_scale)
       if (associated(dep)) then
         ! NLTE species: departure-coefficient source, no scattering split
         call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
-          .true., sp%equidistant, i0=lo, i1=hi)
+          .true., sp%equidistant, i0=lo, i1=hi, &
+          population=set_n, population_scale=set_scale)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
@@ -1385,11 +1427,12 @@ contains
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
           one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
-          i0=lo, i1=hi)
+          i0=lo, i1=hi, population=set_n, population_scale=set_scale)
       else
         call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
-          .false., sp%equidistant, i0=lo, i1=hi)
+          .false., sp%equidistant, i0=lo, i1=hi, &
+          population=set_n, population_scale=set_scale)
       endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2
@@ -1454,7 +1497,8 @@ contains
   END SUBROUTINE reassign_pointer
 
   !===============================================================================
-  SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic, vx, vy, vz)
+  SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic, vx, vy, vz, &
+                                  set_da, set_element)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1463,6 +1507,8 @@ contains
     real(dp), intent(in), dimension(:,:,:) :: temp, ne, rho
     logical, intent(in), optional :: use_rho, use_ne
     real(4), intent(in), dimension(:,:,:), optional :: vmic, vx, vy, vz
+    real(8), intent(in), dimension(:,:), optional :: set_da
+    logical, intent(in), dimension(:,:), optional :: set_element
     real(dp), dimension(:,:,:), allocatable :: ro, eh, charge
     real(4), dimension(:,:,:,:), pointer :: chi500
     real(dp) :: nu500(1), nudebug(1)
@@ -1539,6 +1585,9 @@ contains
     call self%compute_energy_and_gas_pressure(self%eh, self%E, self%pg)
     call self%compute_damping_aux()
     call self%init_H_levels()
+
+    if (present(set_da) .and. present(set_element)) &
+      call self%prepare_abundance_sets(set_da, set_element)
 
     do i=1, self%nel
       element => self%elements(i)
@@ -1738,6 +1787,13 @@ contains
       if (.not. allocated(self%part_hocc)) allocate(self%part_hocc, mold=self%temp)
       self%part_hocc = HI%part
     endif
+
+    ! the fe the molecules balanced at, kept for the abundance-set re-solve
+    if (allocated(self%moleq_fe)) then
+      if (.not. all(shape(self%moleq_fe) == shape(fe))) deallocate(self%moleq_fe)
+    endif
+    if (.not. allocated(self%moleq_fe)) allocate(self%moleq_fe, mold=fe)
+    self%moleq_fe = fe
 
     do z=1, size(rho,3)
       do y=1, size(rho,2)
@@ -2517,7 +2573,233 @@ contains
   END SUBROUTINE opacity
 
   !===============================================================================
-  SUBROUTINE get_totn(self, id, abund, totn, el, mol)
+  !> Precompute the population changes for molecular abundance sets.
+  !>
+  !> A set's offset elements are re-solved through molecular_equilibrium at the
+  !> model's own (T, ne), warm-started from the base solution, and the resulting
+  !> populations are stored for the solve elements and the molecules. Elements
+  !> outside the molecular network are represented only by set_da and are scaled
+  !> where the opacity is formed: at fixed (T, ne) an offset leaves their
+  !> ionisation fractions alone, so the scaling is exact.
+  !>
+  !> What this does not carry is the continuum. The background is computed once
+  !> for the first set and shared (see rt_patch_mod's i_set==1 guard), while a
+  !> real run at that abundance re-forms it: measured on the CH G band of a cool
+  !> giant, a 0.2 dex C offset moves the continuum by 2.1%, against a line signal
+  !> of 1.8%, and what survives continuum normalisation is 11.5% of that signal.
+  !> The error is a wrong derivative -- it does not shrink with the offset -- so
+  !> a ladder on a molecule-forming element in a cool star carries it at any
+  !> rung. Restoring it means a per-set background, which the shared-continuum
+  !> design deliberately trades away.
+  !===============================================================================
+  SUBROUTINE prepare_abundance_sets(self, da, present_element)
+    class(composition_type), target :: self
+    type(ion_pointer_t), allocatable :: mions(:)
+    real(dp), allocatable :: fe(:,:,:), fe0(:,:,:), xnecno(:,:,:), seed(:,:,:,:)
+    real(8), intent(in) :: da(:,:)
+    logical, intent(in) :: present_element(:,:)
+    real(dp) :: base_abund(92), frac_change
+    integer :: i, j, k, s, nions, nstore, ipop
+    logical, allocatable :: molecular_set(:)
+    !-----------------------------------------------------------------------------
+    if (size(da,1) /= 92 .or. any(shape(da) /= shape(present_element))) &
+      error stop 'prepare_abundance_sets: invalid set layout shape'
+    allocate(self%set_da, source=da)
+    allocate(self%set_element, source=present_element)
+    allocate(molecular_set(size(da,2)), source=.false.)
+    base_abund = 0d0
+    do i=1,self%nel
+      if (self%elements(i)%np > 0) base_abund(self%elements(i)%np) = self%elements(i)%abund
+      if (self%elements(i)%ions(1)%nmolec > 0 .and. self%elements(i)%np > 0) then
+        do s=1,size(da,2)
+          molecular_set(s) = molecular_set(s) .or. present_element(self%elements(i)%np,s)
+        enddo
+      endif
+    enddo
+    ! Table size: a molecular set stores populations for every solve element's
+    ! ions and every molecule, and any set stores one scale entry per ion of each
+    ! offset element that forms no molecules.
+    nions = count([(self%elements(i)%ions(1)%nmolec > 0, i=1,self%nel)])
+    nstore = self%nmolec
+    do i=1,self%nel
+      if (self%elements(i)%ions(1)%nmolec <= 0) cycle
+      nstore = nstore + size(self%elements(i)%ions)
+    enddo
+    nstore = nstore*count(molecular_set)
+    do s=1,size(da,2)
+      do i=1,self%nel
+        if (self%elements(i)%np <= 0) cycle
+        if (self%elements(i)%ions(1)%nmolec > 0) cycle
+        if (present_element(self%elements(i)%np,s)) nstore = nstore + size(self%elements(i)%ions)
+      enddo
+    enddo
+    if (nstore == 0) return
+    allocate(self%set_pop(nstore))
+    ipop = 0
+
+    ! the scale entries: at fixed (T, ne) an element outside the molecular
+    ! network keeps its ionisation fractions, so every stage follows its
+    ! abundance by the same factor
+    do s=1,size(da,2)
+      do i=1,self%nel
+        if (self%elements(i)%np <= 0) cycle
+        if (self%elements(i)%ions(1)%nmolec > 0) cycle
+        if (.not. present_element(self%elements(i)%np,s)) cycle
+        do j=lbound(self%elements(i)%ions,1),ubound(self%elements(i)%ions,1)
+          ipop = ipop + 1
+          self%set_pop(ipop)%i_set = s
+          self%set_pop(ipop)%id = self%elements(i)%ions(j)%id
+          self%set_pop(ipop)%scale = 10d0**da(self%elements(i)%np,s)
+        enddo
+      enddo
+    enddo
+    if (.not. any(molecular_set)) return
+
+    allocate(mions(nions))
+    k = 0
+    do i=1,self%nel
+      if (self%elements(i)%ions(1)%nmolec <= 0) cycle
+      k = k + 1
+      mions(k)%p => self%elements(i)%ions(1)
+    enddo
+    allocate(fe, fe0, xnecno, mold=self%temp)
+    ! the base solve's own converged fe: re-entering the Newton with it and an
+    ! unchanged composition is a fixed point, which is what makes a da = 0 set
+    ! reproduce the base state exactly.
+    if (.not. allocated(self%moleq_fe)) &
+      error stop 'prepare_abundance_sets: no converged molecular equilibrium to re-enter'
+    fe0 = self%moleq_fe
+
+    ! Electrons from the elements that form no molecules. At fixed (T, ne) an
+    ! offset elsewhere leaves their ionisation fractions alone, so this is the
+    ! same for every set and is built once.
+    xnecno = 0d0
+    do i=1,self%nel
+      if (any(self%elements(i)%ions%nmolec /= 0)) cycle
+      do j=lbound(self%elements(i)%ions,1),ubound(self%elements(i)%ions,1)
+        xnecno = xnecno + self%elements(i)%ions(j)%f * (j-1)
+      enddo
+    enddo
+
+    do s=1,size(da,2)
+      if (.not. molecular_set(s)) cycle
+      do i=1,self%nel
+        if (self%elements(i)%np > 0 .and. present_element(self%elements(i)%np,s)) &
+          self%elements(i)%abund = base_abund(self%elements(i)%np) * 10d0**da(self%elements(i)%np,s)
+      enddo
+
+      fe = fe0
+      if (allocated(self%moleq_seed)) allocate(seed, source=self%moleq_seed)
+      call molecular_equilibrium(self%molecules, mions, self%tmolim, self%temp, &
+                                 self%teta, self%e_kT, self%pe, xnecno, fe, &
+                                 ysave=seed, same_state=self%same_temp)
+
+      do i=1,self%nel
+        if (self%elements(i)%ions(1)%nmolec <= 0) cycle
+        do j=lbound(self%elements(i)%ions,1),ubound(self%elements(i)%ions,1)
+          ipop = ipop + 1
+          self%set_pop(ipop)%i_set = s
+          self%set_pop(ipop)%id = self%elements(i)%ions(j)%id
+          allocate(self%set_pop(ipop)%n, source=self%elements(i)%ions(j)%f*self%toth)
+        enddo
+      enddo
+      do i=1,self%nmolec
+        ipop = ipop + 1
+        self%set_pop(ipop)%i_set = s
+        self%set_pop(ipop)%id = self%molecules(i)%id
+        allocate(self%set_pop(ipop)%n, source=self%molecules(i)%f*self%toth)
+      enddo
+
+      frac_change = maxval(abs(fe-fe0) / max(abs(fe0), tiny(1d0)))
+      if (frac_change > 1d-3 .and. self%verbose > 0) &
+        print '(a,i0,a,es10.3)', ' abundance set ', s, &
+          ' changes the electron fraction at fixed ne by ', frac_change
+
+      ! Back to the base state for the next set and for the RT. The number
+      ! densities n were formed before this routine and the solver never touches
+      ! them, so the fractions they came from are recovered exactly.
+      do i=1,self%nel
+        if (self%elements(i)%np > 0) self%elements(i)%abund = base_abund(self%elements(i)%np)
+        if (self%elements(i)%ions(1)%nmolec <= 0) cycle
+        do j=lbound(self%elements(i)%ions,1),ubound(self%elements(i)%ions,1)
+          self%elements(i)%ions(j)%f = self%elements(i)%ions(j)%n / self%toth
+        enddo
+      enddo
+      do i=1,self%nmolec
+        self%molecules(i)%f = self%molecules(i)%n / self%toth
+      enddo
+      if (allocated(seed)) deallocate(seed)
+    enddo
+  END SUBROUTINE prepare_abundance_sets
+
+  !===============================================================================
+  SUBROUTINE set_population(self, id, i_set, population, scale)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: id
+    integer, intent(in) :: i_set
+    real(dp), dimension(:,:,:), pointer, intent(out) :: population
+    real(dp), intent(out) :: scale
+    integer :: i
+    !-----------------------------------------------------------------------------
+    ! A table match, and nothing else: this runs once per species per set inside
+    ! the opacity loop, so the species -> element resolution (and the abundance
+    ! it implies) is done when the sets are prepared, not here.
+    population => null()
+    scale = 1d0
+    if (.not. allocated(self%set_pop)) return
+    do i=1,size(self%set_pop)
+      if (self%set_pop(i)%i_set == i_set .and. &
+          trim(self%set_pop(i)%id) == trim(id)) then
+        population => self%set_pop(i)%n
+        scale = self%set_pop(i)%scale
+        return
+      endif
+    enddo
+  END SUBROUTINE set_population
+
+  !===============================================================================
+  SUBROUTINE population_ratio(self, id, i_set, ratio)
+    class(composition_type), target :: self
+    character(len=*), intent(in) :: id
+    integer, intent(in) :: i_set
+    real(dp), intent(out), dimension(:,:,:) :: ratio
+    class(element_type), pointer :: element
+    class(molec_type), pointer :: mol
+    real(dp), dimension(:,:,:), pointer :: pop
+    real(dp), allocatable :: base(:,:,:), changed(:,:,:)
+    real(dp) :: scale
+    integer :: j
+    !-----------------------------------------------------------------------------
+    ratio = 1d0
+    call self%element_by_id(id, element, verbose=.false.)
+    if (associated(element)) then
+      allocate(base, changed, mold=ratio)
+      base = 0d0; changed = 0d0
+      do j=lbound(element%ions,1),ubound(element%ions,1)
+        base = base + element%ions(j)%n
+        call self%set_population(element%ions(j)%id, i_set, pop, scale)
+        if (associated(pop)) then
+          changed = changed + pop
+        else
+          changed = changed + scale*element%ions(j)%n
+        endif
+      enddo
+      where (base > 0d0) ratio = changed/base
+      return
+    endif
+    call self%molecule_by_id(id, mol, verbose=.false.)
+    if (associated(mol)) then
+      call self%set_population(mol%id, i_set, pop, scale)
+      if (associated(pop)) then
+        where (mol%n > 0d0) ratio = pop/mol%n
+      else
+        ratio = scale
+      endif
+    endif
+  END SUBROUTINE population_ratio
+
+  !===============================================================================
+  SUBROUTINE get_totn(self, id, abund, totn, el, mol, i_set)
     class(composition_type), target :: self
     class(element_type), intent(out), optional, pointer :: el
     class(molec_type), intent(out), optional, pointer :: mol
@@ -2526,6 +2808,8 @@ contains
     character(len=*), intent(in) :: id
     real(dp), intent(in) :: abund
     real(dp), dimension(:,:,:) :: totn
+    integer, intent(in), optional :: i_set
+    real(dp), allocatable :: ratio(:,:,:)
     integer :: j
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%get_totn')
@@ -2545,6 +2829,12 @@ contains
       else
         totn = 10.0**(abund-12.0) * self%toth
       endif
+    endif
+
+    if (present(i_set)) then
+      allocate(ratio, mold=totn)
+      call self%population_ratio(id, i_set, ratio)
+      totn = totn * ratio
     endif
 
     if (present(el) .and. present(mol)) then
