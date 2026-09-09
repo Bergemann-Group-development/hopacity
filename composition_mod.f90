@@ -14,7 +14,7 @@ MODULE composition_mod
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
                           voigt_peak, interval_t, merge_intervals, in_any_interval, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
-  USE spectrum_mod, only: spectrum_type
+  USE spectrum_mod, only: spectrum_type, window_file
   USE optab_mod, only: pca_transform_type
   USE osmet_mod, only:osmet, compute_epsilon_stage
   USE omp_lib
@@ -1245,6 +1245,7 @@ contains
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
+    real(8) :: lam_margin
     real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
     real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
@@ -1306,6 +1307,21 @@ contains
       llam_mem = log(sp%lam)
       llam => llam_mem
     endif
+
+    ! This patch's line neighbourhood in log(lambda). dlam is the selection half-width in
+    ! Angstrom, so dividing by the bluest wavelength of the patch gives the widest log-space
+    ! equivalent. Handing it to the kernels confines each patch to the lines the selection
+    ! would have kept for its own window: with a disjoint multi-window list the forward march
+    ! would otherwise clamp another window's lines onto this patch's edge.
+    ! Only a segmented (multi-window) output grid needs this: there the shared line list is
+    ! disjoint, and the forward march would otherwise clamp another window's lines onto this
+    ! patch's edge. A contiguous grid keeps the existing whole-list visit, so ordinary runs
+    ! are unaffected; a negative margin means "no restriction".
+    if (window_file /= '') then
+      lam_margin = dlam / exp(llam(1))
+    else
+      lam_margin = -1d0
+    end if
 
     ! Precompute once here (shared by all particles); guard non-positive continuum.
     allocate(logref(nf, nn, m(2), m(3)))
@@ -1446,7 +1462,7 @@ contains
         call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
           .true., sp%equidistant, i0=lo, i1=hi, &
-          population=set_n, population_scale=set_scale)
+          population=set_n, population_scale=set_scale, lam_margin=lam_margin)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
@@ -1454,12 +1470,12 @@ contains
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
           one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
-          i0=lo, i1=hi, population=set_n, population_scale=set_scale)
+          i0=lo, i1=hi, population=set_n, population_scale=set_scale, lam_margin=lam_margin)
       else
         call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, i0=lo, i1=hi, &
-          population=set_n, population_scale=set_scale)
+          population=set_n, population_scale=set_scale, lam_margin=lam_margin)
       endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2

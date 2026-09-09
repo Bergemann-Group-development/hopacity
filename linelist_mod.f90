@@ -378,7 +378,7 @@ contains
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
                          lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-                         one_m_eps, chi_scat, do_scat, i0, i1)
+                         one_m_eps, chi_scat, do_scat, i0, i1, lam_margin)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
@@ -395,6 +395,13 @@ contains
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
     integer,  intent(in), optional :: i0, i1
+    ! lam_margin: half-width in log(lambda) of this patch's line neighbourhood. When
+    ! present, only lines whose centre lies within [llam(1)-lam_margin, llam(nf)+lam_margin]
+    ! are visited, which is the same neighbourhood the selection applied when the list was
+    ! built. A disjoint multi-window list otherwise lets a foreign line clamp onto this
+    ! patch's edge through the forward march, so a window would not reproduce its own run.
+    real(dp), intent(in), optional :: lam_margin
+    integer  :: l0, l1
     integer  :: f0_prev
     real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb, lo, hi, io, mem_offset
@@ -410,6 +417,15 @@ contains
     nf = size(llam)
     nl = ll%nline
     np = size(lnbase, 4)
+    ! patch-local line slice (llam0 is ascending, see finalize_linelist)
+    l0 = 1
+    l1 = nl
+    if (present(lam_margin) .and. nl > 0 .and. nf > 0) then
+     if (lam_margin > 0) then
+      l0 = lower_bound8(ll%llam0, nl, llam(1)  - lam_margin)
+      l1 = upper_bound8(ll%llam0, nl, llam(nf) + lam_margin)
+     end if
+    end if
     if (nl == 0) return
     has_ipart = allocated(ll%ipart)
     c_visit = 0; c_pass = 0; c_voigt = 0; c_march = 0
@@ -445,7 +461,7 @@ contains
           ws = 1
           we = nf
 
-          do l = 1, nl
+          do l = l0, l1
             if (.not. ll%active(l)) cycle
             c_visit = c_visit + 1
 
@@ -599,7 +615,7 @@ contains
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, &
                               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-                              one_m_eps, chi_scat, do_scat, i0, i1)
+                              one_m_eps, chi_scat, do_scat, i0, i1, lam_margin)
     type(linelist_type), intent(inout) :: ll
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
@@ -614,6 +630,13 @@ contains
     real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
     logical,  intent(in) :: do_scat
     integer,  intent(in), optional :: i0, i1
+    ! lam_margin: half-width in log(lambda) of this patch's line neighbourhood. When
+    ! present, only lines whose centre lies within [llam(1)-lam_margin, llam(nf)+lam_margin]
+    ! are visited, which is the same neighbourhood the selection applied when the list was
+    ! built. A disjoint multi-window list otherwise lets a foreign line clamp onto this
+    ! patch's edge through the forward march, so a window would not reproduce its own run.
+    real(dp), intent(in), optional :: lam_margin
+    integer  :: l0, l1
     integer  :: f0_prev
     real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw, lo, hi, io, mem_offset
@@ -633,6 +656,15 @@ contains
     nf = size(llam)
     nl = ll%nline
     np = size(lnbase, 4)
+    ! patch-local line slice (llam0 is ascending, see finalize_linelist)
+    l0 = 1
+    l1 = nl
+    if (present(lam_margin) .and. nl > 0 .and. nf > 0) then
+     if (lam_margin > 0) then
+      l0 = lower_bound8(ll%llam0, nl, llam(1)  - lam_margin)
+      l1 = upper_bound8(ll%llam0, nl, llam(nf) + lam_margin)
+     end if
+    end if
     if (nl == 0) return
     if (nf < 2) return
     has_ipart = allocated(ll%ipart)
@@ -677,7 +709,7 @@ contains
           ! line-independent part of log(Rij) per population group (idf folded in)
           base_s(1:np) = lnbase(io,j,k,1:np)
 
-          do l = 1, nl
+          do l = l0, l1
             if (.not. ll%active(l)) cycle
             c_visit = c_visit + 1
 
@@ -855,7 +887,7 @@ contains
   SUBROUTINE add_particle_opacity(ptc, temp, vmic, dxi, llam, chi, eta, cont, logref, &
                                   vproj, e_kT, ne, tothi, stark_pe, dep_ev, dep_mem, &
                                   do_nlte, equidistant, one_m_eps, chi_scat, i0, i1, &
-                                  population, population_scale)
+                                  population, population_scale, lam_margin)
     class(particle_type), intent(inout) :: ptc
     real(4),  dimension(:,:,:),   intent(in)    :: temp, vmic, vproj, e_kT, ne, tothi, stark_pe
     real(dp), dimension(:,:,:),   intent(in)    :: dxi
@@ -870,6 +902,8 @@ contains
     real(4), dimension(:,:,:,:), intent(in),    optional :: one_m_eps
     real(4), dimension(:,:,:,:), intent(inout), optional :: chi_scat
     integer, intent(in), optional :: i0, i1
+    ! passed straight to the kernels: this patch's line neighbourhood in log(lambda)
+    real(dp), intent(in), optional :: lam_margin
     real(dp), dimension(:,:,:), pointer, intent(in), optional :: population
     real(dp), intent(in), optional :: population_scale
     real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
@@ -935,21 +969,21 @@ contains
           if (do_scat) then
             call add_opacity_equi(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              one_m_eps, chi_scat, .true., i0, i1)
+              one_m_eps, chi_scat, .true., i0, i1, lam_margin)
           else
             call add_opacity_equi(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              eps_dummy, scat_dummy, .false., i0, i1)
+              eps_dummy, scat_dummy, .false., i0, i1, lam_margin)
           end if
         else
           if (do_scat) then
             call add_opacity(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              one_m_eps, chi_scat, .true., i0, i1)
+              one_m_eps, chi_scat, .true., i0, i1, lam_margin)
           else
             call add_opacity(sll, llam, chi, eta, cont, logref, vproj, idf3, vb3, &
               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
-              eps_dummy, scat_dummy, .false., i0, i1)
+              eps_dummy, scat_dummy, .false., i0, i1, lam_margin)
           end if
         end if
       end associate
@@ -1434,6 +1468,46 @@ contains
   ! Check if a wavelength (in vacuum) falls within any of the given intervals.
   ! An interval includes its boundaries (closed interval [blue, red]).
   !-------------------------------------------------------------------------------------
+  ! First index with a(i) >= x, or n+1 when every entry is below x. Together with
+  ! upper_bound8 this brackets a sorted array; an empty bracket gives l0 > l1 and so an
+  ! empty line loop, which is the correct result for a patch no line reaches.
+  PURE INTEGER FUNCTION lower_bound8(a, n, x) result(idx)
+    real(8), intent(in) :: a(:)
+    integer, intent(in) :: n
+    real(8), intent(in) :: x
+    integer :: lo, hi, mid
+    lo = 1
+    hi = n + 1
+    do while (lo < hi)
+      mid = (lo + hi) / 2
+      if (a(mid) >= x) then
+        hi = mid
+      else
+        lo = mid + 1
+      end if
+    end do
+    idx = lo
+  END FUNCTION lower_bound8
+
+  ! Last index with a(i) <= x, or 0 when every entry is above x.
+  PURE INTEGER FUNCTION upper_bound8(a, n, x) result(idx)
+    real(8), intent(in) :: a(:)
+    integer, intent(in) :: n
+    real(8), intent(in) :: x
+    integer :: lo, hi, mid
+    lo = 1
+    hi = n + 1
+    do while (lo < hi)
+      mid = (lo + hi) / 2
+      if (a(mid) > x) then
+        hi = mid
+      else
+        lo = mid + 1
+      end if
+    end do
+    idx = lo - 1
+  END FUNCTION upper_bound8
+
   PURE FUNCTION in_any_interval(lam_vac, intervals) result(in_interval)
     real(dp), intent(in) :: lam_vac
     type(interval_t), intent(in) :: intervals(:)
