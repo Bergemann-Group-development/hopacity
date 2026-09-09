@@ -403,7 +403,17 @@ MODULE spectrum_mod
       if (in_air .and. .not. grid_in_vac) lam = air2vac(lam)
       call self%reset(lam=lam)
       allocate(self%wnu(nnu))
-      call set_weights(self%wnu, self%nu)
+      if (self%n_segments > 0) then
+        ! Trapezoidal weights over the concatenated grid would span the gaps between
+        ! windows and are not quadrature weights for any of them. Each segment carries its
+        ! own edge weights instead.
+        do i = 1, self%n_segments
+          call set_weights(self%wnu(self%segment_first(i):self%segment_last(i)), &
+                           self%nu(self%segment_first(i):self%segment_last(i)))
+        end do
+      else
+        call set_weights(self%wnu, self%nu)
+      endif
       self%sorted=.true.
       deallocate(lam)
     END SUBROUTINE init
@@ -597,7 +607,7 @@ MODULE spectrum_mod
       class(spectrum_type), intent(inout):: self
       character(len=*), intent(in) :: label
       character(len=256) :: filename
-      integer :: lunit
+      integer :: lunit, i
       logical :: exists
       !-----------------------------------------------------------------------------
       filename = trim(io%run_dir) // 'save/' // trim(label) // '_lam.bin'
@@ -606,6 +616,22 @@ MODULE spectrum_mod
         open(newunit=lunit, file=filename, access='stream')
         write(lunit) self%lam
         close(lunit)
+      endif
+      ! A segmented grid is a concatenation of disjoint windows, so a reader cannot
+      ! recover the window boundaries from the wavelengths alone without guessing at
+      ! gaps. Write them out beside the grid.
+      if (self%n_segments > 0) then
+        filename = trim(io%run_dir) // 'save/' // trim(label) // '_segments.txt'
+        inquire(file=filename, exist=exists)
+        if (.not. exists) then
+          open(newunit=lunit, file=filename, form='FORMATTED')
+          write(lunit,'(a)') '# segment  first  last  blue_vac_AA  red_vac_AA'
+          do i = 1, self%n_segments
+            write(lunit,'(i9,2i7,2f14.5)') i, self%segment_first(i), self%segment_last(i), &
+                                           self%segment_blue_vac(i), self%segment_red_vac(i)
+          end do
+          close(lunit)
+        endif
       endif
     END SUBROUTINE save
 
