@@ -12,7 +12,7 @@ MODULE composition_mod
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE line_types_mod, only: linelist_type
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
-                          voigt_peak, &
+                          voigt_peak, interval_t, merge_intervals, in_any_interval, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type
   USE optab_mod, only: pca_transform_type
@@ -905,12 +905,13 @@ contains
   ! via add_h_block, which handles both the embedded H I block layout and the
   ! dedicated 'Hlinedata' column layout (selected by the hlinedata flag).
   !-------------------------------------------------------------------------------
-  SUBROUTINE init_linelist2 (self, linelist_file, dlam, lam)
+  SUBROUTINE init_linelist2 (self, linelist_file, dlam, lam, intervals)
     class(composition_type), target :: self
     class(particle_type), pointer :: particle
     character(len=*) :: linelist_file
     real(dp), intent(in) :: dlam
     real(dp), intent(in), dimension(:), optional :: lam
+    type(interval_t), intent(in), dimension(:), optional :: intervals
     character(len=:), allocatable :: buf
     integer(8), allocatable :: lstart(:), lend(:)
     character(20) :: ion_id, siso
@@ -919,7 +920,7 @@ contains
     integer :: lunit, iostat, nrec, p, nline, iso, iso_idx, nbefore, nkh, rel
     integer :: i, j, nactive, ntotal, niso
     integer(8) :: fsize, b0, bnl, e
-    logical :: isotope, ok, is_mol, lam_mask, hlinedata
+    logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
     !-----------------------------------------------------------------------------
     if (linelist_file == '' .and. .not. self%ll_initialised) return
@@ -943,7 +944,8 @@ contains
     self%ll_initialised = .true.
 
     lam_mask = present(lam)
-    if (lam_mask) then
+    use_intervals = present(intervals)
+    if (lam_mask .and. .not. use_intervals) then
       lam_min = lam(1) - dlam
       lam_max = lam(size(lam)) + dlam
     else
@@ -1032,7 +1034,8 @@ contains
       if (particle%id == 'H I') then
         ! hydrogen keeps the AoS / Stark-profile treatment (add_h_opacities)
         nbefore = particle%nline
-        call add_h_block(particle, buf, lstart(p:p+nline-1), lend(p:p+nline-1), nline)
+        call add_h_block(particle, buf, lstart(p:p+nline-1), lend(p:p+nline-1), nline, &
+                         lam_mask, lam_min, lam_max, intervals, use_intervals)
         nactive = nactive + (particle%nline - nbefore)
         p = p + nline
         cycle
@@ -1046,9 +1049,15 @@ contains
 
       particle%in_linelist = .true.
       nbefore = particle%ll(iso_idx)%nline
-      call build_linelist(particle%ll(iso_idx), buf, lstart(p:p+nline-1), &
-        lend(p:p+nline-1), nline, particle%awgt, particle%j, particle%xion, is_mol, &
-        vbar2e4, lam_mask, lam_min, lam_max)
+      if (use_intervals) then
+        call build_linelist(particle%ll(iso_idx), buf, lstart(p:p+nline-1), &
+          lend(p:p+nline-1), nline, particle%awgt, particle%j, particle%xion, is_mol, &
+          vbar2e4, lam_mask, lam_min, lam_max, intervals)
+      else
+        call build_linelist(particle%ll(iso_idx), buf, lstart(p:p+nline-1), &
+          lend(p:p+nline-1), nline, particle%awgt, particle%j, particle%xion, is_mol, &
+          vbar2e4, lam_mask, lam_min, lam_max)
+      end if
       nactive = nactive + (particle%ll(iso_idx)%nline - nbefore)
       p = p + nline
     end do
@@ -1101,25 +1110,39 @@ contains
     !       lam_air, lower_ev, loggf, gv, ga, gq, i, j
     !     -- i,j are derived from the level energies.
     ! The ga/label columns are inert (prepare_hydrogen_damping overwrites ga).
-    subroutine add_h_block(particle, buf, lstart, lend, n)
+    subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &
+                           intervals_arg, use_intervals_arg)
       class(particle_type), pointer :: particle
       character(len=*), intent(in) :: buf
       integer(8), intent(in) :: lstart(:), lend(:)
       integer, intent(in) :: n
+      logical, intent(in) :: mask
+      real(dp), intent(in) :: lam_min_arg, lam_max_arg
+      type(interval_t), intent(in), optional :: intervals_arg(:)
+      logical, intent(in), optional :: use_intervals_arg
       class(bbtrans_type), pointer :: lin
       type(bbtrans_type), allocatable :: tmp(:)
       real(dp) :: lam_air_h, lower_ev_h, upper_ev_h, loggf_h, gv_h, ga_h, gq_h, r_i, r_j
       real(dp) :: lam0v, upper_ev, lower_g, gij, fval
       character(len=150) :: label
       integer :: ii, ios, prev, nkeep, cnt, i_h, j_h
-      logical :: keep
+      logical :: keep, use_intervals_local
       !-------------------------------------------------------------------------
+      use_intervals_local = .false.
+      if (present(use_intervals_arg)) use_intervals_local = use_intervals_arg
+
       ! first pass: count masked-in lines so particle%line is sized exactly
       nkeep = 0
       do ii=1, n
         read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h
         lam0v = air2vac(lam_air_h)
-        keep = .not. lam_mask .or. (lam0v >= lam_min .and. lam0v <= lam_max)
+        if (.not. mask) then
+          keep = .true.
+        else if (use_intervals_local .and. present(intervals_arg)) then
+          keep = in_any_interval(lam0v, intervals_arg)
+        else
+          keep = (lam0v >= lam_min_arg .and. lam0v <= lam_max_arg)
+        end if
         if (keep) nkeep = nkeep + 1
       end do
       if (nkeep == 0) return
@@ -1144,8 +1167,12 @@ contains
                                           gv_h, ga_h, gq_h, r_i, r_j
         endif
         lam0v = air2vac(lam_air_h)
-        if (lam_mask) then
-          if (lam0v < lam_min .or. lam0v > lam_max) cycle
+        if (mask) then
+          if (use_intervals_local .and. present(intervals_arg)) then
+            if (.not. in_any_interval(lam0v, intervals_arg)) cycle
+          else
+            if (lam0v < lam_min_arg .or. lam0v > lam_max_arg) cycle
+          end if
         endif
         cnt = cnt + 1
         lin => particle%line(cnt)

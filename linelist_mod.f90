@@ -45,7 +45,12 @@ MODULE linelist_mod
   public :: add_particle_opacity
   public :: append_line, write_ll_header, write_ll_record, bij_const
   public :: reserve_linelist, print_ll_particle, print_ll_atom
-  public :: voigt_kernel_init
+  public :: voigt_kernel_init, merge_intervals, in_any_interval
+
+  ! Interval type: represents a wavelength range [blue_vac, red_vac] in vacuum Angstrom
+  type, public :: interval_t
+    real(dp) :: blue_vac, red_vac
+  end type interval_t
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
@@ -112,7 +117,7 @@ contains
   END SUBROUTINE voigt_kernel_init
 
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
-                            vbar2e4, do_mask, lam_min, lam_max)
+                            vbar2e4, do_mask, lam_min, lam_max, intervals)
     type(linelist_type), intent(inout) :: ll
     character(len=*),    intent(in)    :: buf
     integer(8),          intent(in)    :: lstart(:), lend(:)
@@ -120,66 +125,120 @@ contains
     real(dp),            intent(in)    :: awgt, xion, vbar2e4
     logical,             intent(in)    :: is_mol, do_mask
     real(dp),            intent(in)    :: lam_min, lam_max
-    real(dp) :: lam_air, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
-    real(dp) :: nu0, lam0, ga_t, gw1_t, gw2_t, gq_t
+    type(interval_t), intent(in), optional :: intervals(:)
+    real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
+    real(dp) :: nu0, ga_t, gw1_t, gw2_t, gq_t
     integer  :: lo, hi, nkeep, i, k, iostat
     integer, save :: it_mask=0, it_parse=0
     !-----------------------------------------------------------------------------------
     if (n <= 0) return
 
-    ! locate the contiguous in-range slice [lo:hi]
+    ! select records based on intervals (multi-window) or single lam_min/lam_max range
     call trace%begin ('ll_build_mask', itimer=it_mask)
     if (do_mask) then
-      lo = bisect_block(buf, lstart, lend, n, lam_min)     ! first record with lam >= lam_min
-      hi = bisect_block(buf, lstart, lend, n, lam_max) - 1 ! last  record with lam <= lam_max
-      ! bisect_block returns the first index with lam >= target; refine the upper edge
-      if (hi < n) then
-        if (parse_lam(buf(lstart(hi+1):lend(hi+1))) <= lam_max) hi = hi + 1
+      if (present(intervals)) then
+        ! multi-window selection: count lines in union of intervals
+        nkeep = 0
+        do i = 1, n
+          lam_air = parse_lam(buf(lstart(i):lend(i)))
+          lam_vac = air2vac(lam_air)
+          if (in_any_interval(lam_vac, intervals)) then
+            nkeep = nkeep + 1
+          end if
+        end do
+      else
+        ! single-window selection: use contiguous bisection
+        ! note: lam_min and lam_max are in vacuum Angstrom
+        lo = bisect_block(buf, lstart, lend, n, vac2air(lam_min))
+        hi = bisect_block(buf, lstart, lend, n, vac2air(lam_max)) - 1
+        ! bisect_block returns the first index with lam >= target; refine the upper edge
+        if (hi < n) then
+          if (parse_lam(buf(lstart(hi+1):lend(hi+1))) <= vac2air(lam_max)) hi = hi + 1
+        end if
+        nkeep = hi - lo + 1
       end if
     else
       lo = 1
       hi = n
+      nkeep = hi - lo + 1
     end if
     call trace%end(it_mask)
-    nkeep = hi - lo + 1
     if (nkeep <= 0) return
 
     call grow(ll, nkeep)
 
     call trace%begin ('ll_build_parse', itimer=it_parse)
-    do i = lo, hi
-      gv_in = 0; ga_in = 0; gq_in = 0; r_i = 0; r_j = 0
-      read(buf(lstart(i):lend(i)), *, iostat=iostat) lam_air, lower_ev, loggf, gv_in, &
-                                            ga_in, gq_in, r_i, r_j
-      ! only lam_air, lower_ev, loggf are required; the rest default to 0
+    if (present(intervals)) then
+      ! multi-window: iterate all records and check intervals
+      k = ll%nline
+      do i = 1, n
+        gv_in = 0; ga_in = 0; gq_in = 0; r_i = 0; r_j = 0
+        read(buf(lstart(i):lend(i)), *, iostat=iostat) lam_air, lower_ev, loggf, gv_in, &
+                                              ga_in, gq_in, r_i, r_j
+        lam_vac = air2vac(lam_air)
+        if (.not. in_any_interval(lam_vac, intervals)) cycle
 
-      k = ll%nline + 1
-      ll%nline = k
-      lam0  = air2vac(lam_air)
-      nu0   = HZ_TO_AA / lam0
-      ll%llam0(k)    = log(lam0)
-      ll%nu0(k)      = nu0
-      ll%lower_ev(k) = lower_ev
-      ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
-      ll%lev_i(k)    = nint(r_i)
-      ll%lev_j(k)    = nint(r_j)
-      ll%active(k)   = .true.
-      ll%used(k)     = .false.
-      ll%strength(k) = 0
-      ll%loggf(k)    = loggf
-      ll%gv_in(k)    = gv_in
-      ll%ga_in(k)    = ga_in
-      ll%gq_in(k)    = gq_in
+        k = k + 1
+        ll%nline = k
+        nu0   = HZ_TO_AA / lam_vac
+        ll%llam0(k)    = log(lam_vac)
+        ll%nu0(k)      = nu0
+        ll%lower_ev(k) = lower_ev
+        ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
+        ll%lev_i(k)    = nint(r_i)
+        ll%lev_j(k)    = nint(r_j)
+        ll%active(k)   = .true.
+        ll%used(k)     = .false.
+        ll%strength(k) = 0
+        ll%loggf(k)    = loggf
+        ll%gv_in(k)    = gv_in
+        ll%ga_in(k)    = ga_in
+        ll%gq_in(k)    = gq_in
 
-      call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
-      call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
-      call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
-                                lower_ev, ion_j, xion, vbar2e4, is_mol)
-      ll%ga(k)  = ga_t
-      ll%gq(k)  = gq_t
-      ll%gw1(k) = gw1_t
-      ll%gw2(k) = gw2_t
-    end do
+        call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
+        call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
+        call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
+                                  lower_ev, ion_j, xion, vbar2e4, is_mol)
+        ll%ga(k)  = ga_t
+        ll%gq(k)  = gq_t
+        ll%gw1(k) = gw1_t
+        ll%gw2(k) = gw2_t
+      end do
+    else
+      ! single-window or no mask: use the contiguous slice [lo:hi]
+      do i = lo, hi
+        gv_in = 0; ga_in = 0; gq_in = 0; r_i = 0; r_j = 0
+        read(buf(lstart(i):lend(i)), *, iostat=iostat) lam_air, lower_ev, loggf, gv_in, &
+                                              ga_in, gq_in, r_i, r_j
+
+        k = ll%nline + 1
+        ll%nline = k
+        lam_vac = air2vac(lam_air)
+        nu0   = HZ_TO_AA / lam_vac
+        ll%llam0(k)    = log(lam_vac)
+        ll%nu0(k)      = nu0
+        ll%lower_ev(k) = lower_ev
+        ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
+        ll%lev_i(k)    = nint(r_i)
+        ll%lev_j(k)    = nint(r_j)
+        ll%active(k)   = .true.
+        ll%used(k)     = .false.
+        ll%strength(k) = 0
+        ll%loggf(k)    = loggf
+        ll%gv_in(k)    = gv_in
+        ll%ga_in(k)    = ga_in
+        ll%gq_in(k)    = gq_in
+
+        call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
+        call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
+        call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
+                                  lower_ev, ion_j, xion, vbar2e4, is_mol)
+        ll%ga(k)  = ga_t
+        ll%gq(k)  = gq_t
+        ll%gw1(k) = gw1_t
+        ll%gw2(k) = gw2_t
+      end do
+    end if
     call trace%end(it_parse)
   END SUBROUTINE build_linelist
 
@@ -1370,5 +1429,113 @@ contains
       if (i < hi) call qs(i, hi)
     end subroutine qs
   END SUBROUTINE argsort8
+
+  !=====================================================================================
+  ! Check if a wavelength (in vacuum) falls within any of the given intervals.
+  ! An interval includes its boundaries (closed interval [blue, red]).
+  !-------------------------------------------------------------------------------------
+  PURE FUNCTION in_any_interval(lam_vac, intervals) result(in_interval)
+    real(dp), intent(in) :: lam_vac
+    type(interval_t), intent(in) :: intervals(:)
+    logical :: in_interval
+    integer :: i
+    !-----------------------------------------------------------------------------------
+    in_interval = .false.
+    do i = 1, size(intervals)
+      if (lam_vac >= intervals(i)%blue_vac .and. lam_vac <= intervals(i)%red_vac) then
+        in_interval = .true.
+        return
+      end if
+    end do
+  END FUNCTION in_any_interval
+
+  !=====================================================================================
+  ! Build a union of intervals from output segments and return them sorted and merged.
+  ! Input:
+  !   windows(:,1) = blue edges (in vacuum Angstrom)
+  !   windows(:,2) = red edges (in vacuum Angstrom)
+  !   dlam = expansion margin (in Angstrom)
+  ! Output:
+  !   merged_intervals = sorted, non-overlapping intervals
+  !   n_merged = number of merged intervals
+  !
+  ! The routine:
+  ! 1. Expands each window by dlam on both sides
+  ! 2. Clamps the lower edge to a physically valid wavelength
+  ! 3. Sorts the expanded intervals
+  ! 4. Merges overlapping or touching intervals
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
+    real(dp), intent(in) :: windows(:,:)
+    integer, intent(in) :: n_windows
+    real(dp), intent(in) :: dlam
+    type(interval_t), intent(out), allocatable :: merged_intervals(:)
+    integer, intent(out) :: n_merged
+    type(interval_t), allocatable :: expanded(:)
+    integer :: i, j
+    real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
+    !-----------------------------------------------------------------------------------
+
+    if (n_windows <= 0) then
+      allocate(merged_intervals(0))
+      n_merged = 0
+      return
+    end if
+
+    ! Step 1: Expand windows by dlam
+    allocate(expanded(n_windows))
+    do i = 1, n_windows
+      expanded(i)%blue_vac = max(windows(i,1) - dlam, min_lam)
+      expanded(i)%red_vac  = windows(i,2) + dlam
+    end do
+
+    ! Step 2: Sort by blue edge
+    call sort_intervals(expanded, n_windows)
+
+    ! Step 3: Merge overlapping/touching intervals
+    allocate(merged_intervals(n_windows))  ! worst case: no merging
+    n_merged = 1
+    merged_intervals(1) = expanded(1)
+
+    do i = 2, n_windows
+      ! if current interval starts before or at the end of the last merged one, merge them
+      if (expanded(i)%blue_vac <= merged_intervals(n_merged)%red_vac) then
+        ! merge: extend the red edge if needed
+        merged_intervals(n_merged)%red_vac = max(merged_intervals(n_merged)%red_vac, &
+                                                  expanded(i)%red_vac)
+      else
+        ! gap: start a new merged interval
+        n_merged = n_merged + 1
+        merged_intervals(n_merged) = expanded(i)
+      end if
+    end do
+
+    ! trim to actual size
+    if (n_merged < n_windows) then
+      merged_intervals = merged_intervals(1:n_merged)
+    end if
+
+  END SUBROUTINE merge_intervals
+
+  !=====================================================================================
+  ! Sort an array of intervals by blue edge (ascending).
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE sort_intervals(intervals, n)
+    type(interval_t), intent(inout) :: intervals(:)
+    integer, intent(in) :: n
+    integer :: i, j
+    type(interval_t) :: temp
+    !-----------------------------------------------------------------------------------
+    ! simple bubble sort for small arrays
+    do i = 1, n-1
+      do j = i+1, n
+        if (intervals(j)%blue_vac < intervals(i)%blue_vac) then
+          temp = intervals(i)
+          intervals(i) = intervals(j)
+          intervals(j) = temp
+        end if
+      end do
+    end do
+  END SUBROUTINE sort_intervals
 
 END MODULE linelist_mod
