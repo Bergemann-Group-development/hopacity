@@ -129,6 +129,8 @@ contains
     real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
     real(dp) :: nu0, ga_t, gw1_t, gw2_t, gq_t
     integer  :: lo, hi, nkeep, i, k, iostat
+    integer  :: ib, nblk
+    integer, allocatable :: blk_lo(:), blk_hi(:)
     integer, save :: it_mask=0, it_parse=0
     !-----------------------------------------------------------------------------------
     if (n <= 0) return
@@ -137,14 +139,30 @@ contains
     call trace%begin ('ll_build_mask', itimer=it_mask)
     if (do_mask) then
       if (present(intervals)) then
-        ! multi-window selection: count lines in union of intervals
+        ! multi-window selection. The file is wavelength-sorted, so bisect out one record
+        ! block per interval rather than parsing every record: the intervals are sorted and
+        ! disjoint (merge_intervals), so the blocks are too. Each block is widened by one
+        ! record on either side and membership is still decided by in_any_interval in
+        ! vacuum, so the air-space bisection only bounds the work and never the selection.
+        nblk = size(intervals)
+        allocate(blk_lo(nblk), blk_hi(nblk))
         nkeep = 0
-        do i = 1, n
-          lam_air = parse_lam(buf(lstart(i):lend(i)))
-          lam_vac = air2vac(lam_air)
-          if (in_any_interval(lam_vac, intervals)) then
-            nkeep = nkeep + 1
+        do ib = 1, nblk
+          lo = bisect_block(buf, lstart, lend, n, vac2air(intervals(ib)%blue_vac))
+          hi = bisect_block(buf, lstart, lend, n, vac2air(intervals(ib)%red_vac)) - 1
+          if (hi < n) then
+            if (parse_lam(buf(lstart(hi+1):lend(hi+1))) <= vac2air(intervals(ib)%red_vac)) &
+              hi = hi + 1
           end if
+          lo = max(1, lo - 1)
+          hi = min(n, hi + 1)
+          if (ib > 1) lo = max(lo, blk_hi(ib-1) + 1)   ! never visit a record twice
+          blk_lo(ib) = lo
+          blk_hi(ib) = hi
+          do i = lo, hi
+            lam_vac = air2vac(parse_lam(buf(lstart(i):lend(i))))
+            if (in_any_interval(lam_vac, intervals)) nkeep = nkeep + 1
+          end do
         end do
       else
         ! single-window selection: use contiguous bisection
@@ -169,9 +187,10 @@ contains
 
     call trace%begin ('ll_build_parse', itimer=it_parse)
     if (present(intervals)) then
-      ! multi-window: iterate all records and check intervals
+      ! multi-window: iterate the record blocks found above and check intervals
       k = ll%nline
-      do i = 1, n
+      do ib = 1, nblk
+      do i = blk_lo(ib), blk_hi(ib)
         gv_in = 0; ga_in = 0; gq_in = 0; r_i = 0; r_j = 0
         read(buf(lstart(i):lend(i)), *, iostat=iostat) lam_air, lower_ev, loggf, gv_in, &
                                               ga_in, gq_in, r_i, r_j
@@ -203,6 +222,7 @@ contains
         ll%gq(k)  = gq_t
         ll%gw1(k) = gw1_t
         ll%gw2(k) = gw2_t
+      end do
       end do
     else
       ! single-window or no mask: use the contiguous slice [lo:hi]
