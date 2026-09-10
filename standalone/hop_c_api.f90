@@ -27,7 +27,8 @@ MODULE hop_c_api
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
-  USE linelist_mod, only: ll_profile, voigt_kernel, voigt_kernel_init
+  USE linelist_mod, only: ll_profile, voigt_kernel, voigt_kernel_init, &
+                          print_ll_particle, interval_t, merge_intervals
   USE osmet_mod,    only: eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase, vac2air
   USE prec_mod,     only: dp
@@ -162,6 +163,74 @@ CONTAINS
   ! reported when it is active and was actually used, which is the same set
   ! linelist_out.txt writes.
   !=============================================================================
+  ! Write the reported lines as a line list in the *input* format, so a caller can
+  ! use them as the linelist_file of a later run. The records are the ones
+  ! linelist_out.txt carries (the trailing strength column is a diagnostic both
+  ! readers ignore), written by the same routines a full run writes its dump with.
+  !
+  ! What makes this useful: a curve of growth repeats one atmosphere at many
+  ! abundances, and every rung then re-reads and re-selects from the whole master
+  ! list. Selecting once per atmosphere -- at the strongest rung, so the result is a
+  ! superset of what any weaker one needs -- and handing the cropped list to every
+  ! rung makes the selection a property of the atmosphere rather than of each run.
+  !
+  ! Which lines appear follows how the list was *loaded*, not the wavelengths of the
+  ! opacity call: a line is reported when it was active and used, and the load is what
+  ! decides the pool.  Crop with hop_init_linelist_windows, therefore --
+  ! hop_init_linelist masks on the hull of its wavelengths and would put the whole
+  ! span in the file.
+  !
+  ! Model-atom transitions are not included: a standalone HOP state has none.
+  FUNCTION hop_write_linelist(path) RESULT(status) BIND(c, name='hop_write_linelist')
+    character(kind=c_char), intent(in) :: path(*)
+    integer(c_int) :: status
+    integer, allocatable :: iso_values(:)
+    integer :: lunit, i, j, k, niso, iostat
+    !---------------------------------------------------------------------------
+    status = 0
+    if (.not. allocated(comp)) then
+      call fail('hop_write_linelist: no composition; call hop_init first', 3, status)
+      return
+    end if
+    open(newunit=lunit, file=c2f_string(path), form='formatted', action='write', &
+         status='replace', iostat=iostat)
+    if (iostat /= 0) then
+      call fail('hop_write_linelist: cannot open the output file', 3, status)
+      return
+    end if
+    if (allocated(comp%elements)) then
+      do i = 1, comp%nel
+        if (.not. allocated(comp%elements(i)%ions)) cycle
+        do j = lbound(comp%elements(i)%ions, 1), ubound(comp%elements(i)%ions, 1)
+          call write_particle(comp%elements(i)%ions(j))
+        end do
+      end do
+    end if
+    if (allocated(comp%molecules)) then
+      do i = 1, comp%nmolec
+        call write_particle(comp%molecules(i))
+      end do
+    end if
+    close(lunit)
+  contains
+    subroutine write_particle (ptc)
+      class(particle_type), target :: ptc
+      !-------------------------------------------------------------------------
+      if (.not. allocated(ptc%ll)) return       ! no SoA linelists were built
+      niso = 0
+      if (associated(ptc%isotope)) niso = size(ptc%isotope)
+      if (allocated(iso_values)) deallocate(iso_values)
+      allocate(iso_values(niso))
+      iso_values = [(ptc%isotope(k)%iso, k=1, niso)]
+      if (allocated(ptc%line)) then
+        call print_ll_particle(lunit, ptc%id, iso_values, ptc%ll, ptc%line(1:ptc%nline))
+      else
+        call print_ll_particle(lunit, ptc%id, iso_values, ptc%ll)
+      end if
+    end subroutine write_particle
+  END FUNCTION hop_write_linelist
+
+  !-----------------------------------------------------------------------------
   FUNCTION hop_linelist_count() RESULT(nout) BIND(c, name='hop_linelist_count')
     integer(c_int) :: nout
     !---------------------------------------------------------------------------
@@ -966,6 +1035,61 @@ CONTAINS
   ! linelist_folder; repeated calls accumulate.  Must be called after hop_init and
   ! BEFORE hop_load_state: the solve works on a fresh copy of master, and
   ! particle%ll is allocatable, so the copy carries the lines along.
+  !-----------------------------------------------------------------------------
+  ! Read a line list keeping only the lines inside a set of windows, rather than
+  ! everything between the first and last wavelength.  hop_init_linelist masks on
+  ! [lam(1)-dlam, lam(nlam)+dlam], so a request for fifteen 2.5 A windows spread
+  ! over 1300 A loads all 1300 A of it: measured on the master list, 18943 lines
+  ! where the windows hold 484.  The windows are merged and expanded by dlam here
+  ! exactly as a full run does it (build_linelist_intervals), so the kept set is the
+  ! one that run would keep, wing contributors included.
+  !
+  ! blue_vac/red_vac are vacuum Angstrom, like interval_t itself; the reader masks
+  ! on the vacuum line centre.
+  FUNCTION hop_init_linelist_windows(linelist_file, dlam, nwin, blue_vac, red_vac) &
+           RESULT(status) BIND(c, name='hop_init_linelist_windows')
+    character(kind=c_char), intent(in) :: linelist_file(*)
+    real(c_double), value :: dlam
+    integer(c_int), value :: nwin
+    real(c_double), intent(in) :: blue_vac(*), red_vac(*)
+    integer(c_int) :: status
+    type(interval_t), allocatable :: merged(:)
+    real(8), allocatable :: windows(:,:), lam8(:)
+    character(len=:), allocatable :: file_f
+    integer :: i, nmerged
+    !---------------------------------------------------------------------------
+    status = 0
+    if (.not. allocated(master)) then
+      call fail('hop_init_linelist_windows: no instance; call hop_init first', 2, status)
+      return
+    end if
+    if (.not. master%initialised) then
+      call fail('hop_init_linelist_windows: instance not initialised', 2, status)
+      return
+    end if
+    file_f = c2f_string(linelist_file)
+    if (len(file_f) == 0) then
+      call fail('hop_init_linelist_windows: empty file name', 3, status)
+      return
+    end if
+    if (nwin < 1) then
+      call fail('hop_init_linelist_windows: no windows given', 3, status)
+      return
+    end if
+    allocate(windows(nwin, 2))
+    windows(:,1) = blue_vac(1:nwin)
+    windows(:,2) = red_vac(1:nwin)
+    call merge_intervals(windows, nwin, dlam, merged, nmerged)
+    if (nmerged < 1) then
+      call fail('hop_init_linelist_windows: the windows merged to nothing', 3, status)
+      return
+    end if
+    ! the lam range is the hull of the merged intervals; the intervals do the masking
+    allocate(lam8(2))
+    lam8 = [minval(merged(1:nmerged)%blue_vac), maxval(merged(1:nmerged)%red_vac)]
+    call master%init_linelist2(file_f, dlam, lam8, merged(1:nmerged))
+  END FUNCTION hop_init_linelist_windows
+
   !-----------------------------------------------------------------------------
   FUNCTION hop_init_linelist(linelist_file, dlam, nlam, lam) RESULT(status) &
            BIND(c, name='hop_init_linelist')
