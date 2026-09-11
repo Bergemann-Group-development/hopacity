@@ -10,11 +10,16 @@ BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 HDR   := libhop.h
 FC    := gfortran
+DISPATCH_TOP ?= ../../../..
+OPTS ?= hoppe
+# Match the application build's optimisation and architecture flags.  The fallbacks keep
+# this standalone Makefile usable when HOP is copied outside a Dispatch checkout.
+-include $(DISPATCH_TOP)/config/compiler/gfortran/$(OPTS).mkf
 OPT   ?= -O1
-# Vectorization increases speed of voigt kernel 1
-#OPT   ?= -O3 -march=native -mprefer-vector-width=256
+HW    ?=
+DEBUG ?= -fbacktrace
 FFLAGS = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
-         -fno-range-check -fallow-argument-mismatch $(OPT) -g -fbacktrace \
+         -fno-range-check -fallow-argument-mismatch $(OPT) $(HW) $(DEBUG) \
          -fopenmp -fPIC -I$(BUILD) -J$(BUILD)
 
 # Topologically ordered source list (verified USE graph)
@@ -53,7 +58,7 @@ prev :=
 $(foreach o,$(OBJS),$(eval $(o): $(prev))$(eval prev := $(o)))
 
 $(LIB): $(OBJS)
-	$(FC) -shared -fopenmp -o $@ $(OBJS)
+	$(FC) -shared $(OPT) -fopenmp $(DEBUG) -o $@ $(OBJS)
 
 $(BUILD)/%.o: %.f90 | $(BUILD)
 	$(FC) $(FFLAGS) -c $< -o $@

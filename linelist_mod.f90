@@ -128,6 +128,7 @@ contains
     type(interval_t), intent(in), optional :: intervals(:)
     real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
     real(dp) :: nu0, ga_t, gw1_t, gw2_t, gq_t
+    real(dp) :: fields(8)
     integer  :: lo, hi, nkeep, i, k, iostat
     integer  :: ib, nblk
     integer, allocatable :: blk_lo(:), blk_hi(:)
@@ -191,9 +192,10 @@ contains
       k = ll%nline
       do ib = 1, nblk
       do i = blk_lo(ib), blk_hi(ib)
-        gv_in = 0; ga_in = 0; gq_in = 0; r_i = 0; r_j = 0
-        read(buf(lstart(i):lend(i)), *, iostat=iostat) lam_air, lower_ev, loggf, gv_in, &
-                                              ga_in, gq_in, r_i, r_j
+        call parse_record(buf(lstart(i):lend(i)), fields, iostat)
+        lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
+        gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
+        r_i = fields(7); r_j = fields(8)
         lam_vac = air2vac(lam_air)
         if (.not. in_any_interval(lam_vac, intervals)) cycle
 
@@ -227,9 +229,10 @@ contains
     else
       ! single-window or no mask: use the contiguous slice [lo:hi]
       do i = lo, hi
-        gv_in = 0; ga_in = 0; gq_in = 0; r_i = 0; r_j = 0
-        read(buf(lstart(i):lend(i)), *, iostat=iostat) lam_air, lower_ev, loggf, gv_in, &
-                                              ga_in, gq_in, r_i, r_j
+        call parse_record(buf(lstart(i):lend(i)), fields, iostat)
+        lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
+        gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
+        r_i = fields(7); r_j = fields(8)
 
         k = ll%nline + 1
         ll%nline = k
@@ -1278,6 +1281,135 @@ contains
     read(str, *, iostat=iostat) lam
     if (iostat /= 0) lam = huge(1.0_dp)
   END FUNCTION parse_lam
+
+  ! Decode ordinary numeric records without entering the formatted-I/O runtime once per
+  ! transition. Unusual syntax falls back to the list-directed reader, preserving the
+  ! input format's existing compatibility. Three columns are required; absent optional
+  ! columns retain their historical zero defaults, and a trailing strength is ignored.
+  SUBROUTINE parse_record(str, values, iostat)
+    character(len=*), intent(in) :: str
+    real(dp), intent(out) :: values(8)
+    integer, intent(out) :: iostat
+    integer :: nvalue
+    logical :: ok
+    values = 0
+    call parse_fields_fast(str, values, nvalue, ok)
+    if (ok .and. nvalue >= 3) then
+      iostat = 0
+      return
+    end if
+    values = 0
+    read(str, *, iostat=iostat) values
+  END SUBROUTINE parse_record
+
+  PURE SUBROUTINE parse_fields_fast(str, values, nvalue, ok)
+    character(len=*), intent(in) :: str
+    real(dp), intent(out) :: values(:)
+    integer, intent(out) :: nvalue
+    logical, intent(out) :: ok
+    integer :: p, last, digit, exponent, exponent_sign, fractional_digits, ndigit
+    integer(8) :: significand
+    real(dp) :: sign
+    logical :: have_digit
+    character :: c
+
+    values = 0
+    nvalue = 0
+    ok = .true.
+    p = 1
+    last = len_trim(str)
+    do while (p <= last .and. nvalue < size(values))
+      do while (p <= last)
+        c = str(p:p)
+        if (c /= ' ' .and. c /= achar(9)) exit
+        p = p + 1
+      end do
+      if (p > last) exit
+
+      sign = 1.0_dp
+      if (str(p:p) == '-' .or. str(p:p) == '+') then
+        if (str(p:p) == '-') sign = -1.0_dp
+        p = p + 1
+      end if
+      significand = 0_8
+      ndigit = 0
+      fractional_digits = 0
+      have_digit = .false.
+      do while (p <= last)
+        digit = iachar(str(p:p)) - iachar('0')
+        if (digit < 0 .or. digit > 9) exit
+        if (ndigit >= 18) then
+          ok = .false.
+          return
+        end if
+        significand = 10_8*significand + digit
+        ndigit = ndigit + 1
+        have_digit = .true.
+        p = p + 1
+      end do
+      if (p <= last) then
+        if (str(p:p) == '.') then
+          p = p + 1
+          do while (p <= last)
+            digit = iachar(str(p:p)) - iachar('0')
+            if (digit < 0 .or. digit > 9) exit
+            if (ndigit >= 18) then
+              ok = .false.
+              return
+            end if
+            significand = 10_8*significand + digit
+            ndigit = ndigit + 1
+            fractional_digits = fractional_digits + 1
+            have_digit = .true.
+            p = p + 1
+          end do
+        end if
+      end if
+      if (.not. have_digit) then
+        ok = .false.
+        return
+      end if
+
+      exponent = 0
+      if (p <= last) then
+        c = str(p:p)
+        if (c == 'e' .or. c == 'E' .or. c == 'd' .or. c == 'D') then
+          p = p + 1
+          exponent_sign = 1
+          if (p <= last) then
+            if (str(p:p) == '-' .or. str(p:p) == '+') then
+              if (str(p:p) == '-') exponent_sign = -1
+              p = p + 1
+            end if
+          end if
+          have_digit = .false.
+          do while (p <= last)
+            digit = iachar(str(p:p)) - iachar('0')
+            if (digit < 0 .or. digit > 9) exit
+            exponent = 10*exponent + digit
+            have_digit = .true.
+            p = p + 1
+          end do
+          if (.not. have_digit) then
+            ok = .false.
+            return
+          end if
+          exponent = exponent_sign*exponent
+        end if
+      end if
+      if (p <= last) then
+        c = str(p:p)
+        if (c /= ' ' .and. c /= achar(9)) then
+          ok = .false.
+          return
+        end if
+      end if
+
+      nvalue = nvalue + 1
+      values(nvalue) = sign*real(significand, dp) * &
+                       10.0_dp**(exponent - fractional_digits)
+    end do
+  END SUBROUTINE parse_fields_fast
 
   ! first record index whose leading wavelength is >= target (records sorted ascending)
   FUNCTION bisect_block(buf, lstart, lend, n, target) result(idx)
