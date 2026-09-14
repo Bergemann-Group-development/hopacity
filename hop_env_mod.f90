@@ -109,13 +109,24 @@ CONTAINS
     call omp_unset_lock (self%lock)
   END SUBROUTINE lock_unset
 
+  !> Same contract as io_mod: silent on iostat 0, a missing group (iostat < 0) is
+  !> reported only when error is present, a malformed one always.
   SUBROUTINE namelist_warning (self, namelist, iostat, error)
     class(io_t):: self
     character(len=*):: namelist
     integer, optional:: iostat
     logical, optional:: error
+    integer:: iostat_l
     !---------------------------------------------------------------------------
-    write(*,*) 'WARNING: problem reading namelist '//trim(namelist)
+    iostat_l = 0
+    if (present(iostat)) iostat_l = iostat
+    if (iostat_l == 0) return
+    if (iostat_l < 0 .and. .not. present(error)) return
+    if (iostat_l < 0) then
+      write(*,*) 'WARNING: namelist '//trim(namelist)//' missing'
+    else
+      write(*,*) 'WARNING: problem reading namelist '//trim(namelist)
+    end if
   END SUBROUTINE namelist_warning
 
   SUBROUTINE warning (text)

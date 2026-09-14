@@ -1,14 +1,19 @@
-# Build HOP as a standalone shared library (libhop.so) with no DISPATCH
-# framework dependencies.  The framework singletons (io, os, trace) are
-# replaced by the -DHOP_STANDALONE branch of ../hop_env_mod.f90, and every
-# source below lives under HOP/ -- nothing is pulled in from ../../SRC, so
-# the package is self-contained.  This directory is invisible to the main
-# experiment build (its wildcard only scans SRC/*.f90 HOP/*.f90).
+# Build HOP as a standalone shared library (libhop.so) and the hop_prune.x
+# line-list pruning executable, with no DISPATCH framework dependencies.  The
+# framework singletons (io, os, trace) are replaced by the -DHOP_STANDALONE
+# branch of ../hop_env_mod.f90, and every source below lives under HOP/ --
+# nothing is pulled in from ../../SRC, so the package is self-contained.  This
+# directory is invisible to the main experiment build (its wildcard only scans
+# SRC/*.f90 HOP/*.f90); the top-level Makefile's hop_prune.x target invokes it,
+# and the objects here (compiled with -DHOP_STANDALONE) never mix with the
+# framework-enabled ones linked into dispatch.x.
 #
-# Usage:  make [-j N] [OPT=-O2] [BUILD=dir]
+# Usage:  make [-j N] [OPT=-O2] [BUILD=dir]        # libhop.so + libhop.h
+#         make hop_prune.x                          # -> $(BUILD)/hop_prune.x
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 HDR   := libhop.h
+PRUNE := $(BUILD)/hop_prune.x
 FC    := gfortran
 DISPATCH_TOP ?= ../../../..
 OPTS ?= hoppe
@@ -32,10 +37,13 @@ SRCS = ../qlg_mod.f90 ../hop_env_mod.f90 ../const_mod.f90 ../prec_mod.f90 ../op_
        ../optab_mod.f90 ../osmet_mod.f90 ../composition_mod.f90 hop_c_api.f90
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.f90=.o)))
+# The pruning program adds the atmosphere reader on top of the library objects.
+PRUNE_SRCS = ../atmos_reader_mod.f90 hop_prune.f90
+PRUNE_OBJS = $(addprefix $(BUILD)/,$(notdir $(PRUNE_SRCS:.f90=.o)))
 
 vpath %.f90 . ..
 
-all: $(LIB) $(HDR)
+all: $(LIB) $(HDR) $(PRUNE)
 
 # The header is generated from the BIND(C) declarations, so it cannot drift from the
 # library.  It is committed; tests/test_hop_abi.py regenerates it and fails on a diff.
@@ -60,6 +68,14 @@ $(foreach o,$(OBJS),$(eval $(o): $(prev))$(eval prev := $(o)))
 $(LIB): $(OBJS)
 	$(FC) -shared $(OPT) -fopenmp $(DEBUG) -o $@ $(OBJS)
 
+# hop_prune.x: the library objects plus the reader and the program, in that order
+$(BUILD)/atmos_reader_mod.o: $(lastword $(OBJS))
+$(BUILD)/hop_prune.o: $(BUILD)/atmos_reader_mod.o
+$(PRUNE): $(OBJS) $(PRUNE_OBJS)
+	$(FC) $(OPT) -fopenmp $(DEBUG) -o $@ $(OBJS) $(PRUNE_OBJS)
+
+hop_prune.x: $(PRUNE)
+
 $(BUILD)/%.o: %.f90 | $(BUILD)
 	$(FC) $(FFLAGS) -c $< -o $@
 
@@ -69,4 +85,4 @@ $(BUILD):
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all clean bindings
+.PHONY: all clean bindings hop_prune.x

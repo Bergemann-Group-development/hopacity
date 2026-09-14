@@ -39,6 +39,12 @@ MODULE hop_c_api
 #endif
   implicit none
   private
+  ! The C symbols are what Python binds; the same entry points are also USEd by the
+  ! hop_prune.x program in this directory, so it goes through exactly the calls the
+  ! Python wrapper makes.
+  public :: hop_init, hop_free, hop_set_option, hop_set_external_abundances, &
+            hop_init_linelist_windows, hop_load_state, hop_set_vmic, hop_opacity, &
+            hop_write_linelist, hop_linelist_count, hop_last_error
 
   ! master is the initialized-but-never-loaded composition; each hop_load_state
   ! solves in a fresh copy of it (comp), mirroring the dispatch pattern
@@ -52,6 +58,11 @@ MODULE hop_c_api
   ! Python says nothing at all unless asked; 0 restores what a dispatch run
   ! prints at its own default (the linelist line count), 1 and up add the rest.
   integer, save :: init_verbose = -1
+  ! Abundances an atmosphere file supplies (MARCS carries log eps for Z=1..92),
+  ! applied by hop_init between the [Fe/H]-scaled standard set and the explicit
+  ! 'abundances' overrides -- the order composition_type%init applies them in a
+  ! dispatch run with use_abnd=T.  Set before hop_init; cleared by hop_free.
+  real(4), allocatable, save :: external_abund(:)
 
   ! Message for the most recent nonzero status, readable with hop_last_error.  The
   ! status codes alone cannot say *which* option was rejected or *why* a value would
@@ -478,16 +489,45 @@ CONTAINS
     ! an unallocated allocatable actual makes the optional dummy absent (F2008)
     if (len(iso_f) == 0)   deallocate(iso_f)
     if (len(molec_f) == 0) deallocate(molec_f)
+    ! external_abund is passed as an unallocated actual -> absent optional dummy
     call master%init(absdat_f, abund_f, feh, isotope_file=iso_f, molec_file=molec_f, &
-      tmolim=tmolim, alpha_enhancement=alpha_enh, r_process_enhancement=r_process_enh)
+      tmolim=tmolim, external_abund=external_abund, alpha_enhancement=alpha_enh, &
+      r_process_enhancement=r_process_enh)
     status = 0
   END FUNCTION hop_init
+
+  !-----------------------------------------------------------------------------
+  ! Atmosphere-provided abundances, log eps indexed by atomic number, for the next
+  ! hop_init: what a dispatch run applies with atmos_params use_abnd=T.  Elements
+  ! beyond n keep the standard value.  n=0 clears a previous vector.
+  !-----------------------------------------------------------------------------
+  FUNCTION hop_set_external_abundances(n, abund) RESULT(status) &
+           BIND(c, name='hop_set_external_abundances')
+    integer(c_int), value :: n
+    real(c_double), intent(in) :: abund(*)
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    status = 0
+    if (allocated(master)) then
+      call fail('hop_set_external_abundances: set before hop_init', 1, status)
+      return
+    end if
+    if (allocated(external_abund)) deallocate(external_abund)
+    if (n < 0 .or. n > 92) then
+      call fail('hop_set_external_abundances: n must be 0..92', 3, status)
+      return
+    end if
+    if (n == 0) return
+    allocate(external_abund(n))
+    external_abund = real(abund(1:n), 4)
+  END FUNCTION hop_set_external_abundances
 
   FUNCTION hop_free() RESULT(status) BIND(c, name='hop_free')
     integer(c_int) :: status
     !---------------------------------------------------------------------------
     if (allocated(comp)) deallocate(comp)
     if (allocated(master)) deallocate(master)
+    if (allocated(external_abund)) deallocate(external_abund)
     status = hop_omp_release()
     status = 0
   END FUNCTION hop_free

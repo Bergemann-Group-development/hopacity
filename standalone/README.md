@@ -1,18 +1,21 @@
-# Standalone HOP: EOS and opacity from Python
+# Standalone HOP: EOS and opacity from Python, and line-list pruning
 
 `libhop.so` is the HOP opacity/EOS engine built without the DISPATCH framework, driven
 from Python through `tumult.hop`. It computes the same EOS state and the same opacities a
 `make_eos=.true.` run of `dispatch.x` tabulates — without launching dispatch at all.
+`hop_prune.x` is a program on the same objects that selects the transitions a synthesis
+needs (see [Line-list pruning](#line-list-pruning)).
 
 ## Build
 
 ```bash
-make -C HOP/standalone -j8            # -> HOP/standalone/build/libhop.so
+make -C HOP/standalone -j8            # -> build/libhop.so, libhop.h, build/hop_prune.x
 make -C HOP/standalone clean          # rebuild from scratch after editing HOP/*.f90
 ```
 
 gfortran only. `OPT=-O2` overrides the default `-O1`. The wrapper finds the library at
-`HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points.
+`HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points. The top-level `make`
+builds `hop_prune.x` alongside `dispatch.x` when the compiler is gfortran.
 
 Check it loads:
 
@@ -175,3 +178,50 @@ compute over it in one call if you want exactly that band.
 The three C entry points behind it are `hop_linelist_count` (collects and sizes),
 `hop_get_linelist` (the columns, with a species index) and `hop_linelist_species` (the
 newline-separated species ids that index refers to). Call them in that order.
+
+## Line-list pruning
+
+`hop_prune.x input.nml` writes the transitions a synthesis on one atmosphere would keep
+from its configured line list, as a line list in the ordinary input format. A ladder of
+runs on that atmosphere (a curve of growth, an abundance fit) then reads a few hundred
+lines each as its `linelist_file` instead of re-reading and re-selecting the whole master
+list. The program needs neither Python nor the DISPATCH runtime.
+
+The input reuses the run's own namelist groups, so one set of settings describes the
+pruning and the runs it feeds, plus a small `&prune_params` group:
+
+```fortran
+&atmos_params        atmos_format='marcs' atmos_file='model.mod' vmic=1.0 use_abnd=.true. /
+&composition_params  abundances='Fe=+1.0' relative_abundances=.true. /
+&linelist_params     linelist_file='master.txt' dlam=5.0 /
+&spectrum_params     window_file='windows.txt' R=300000.0 /
+&prune_params        output_file='pruned.txt' sample_count=8 /
+```
+
+- The atmosphere is parsed by `HOP/atmos_reader_mod.f90`, shared with `dispatch.x`
+  (MARCS, text 1D and MULTI 1D so far; a 3D cube is refused until a thermodynamic-space
+  sampling policy exists for it). `sample_count` depths spread over the model's whole
+  index range are evaluated (0 = every depth); spanning the range is what matters, since a
+  transition's strength is a maximum over the states.
+- The composition is applied in the run's order: the standard abundance file scaled by
+  `feh`, replaced by the model's own abundances with `use_abnd`, then the explicit
+  `abundances` override. Prune at the strongest rung of a ladder: an element's own lines
+  grow with its abundance, so that selection covers the weaker rungs for them.
+- Transitions are read only inside the windows widened by `dlam`, and the opacity over the
+  run's constant-`R` grid marks the ones that clear HOP's negligibility test on the
+  sampled states. `dlam` and `R` therefore have to match the runs.
+- The output goes to `<output_file>.<pid>.partial` and is renamed into place, so an
+  interrupted run never leaves a truncated list; `<output_file>.provenance.nml` echoes every
+  input group the selection depended on, plus a `&prune_result` group with the sampled
+  depths, the effective vmic and [Fe/H], the vacuum windows and the transition count. Invalid input exits with status 1 and one line on
+  stderr.
+
+Against the `linelist_out.txt` a `dispatch.x` run writes with the same inputs, the pruned
+set is a superset: the program evaluates the file's own depth points, whose deepest layer
+is hotter than any cell centre of dispatch's interpolated mesh, so a few high-excitation
+and near-threshold transitions survive here that the run drops. The run re-selects from
+the pruned list, so nothing it needs is lost. With the run's `dlam` equal to the pruning
+`dlam`, spectra from the pruned and the master list agree to float32 rounding.
+
+`tumult.prune` drives the program from the synthesis workflows: one child per uncached
+atmosphere node on the workflow's CPU budget, killed on cancellation.

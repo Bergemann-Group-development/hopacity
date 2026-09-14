@@ -18,6 +18,7 @@ int hop_opacity (int nlam, const double *lam, float *chi, float *scat, int inclu
 int hop_opacity_omp (int nlam, const double *lam, float *chi, float *scat, int include_absmet, int include_llist, double dlam, int line_scat, int nthreads);
 int hop_option_names (char *buf, int buflen);
 int hop_scattering (int nlam, const double *lam, float *sig);
+int hop_set_external_abundances (int n, const double *abund);
 int hop_set_option (const char *name, const char *value);
 int hop_set_vmic (int n, float vmic);
 int hop_write_linelist (const char *path);
