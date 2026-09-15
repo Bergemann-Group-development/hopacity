@@ -1218,7 +1218,7 @@ contains
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
                                      only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
-                                     i_set)
+                                     i_set, window_lam)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1242,10 +1242,13 @@ contains
     real(4), intent(in),    dimension(:,:,:,:),   optional :: beta
     integer, intent(in), optional :: i0, i1
     integer, intent(in), optional :: i_set
+    ! window_lam: [blue, red] wavelength in Angstrom of the window_file window this
+    ! output patch lies in (see below)
+    real(dp), intent(in), optional :: window_lam(2)
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
-    real(8) :: lam_margin
+    real(8) :: llam_lines(2)
     real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
     real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
@@ -1308,19 +1311,19 @@ contains
       llam => llam_mem
     endif
 
-    ! This patch's line neighbourhood in log(lambda). dlam is the selection half-width in
-    ! Angstrom, so dividing by the bluest wavelength of the patch gives the widest log-space
-    ! equivalent. Handing it to the kernels confines each patch to the lines the selection
-    ! would have kept for its own window: with a disjoint multi-window list the forward march
-    ! would otherwise clamp another window's lines onto this patch's edge.
-    ! Only a segmented (multi-window) output grid needs this: there the shared line list is
-    ! disjoint, and the forward march would otherwise clamp another window's lines onto this
-    ! patch's edge. A contiguous grid keeps the existing whole-list visit, so ordinary runs
-    ! are unaffected; a negative margin means "no restriction".
-    if (window_file /= '') then
-      lam_margin = dlam / exp(llam(1))
+    ! This patch's line neighbourhood in log(lambda), handed to the kernels. dlam is the
+    ! selection half-width in Angstrom, so dividing by the bluest wavelength gives the
+    ! widest log-space equivalent. Only a segmented (multi-window) grid needs this: there
+    ! the shared line list is disjoint, and the forward march would otherwise clamp another
+    ! window's lines onto this patch's edge. A patch covering part of a window takes the
+    ! neighbourhood of the whole window, so splitting a window into several patches visits
+    ! the same lines as one patch would. A contiguous grid keeps the whole-list visit.
+    if (present(window_lam)) then
+      llam_lines = log(window_lam) + [-1d0, 1d0] * dlam / window_lam(1)
+    else if (window_file /= '') then
+      llam_lines = [llam(1) - dlam / exp(llam(1)), llam(nf) + dlam / exp(llam(1))]
     else
-      lam_margin = -1d0
+      llam_lines = [-huge(1d0), huge(1d0)]
     end if
 
     ! Precompute once here (shared by all particles); guard non-positive continuum.
@@ -1462,7 +1465,7 @@ contains
         call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
           .true., sp%equidistant, i0=lo, i1=hi, &
-          population=set_n, population_scale=set_scale, lam_margin=lam_margin)
+          population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
@@ -1470,12 +1473,12 @@ contains
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
           one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
-          i0=lo, i1=hi, population=set_n, population_scale=set_scale, lam_margin=lam_margin)
+          i0=lo, i1=hi, population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       else
         call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, i0=lo, i1=hi, &
-          population=set_n, population_scale=set_scale, lam_margin=lam_margin)
+          population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities2
