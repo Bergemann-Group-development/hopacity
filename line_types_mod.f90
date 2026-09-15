@@ -42,6 +42,16 @@ MODULE line_types_mod
     logical,  allocatable :: active(:)   ! line is active
     logical,  allocatable :: used(:)     ! diagnostic: line contributed somewhere
     real(4),  allocatable :: strength(:) ! diagnostic: max peak-opacity/continuum estimate
+    ! reach: max over kernel calls of the half-width in log(lambda) of the line's
+    ! evaluation window, i.e. where phi*Rij drops to the tolerance reference. Written
+    ! as the trailing line-list column (in Angstrom) after strength.
+    real(4),  allocatable :: reach(:)
+    ! reach_in: the reach read from the line list [log(lambda)], -1 where a record had
+    ! none. has_reach is set by finalize_linelist when every line carries one, and
+    ! only then do the kernels select lines by reach; reach_in_max is its maximum.
+    real(4),  allocatable :: reach_in(:)
+    logical :: has_reach = .false.
+    real(8) :: reach_in_max = 0
     ! raw inputs kept only for the linelist_out.txt diagnostic dump
     real(4),  allocatable :: loggf(:), gv_in(:), ga_in(:), gq_in(:)
     ! --- optional extensions, used by model-atom linelists (atom_trans_t%ll) ---------

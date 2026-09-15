@@ -176,8 +176,9 @@ CONTAINS
   !=============================================================================
   ! Write the reported lines as a line list in the *input* format, so a caller can
   ! use them as the linelist_file of a later run. The records are the ones
-  ! linelist_out.txt carries (the trailing strength column is a diagnostic both
-  ! readers ignore), written by the same routines a full run writes its dump with.
+  ! linelist_out.txt carries, written by the same routines a full run writes its dump
+  ! with. The trailing strength column is a diagnostic both readers ignore; the reach
+  ! column after it lets a run select lines per output patch (linelist_mod).
   !
   ! What makes this useful: a curve of growth repeats one atmosphere at many
   ! abundances, and every rung then re-reads and re-selects from the whole master

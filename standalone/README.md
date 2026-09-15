@@ -210,6 +210,14 @@ pruning and the runs it feeds, plus a small `&prune_params` group:
 - Transitions are read only inside the windows widened by `dlam`, and the opacity over the
   run's constant-`R` grid marks the ones that clear HOP's negligibility test on the
   sampled states. `dlam` and `R` therefore have to match the runs.
+- Each record ends with the transition's strength and its *reach*: the half-width in
+  Angstrom out to which its extinction exceeds the tolerance times the continuum on the
+  sampled states. A run reading a list in which every transition of a species carries a
+  reach visits, in each output patch, only the transitions whose reach touches it, and
+  evaluates one centred outside the patch about its own centre with the extent capped by
+  the reach. The output patches then no longer scan the whole list, and the spectrum no
+  longer depends on how the grid is divided among them beyond about twice the tolerance.
+  Lists without the column (master lists, older pruned lists) run as before.
 - The output goes to `<output_file>.<pid>.partial` and is renamed into place, so an
   interrupted run never leaves a truncated list; `<output_file>.provenance.nml` echoes every
   input group the selection depended on, plus a `&prune_result` group with the sampled
@@ -221,7 +229,11 @@ set is a superset: the program evaluates the file's own depth points, whose deep
 is hotter than any cell centre of dispatch's interpolated mesh, so a few high-excitation
 and near-threshold transitions survive here that the run drops. The run re-selects from
 the pruned list, so nothing it needs is lost. With the run's `dlam` equal to the pruning
-`dlam`, spectra from the pruned and the master list agree to float32 rounding.
+`dlam`, a pruned list without reaches and the master list give spectra that agree to
+float32 rounding. The reach changes how transitions centred outside a patch are
+evaluated, including those of the `dlam` skirt beyond the grid ends: on the api_profile
+dwarf with one output patch this moved the flux within 9 A of the blue end by up to 5e-4
+and elsewhere by less than 1e-4.
 
 `tumult.prune` drives the program from the synthesis workflows: one child per uncached
 atmosphere node on the workflow's CPU budget, killed on cancellation.

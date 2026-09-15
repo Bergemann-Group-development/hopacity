@@ -128,8 +128,8 @@ contains
     type(interval_t), intent(in), optional :: intervals(:)
     real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
     real(dp) :: nu0, ga_t, gw1_t, gw2_t, gq_t
-    real(dp) :: fields(8)
-    integer  :: lo, hi, nkeep, i, k, iostat
+    real(dp) :: fields(10)
+    integer  :: lo, hi, nkeep, i, k, iostat, nvalue
     integer  :: ib, nblk
     integer, allocatable :: blk_lo(:), blk_hi(:)
     integer, save :: it_mask=0, it_parse=0
@@ -192,7 +192,7 @@ contains
       k = ll%nline
       do ib = 1, nblk
       do i = blk_lo(ib), blk_hi(ib)
-        call parse_record(buf(lstart(i):lend(i)), fields, iostat)
+        call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
         lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
         gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
         r_i = fields(7); r_j = fields(8)
@@ -211,6 +211,8 @@ contains
         ll%active(k)   = .true.
         ll%used(k)     = .false.
         ll%strength(k) = 0
+        ll%reach(k)    = 0
+        ll%reach_in(k) = merge(real(fields(10) / lam_vac, 4), -1.0, nvalue >= 10)
         ll%loggf(k)    = loggf
         ll%gv_in(k)    = gv_in
         ll%ga_in(k)    = ga_in
@@ -229,7 +231,7 @@ contains
     else
       ! single-window or no mask: use the contiguous slice [lo:hi]
       do i = lo, hi
-        call parse_record(buf(lstart(i):lend(i)), fields, iostat)
+        call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
         lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
         gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
         r_i = fields(7); r_j = fields(8)
@@ -247,6 +249,8 @@ contains
         ll%active(k)   = .true.
         ll%used(k)     = .false.
         ll%strength(k) = 0
+        ll%reach(k)    = 0
+        ll%reach_in(k) = merge(real(fields(10) / lam_vac, 4), -1.0, nvalue >= 10)
         ll%loggf(k)    = loggf
         ll%gv_in(k)    = gv_in
         ll%ga_in(k)    = ga_in
@@ -299,6 +303,8 @@ contains
     ll%active(k)   = .true.
     ll%used(k)     = .false.
     ll%strength(k) = 0
+    ll%reach(k)    = 0
+    ll%reach_in(k) = -1
     ll%loggf(k)    = loggf
     ll%gv_in(k)    = gv_in
     ll%ga_in(k)    = ga_in
@@ -325,6 +331,12 @@ contains
     integer, save :: it_argsort=0, it_permute=0
     logical :: sorted
     !-----------------------------------------------------------------------------------
+    ! lines select by reach only when every one of them carries it
+    ll%has_reach = .false.
+    if (ll%nline > 0) then
+      ll%has_reach = all(ll%reach_in(1:ll%nline) >= 0)
+      if (ll%has_reach) ll%reach_in_max = maxval(ll%reach_in(1:ll%nline))
+    end if
     if (ll%nline <= 1) return
     ! the common case (one block per particle) is already wavelength-sorted on read,
     ! so an O(n) check lets us skip the sort entirely
@@ -357,6 +369,8 @@ contains
     call permute4(ll%gw2,      idx)
     call permute4(ll%gq,       idx)
     call permute4(ll%strength, idx)
+    call permute4(ll%reach,    idx)
+    call permute4(ll%reach_in, idx)
     call permutei(ll%lev_i,    idx)
     call permutei(ll%lev_j,    idx)
     call permutel(ll%unsold,   idx)
@@ -398,6 +412,26 @@ contains
   ! The wing cutoff is evaluated on the LTE line opacity (phi*Rij), so the profile
   ! extent does not depend on the departure coefficients (no flip-flop between
   ! NLTE iterations); the departures only scale the added chi/eta.
+  !
+  ! LINES WITH A REACH (ll%has_reach, a list written by hop_prune.x or a run's dump).
+  ! A patch is a chunk of the run's grid. Without reaches every chunk visits every line
+  ! of the slice, and a line centred outside the chunk takes the nearest chunk end as its
+  ! centre index f0: its tolerance reference is the continuum and accumulated opacity
+  ! there, and add_opacity_equi centres its evaluation window on that end point, so the
+  ! chunk receives wing beyond the line's extent. A spectrum then depends on where the
+  ! chunks fall. With reaches the kernel instead
+  !   * visits only lines whose [llam0 - reach, llam0 + reach], widened by the largest
+  !     |vproj| and half a grid step, overlaps the chunk (select_lines);
+  !   * evaluates a line whose shifted centre lies outside the chunk about its true
+  !     centre. Its tolerance reference is tol times the continuum at the nearer chunk
+  !     end, which differs from the one at the centre only by the continuum slope over
+  !     the distance; the peak test and the analytic extent use it as for a line inside,
+  !     and the extent is capped by the reach and clipped to the chunk. The cap only
+  !     cuts wing below the tolerance level in the states the reach was recorded from.
+  !     The accumulated-opacity floor is not applied: it depends on the lines
+  !     processed before in the same chunk, and leaving it out can only widen the window;
+  !   * treats a line centred inside the chunk exactly as without reaches.
+  ! A list without reaches keeps the whole-slice visit and the nearest-end treatment.
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
                          lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
@@ -424,16 +458,18 @@ contains
     ! onto this patch's edge through the forward march, so a window would not reproduce
     ! its own run.
     real(dp), intent(in), optional :: llam_lines(2)
-    integer  :: l0, l1
+    integer  :: l0, l1, nsel, isel
+    integer, allocatable :: sel(:)
     integer  :: f0_prev
     real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, fc, nf, m(3), nl, np, ws, we, fa, fb, lo, hi, io, mem_offset
-    real(8)  :: llc, dl
+    real(8)  :: llc, dl, hb(2)
+    integer  :: fe
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge, lref_o
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
-    logical  :: nlte, has_ipart
+    logical  :: nlte, has_ipart, outside
     integer(8) :: c_visit, c_pass, c_voigt, c_march
     !-----------------------------------------------------------------------------------
     m  = shape(vproj)
@@ -448,6 +484,7 @@ contains
       l1 = upper_bound8(ll%llam0, nl, llam_lines(2))
     end if
     if (nl == 0) return
+    call select_lines(ll, llam, vproj, l0, l1, sel, nsel, hb)
     has_ipart = allocated(ll%ipart)
     c_visit = 0; c_pass = 0; c_voigt = 0; c_march = 0
     lo = 1;  hi = m(1)
@@ -482,8 +519,8 @@ contains
           ws = 1
           we = nf
 
-          do l = l0, l1
-            if (.not. ll%active(l)) cycle
+          do isel = 1, nsel
+            l = sel(isel)
             c_visit = c_visit + 1
 
             ! shifted line centre in log(lambda)
@@ -514,29 +551,47 @@ contains
             end if
             if (arg < ex_cutoff) cycle
 
-            ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= lref_c.
-            ! This rejects the vast majority of lines without evaluating exp().
-            ! The reference is the continuum times tol, floored by the ALREADY ACCUMULATED
-            ! line opacity: tol*tol*chi, so that narrow overlapping lines cannot cancel
-            ! broader weaker ones. line_reject_frac (default 0) raises that floor further.
-            ! Cached on f0 -- but chi is written by this very loop, so any line that
-            ! actually deposits opacity invalidates the cache below.
-            if (f0 /= f0_prev) then
-              f0_prev = f0
-              refl_c  = tol * cont(f0,i,j,k)
-              flo     = max(tol, line_reject_frac) * tol * chi(f0,io,j,k)
-              if (flo > refl_c) then
-                refl_c = flo
-                lref_c = log(flo * sqrt_pi)      ! == log(ref/voigt_peak)
-              else
-                lref_c = logref(f0,io,j,k)
+            outside = ll%has_reach .and. (llc < llam(1) .or. llc > llam(nf))
+            if (outside) then
+              ! centred beyond this chunk: the tolerance reference is the continuum at
+              ! the nearer chunk end, without the accumulated-opacity floor (see above)
+              fe = merge(1, nf, llc < llam(1))
+              lref_o = logref(fe,io,j,k)
+              if (arg <= lref_o) cycle
+              Rij = exp(arg)
+              ref = tol * cont(fe,i,j,k)
+            else
+              ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= lref_c.
+              ! This rejects the vast majority of lines without evaluating exp().
+              ! The reference is the continuum times tol, floored by the ALREADY
+              ! ACCUMULATED line opacity: tol*tol*chi, so that narrow overlapping lines
+              ! cannot cancel broader weaker ones. line_reject_frac (default 0) raises
+              ! that floor further. Cached on f0 -- but chi is written by this very loop,
+              ! so any line that actually deposits opacity invalidates the cache below.
+              if (f0 /= f0_prev) then
+                f0_prev = f0
+                refl_c  = tol * cont(f0,i,j,k)
+                flo     = max(tol, line_reject_frac) * tol * chi(f0,io,j,k)
+                if (flo > refl_c) then
+                  refl_c = flo
+                  lref_c = log(flo * sqrt_pi)      ! == log(ref/voigt_peak)
+                else
+                  lref_c = logref(f0,io,j,k)
+                end if
               end if
+
+              if (arg <= lref_c) cycle
+
+              ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
+              Rij = exp(arg)
+              ref = refl_c
+
+              ! exact pre-filter: the profile <= 1/sqrt(pi) everywhere, so if even the
+              ! peak cannot reach the tolerance the whole line is negligible -- skip
+              ! the damping and Voigt evaluations entirely (most lines drop out here).
+              if (voigt_peak * Rij <= ref) cycle
             end if
-
-            if (arg <= lref_c) cycle
-
-            ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
-            Rij = exp(arg)
+            c_pass = c_pass + 1
 
             nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
             if (nlte) then
@@ -546,14 +601,6 @@ contains
               bi = 1.0
               bj = 1.0
             end if
-
-            ref = refl_c
-
-            ! exact pre-filter: the profile <= 1/sqrt(pi) everywhere, so if even the
-            ! peak cannot reach the tolerance the whole line is negligible -- skip
-            ! the damping and Voigt evaluations entirely (most lines drop out here).
-            if (voigt_peak * Rij <= ref) cycle
-            c_pass = c_pass + 1
 
             ! damping parameter (physical, then scaled by idf as in the AoS kernel)
             a = ll%ga(l)
@@ -569,23 +616,35 @@ contains
             end if
             a = a * idf
 
-            ll%used(l)     = .true.
-            ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
-
-            ! analytic profile extent where phi*Rij drops to ref: Gaussian core
-            ! v^2 = ln(peak/ref) = arg - logref, Lorentz wing v^2 = a*Rij/(pi*ref);
-            ! a straight (data-independent) loop over [fa,fb], centre included,
-            ! pipelines much better than a walk whose exit condition depends on
-            ! the previous Voigt value
-            vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
-            edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
-            if (vm2 >= edge*edge) then
-              fa = ws         ! line fills the window; skip the extent bisections
-              fb = we
+            if (outside) then
+              vm2 = max(real(arg - lref_o), a*Rij*over_pi/ref)
+              dl  = sqrt(vm2) / idf
+              ll%reach(l) = max(ll%reach(l), real(dl, 4))
+              dl  = min(dl, real(ll%reach_in(l), 8))
+              if (llc + dl < llam(1) - hb(1) .or. llc - dl > llam(nf) + hb(2)) cycle
+              ll%used(l) = .true.
+              fa = bisect_nearest(llam, ws, we, llc - dl)
+              fb = bisect_nearest(llam, ws, we, llc + dl)
             else
-              dl = sqrt(vm2) / idf
-              fa = bisect_nearest(llam, ws, f0, llc - dl)
-              fb = bisect_nearest(llam, f0, we, llc + dl)
+              ll%used(l) = .true.
+              ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
+
+              ! analytic profile extent where phi*Rij drops to ref: Gaussian core
+              ! v^2 = ln(peak/ref) = arg - logref, Lorentz wing v^2 = a*Rij/(pi*ref);
+              ! a straight (data-independent) loop over [fa,fb], centre included,
+              ! pipelines much better than a walk whose exit condition depends on
+              ! the previous Voigt value. The unclipped half-width is the line's reach.
+              vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
+              dl   = sqrt(vm2) / idf
+              ll%reach(l) = max(ll%reach(l), real(dl, 4))
+              edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
+              if (vm2 >= edge*edge) then
+                fa = ws         ! line fills the window; skip the extent bisections
+                fb = we
+              else
+                fa = bisect_nearest(llam, ws, f0, llc - dl)
+                fb = bisect_nearest(llam, f0, we, llc + dl)
+              end if
             end if
             c_voigt = c_voigt + fb - fa + 1
 
@@ -657,16 +716,18 @@ contains
     ! onto this patch's edge through the forward march, so a window would not reproduce
     ! its own run.
     real(dp), intent(in), optional :: llam_lines(2)
-    integer  :: l0, l1
+    integer  :: l0, l1, nsel, isel
+    integer, allocatable :: sel(:)
     integer  :: f0_prev
     real(4)  :: refl_c, lref_c, flo
     integer  :: i, j, k, l, f, f0, nf, m(3), nl, np, fa, fb, noff, nw, lo, hi, io, mem_offset
-    real(8)  :: llc, llam1, dllam, inv_dllam
+    real(8)  :: llc, llam1, dllam, inv_dllam, hb(2), dl
+    integer  :: fe
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, lref_o
     real(8)  :: arg
     real(4)  :: base_s(size(lnbase,4))
-    logical  :: nlte, has_ipart
+    logical  :: nlte, has_ipart, outside
     integer(8) :: c_visit, c_pass, c_voigt, c_fill
     ! kernel scratch: the window's K values and the fp32 abscissa ramp. Kbuf is
     ! an automatic array (stack) but only [1:nw] is ever touched, and windows average
@@ -686,6 +747,7 @@ contains
     end if
     if (nl == 0) return
     if (nf < 2) return
+    call select_lines(ll, llam, vproj, l0, l1, sel, nsel, hb)
     has_ipart = allocated(ll%ipart)
     c_visit = 0; c_pass = 0; c_voigt = 0; c_fill = 0
     lo = 1;  hi = m(1)
@@ -728,8 +790,8 @@ contains
           ! line-independent part of log(Rij) per population group (idf folded in)
           base_s(1:np) = lnbase(io,j,k,1:np)
 
-          do l = l0, l1
-            if (.not. ll%active(l)) cycle
+          do isel = 1, nsel
+            l = sel(isel)
             c_visit = c_visit + 1
 
             ! shifted line centre in log(lambda); nearest index by arithmetic
@@ -746,29 +808,46 @@ contains
             end if
             if (arg < ex_cutoff) cycle
 
-            ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= lref_c.
-            ! This rejects the vast majority of lines without evaluating exp().
-            ! The reference is the continuum times tol, floored by the ALREADY ACCUMULATED
-            ! line opacity: tol*tol*chi, so that narrow overlapping lines cannot cancel
-            ! broader weaker ones. line_reject_frac (default 0) raises that floor further.
-            ! Cached on f0 -- but chi is written by this very loop, so any line that
-            ! actually deposits opacity invalidates the cache below.
-            if (f0 /= f0_prev) then
-              f0_prev = f0
-              refl_c  = tol * cont(f0,i,j,k)
-              flo     = max(tol, line_reject_frac) * tol * chi(f0,io,j,k)
-              if (flo > refl_c) then
-                refl_c = flo
-                lref_c = log(flo * sqrt_pi)      ! == log(ref/voigt_peak)
-              else
-                lref_c = logref(f0,io,j,k)
+            outside = ll%has_reach .and. (llc < llam(1) .or. llc > llam(nf))
+            if (outside) then
+              ! centred beyond this chunk: reference at the nearer chunk end (add_opacity)
+              fe = merge(1, nf, llc < llam(1))
+              lref_o = logref(fe,io,j,k)
+              if (arg <= lref_o) cycle
+              Rij = exp(arg)
+              ref = tol * cont(fe,i,j,k)
+            else
+              ! log-space tolerance pre-test: voigt_peak*Rij <= ref  <=>  arg <= lref_c.
+              ! This rejects the vast majority of lines without evaluating exp().
+              ! The reference is the continuum times tol, floored by the ALREADY
+              ! ACCUMULATED line opacity: tol*tol*chi, so that narrow overlapping lines
+              ! cannot cancel broader weaker ones. line_reject_frac (default 0) raises
+              ! that floor further. Cached on f0 -- but chi is written by this very loop,
+              ! so any line that actually deposits opacity invalidates the cache below.
+              if (f0 /= f0_prev) then
+                f0_prev = f0
+                refl_c  = tol * cont(f0,i,j,k)
+                flo     = max(tol, line_reject_frac) * tol * chi(f0,io,j,k)
+                if (flo > refl_c) then
+                  refl_c = flo
+                  lref_c = log(flo * sqrt_pi)      ! == log(ref/voigt_peak)
+                else
+                  lref_c = logref(f0,io,j,k)
+                end if
               end if
+
+              if (arg <= lref_c) cycle
+
+              ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
+              Rij = exp(arg)
+              ref = refl_c
+
+              ! exact pre-filter: the profile <= 1/sqrt(pi) everywhere, so if even the
+              ! peak cannot reach the tolerance the whole line is negligible -- skip
+              ! the damping and Voigt evaluations entirely (most lines drop out here).
+              if (voigt_peak * Rij <= ref) cycle
             end if
-
-            if (arg <= lref_c) cycle
-
-            ! this ll's isotope Doppler factor idf is folded into lnbase (hence arg)
-            Rij = exp(arg)
+            c_pass = c_pass + 1
 
             nlte = do_nlte .and. ll%lev_i(l) > 0 .and. ll%lev_j(l) > 0
             if (nlte) then
@@ -778,14 +857,6 @@ contains
               bi = 1.0
               bj = 1.0
             end if
-
-            ref = refl_c
-
-            ! exact pre-filter: the profile <= 1/sqrt(pi) everywhere, so if even the
-            ! peak cannot reach the tolerance the whole line is negligible -- skip
-            ! the damping and Voigt evaluations entirely (most lines drop out here).
-            if (voigt_peak * Rij <= ref) cycle
-            c_pass = c_pass + 1
 
             ! damping parameter (physical, then scaled by idf as in the AoS kernel)
             a = ll%ga(l)
@@ -800,9 +871,6 @@ contains
               a = a - ll%gq(l) * starkpe
             end if
             a = a * idf
-
-            ll%used(l)     = .true.
-            ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
 
             ! WINDOW EXTENT. Analytic, where phi*Rij drops to ref, in v-units: Gaussian
             ! core v^2 = arg - logref, Lorentz far wing v^2 = a*Rij/(pi*ref). On a
@@ -827,19 +895,36 @@ contains
             ! It is dropped exactly where it matters least -- narrow windows, over which
             ! cont is flat.
             !
-            vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
             ! The rnoff guard is not cosmetic: nint() of a half-width that overruns the
             ! grid overflows the integer, so the "line fills the window" case is taken
             ! arithmetically rather than through the clamps.
-            rnoff = sqrt(vm2) * nfac
-            if (rnoff >= real(nf, 4)) then
-              fa = 1
-              fb = nf
-              c_fill = c_fill + 1
+            if (outside) then
+              ! the window is the extent at the chunk-end reference, capped by the reach
+              ! and rounded to the nearest grid index like f0
+              vm2 = max(real(arg - lref_o), a*Rij*over_pi/ref)
+              dl  = sqrt(vm2) / idf
+              ll%reach(l) = max(ll%reach(l), real(dl, 4))
+              dl  = min(dl, real(ll%reach_in(l), 8))
+              fa  = max(1,  nint((llc - dl - llam1) * inv_dllam) + 1)
+              fb  = min(nf, nint((llc + dl - llam1) * inv_dllam) + 1)
+              if (fa > fb) cycle
+              ll%used(l) = .true.
             else
-              noff = nint(rnoff)
-              fa   = max(1,  f0 - noff)
-              fb   = min(nf, f0 + noff)
+              ll%used(l) = .true.
+              ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
+              vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
+              rnoff = sqrt(vm2) * nfac
+              ! the unclipped half-width in log(lambda) is the line's reach
+              ll%reach(l) = max(ll%reach(l), rnoff * real(dllam, 4))
+              if (rnoff >= real(nf, 4)) then
+                fa = 1
+                fb = nf
+                c_fill = c_fill + 1
+              else
+                noff = nint(rnoff)
+                fa   = max(1,  f0 - noff)
+                fb   = min(nf, f0 + noff)
+              end if
             end if
             c_voigt = c_voigt + fb - fa + 1
             ! Branchless fp32 kernel. The whole window is evaluated first, so the
@@ -1035,6 +1120,53 @@ contains
   END FUNCTION bisect_nearest
 
   !=====================================================================================
+  ! The lines of ll(l0:l1) a kernel call visits, ascending, in sel(1:nsel). Without
+  ! reaches that is every active line of the slice. With reaches (see add_opacity) it is
+  ! the active lines whose reach window can touch the chunk llam(1:nf): the slice is
+  ! first narrowed by bisection on the centres with the list's largest reach as margin,
+  ! then each line is compared once with its own reach, so the depth loop never visits
+  ! a line that cannot contribute. Both margins include the largest |vproj| and half a
+  ! grid step at each end, hb, which the kernels' nearest-point rounding can add.
+  !
+  ! A per-chunk list is rebuilt on every call rather than stored: it costs one pass over
+  ! the narrowed slice, a small fraction of one depth point's visit, and needs no state
+  ! tied to how a run's patches divide the grid.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE select_lines(ll, llam, vproj, l0, l1, sel, nsel, hb)
+    type(linelist_type), intent(in) :: ll
+    real(dp), intent(in) :: llam(:)
+    real(4),  intent(in) :: vproj(:,:,:)
+    integer,  intent(inout) :: l0, l1
+    integer, allocatable, intent(out) :: sel(:)
+    integer,  intent(out) :: nsel
+    real(8),  intent(out) :: hb(2)
+    real(8)  :: vmax, blue, red
+    integer  :: l, nf
+    !-----------------------------------------------------------------------------------
+    nf = size(llam)
+    hb = 0
+    if (nf > 1) hb = 0.5d0 * [llam(2) - llam(1), llam(nf) - llam(nf-1)]
+    if (ll%has_reach) then
+      vmax = 0
+      if (size(vproj) > 0) vmax = maxval(abs(vproj))
+      blue = llam(1)  - hb(1) - vmax
+      red  = llam(nf) + hb(2) + vmax
+      l0 = max(l0, lower_bound8(ll%llam0, ll%nline, blue - ll%reach_in_max))
+      l1 = min(l1, upper_bound8(ll%llam0, ll%nline, red  + ll%reach_in_max))
+    end if
+    allocate(sel(max(0, l1 - l0 + 1)))
+    nsel = 0
+    do l = l0, l1
+      if (.not. ll%active(l)) cycle
+      if (ll%has_reach) then
+        if (ll%llam0(l) + ll%reach_in(l) < blue .or. ll%llam0(l) - ll%reach_in(l) > red) cycle
+      end if
+      nsel = nsel + 1
+      sel(nsel) = l
+    end do
+  END SUBROUTINE select_lines
+
+  !=====================================================================================
   ! Ported broadening setup (scalar versions of the bbtrans_mod prepare_* routines).
   ! Results are scaled by over_4pi/nu0, identical to the AoS path.
   !-------------------------------------------------------------------------------------
@@ -1136,7 +1268,12 @@ contains
   ! linelist_out.txt writers -- one block per (species, isotope), in the same format
   ! the linelist reader (init_linelist2) and tumult's LineList.from_tumult_format
   ! parse:  "'Fe I'" / "'iso' nlines" / records "lam_air evi loggf gv ga gq i j
-  ! strength" (the trailing strength column is a diagnostic; both readers ignore it).
+  ! strength reach". strength is a diagnostic both readers ignore. reach [Angstrom] is
+  ! the half-width of the line's evaluation window, where its opacity falls to the
+  ! tolerance times the continuum, maximised over the states the list was written from
+  ! (ll%reach times the vacuum wavelength). init_linelist2 reads it back so a run can
+  ! select lines by it (add_opacity); detailed (AoS) hydrogen lines record none and
+  ! write 0.
   !-------------------------------------------------------------------------------------
   SUBROUTINE write_ll_header(unit, id, iso, n)
     integer, intent(in) :: unit, iso, n
@@ -1147,12 +1284,12 @@ contains
   END SUBROUTINE write_ll_header
 
   !-------------------------------------------------------------------------------------
-  SUBROUTINE write_ll_record(unit, lam_air, evi, loggf, gv, ga, gq, i, j, strength)
+  SUBROUTINE write_ll_record(unit, lam_air, evi, loggf, gv, ga, gq, i, j, strength, reach)
     integer, intent(in) :: unit, i, j
-    real(8), intent(in) :: lam_air, evi, loggf, gv, ga, gq, strength
+    real(8), intent(in) :: lam_air, evi, loggf, gv, ga, gq, strength, reach
     !-----------------------------------------------------------------------------------
-    write(unit, "(F12.4, F10.4, F9.3, F14.6, 2(ES12.3), 2(I6), ES12.3)") &
-      lam_air, evi, loggf, gv, ga, gq, i, j, strength
+    write(unit, "(F12.4, F10.4, F9.3, F14.6, 2(ES12.3), 2(I6), ES12.3, ES13.5)") &
+      lam_air, evi, loggf, gv, ga, gq, i, j, strength, reach
   END SUBROUTINE write_ll_record
 
   !=====================================================================================
@@ -1191,7 +1328,7 @@ contains
           associate(line => lines(l))
             if (line%active .and. line%used .and. line%iso_idx == kiso) then
               call write_ll_record(unit, line%lam_air, line%lower_ev, line%loggf, &
-                line%gv_in, line%ga_in, line%gq_in, line%i, line%j, line%strength)
+                line%gv_in, line%ga_in, line%gq_in, line%i, line%j, line%strength, 0d0)
             endif
           end associate
         end do
@@ -1203,7 +1340,7 @@ contains
           call write_ll_record(unit, vac2air(exp(sll%llam0(l))), &
             dble(sll%lower_ev(l)), dble(sll%loggf(l)), dble(sll%gv_in(l)), &
             dble(sll%ga_in(l)), dble(sll%gq_in(l)), sll%lev_i(l), sll%lev_j(l), &
-            dble(sll%strength(l)))
+            dble(sll%strength(l)), dble(sll%reach(l)) * exp(sll%llam0(l)))
         end associate
       end do
     end do
@@ -1259,7 +1396,7 @@ contains
           call write_ll_record(unit, vac2air(exp(ll%llam0(l))), &
             dble(ll%lower_ev(l)), dble(ll%loggf(l)), dble(ll%gv_in(l)), &
             dble(ll%ga_in(l)), dble(ll%gq_in(l)), ll%lev_i(l), ll%lev_j(l), &
-            dble(ll%strength(l)))
+            dble(ll%strength(l)), dble(ll%reach(l)) * exp(ll%llam0(l)))
         end do
       end do
     end do
@@ -1281,21 +1418,25 @@ contains
   ! Decode ordinary numeric records without entering the formatted-I/O runtime once per
   ! transition. Unusual syntax falls back to the list-directed reader, preserving the
   ! input format's existing compatibility. Three columns are required; absent optional
-  ! columns retain their historical zero defaults, and a trailing strength is ignored.
-  SUBROUTINE parse_record(str, values, iostat)
+  ! columns retain their historical zero defaults. values(9:10) are the trailing
+  ! strength and reach a written line list carries, and nvalue counts the numbers read,
+  ! so nvalue >= 10 marks a record with a reach. A non-numeric token after the eight
+  ! input columns ends the ten-column parse, so the eight are then parsed on their own.
+  SUBROUTINE parse_record(str, values, iostat, nvalue)
     character(len=*), intent(in) :: str
-    real(dp), intent(out) :: values(8)
-    integer, intent(out) :: iostat
-    integer :: nvalue
+    real(dp), intent(out) :: values(10)
+    integer, intent(out) :: iostat, nvalue
     logical :: ok
     values = 0
+    iostat = 0
     call parse_fields_fast(str, values, nvalue, ok)
-    if (ok .and. nvalue >= 3) then
-      iostat = 0
-      return
-    end if
+    if (ok .and. nvalue >= 3) return
     values = 0
-    read(str, *, iostat=iostat) values
+    call parse_fields_fast(str, values(1:8), nvalue, ok)
+    if (ok .and. nvalue >= 3) return
+    values = 0
+    nvalue = 0
+    read(str, *, iostat=iostat) values(1:8)
   END SUBROUTINE parse_record
 
   PURE SUBROUTINE parse_fields_fast(str, values, nvalue, ok)
@@ -1447,6 +1588,8 @@ contains
     call grow4(ll%gw2,      ll%nline, need)
     call grow4(ll%gq,       ll%nline, need)
     call grow4(ll%strength, ll%nline, need)
+    call grow4(ll%reach,    ll%nline, need)
+    call grow4(ll%reach_in, ll%nline, need)
     call growi(ll%lev_i,    ll%nline, need)
     call growi(ll%lev_j,    ll%nline, need)
     call growl(ll%unsold,   ll%nline, need)
