@@ -1218,7 +1218,7 @@ contains
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
                                      only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
-                                     i_set, window_lam)
+                                     i_set, window_lam, chi_lines, eta_lines)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1245,6 +1245,9 @@ contains
     ! window_lam: [blue, red] wavelength in Angstrom of the window_file window this
     ! output patch lies in (see below)
     real(dp), intent(in), optional :: window_lam(2)
+    ! chi_lines, eta_lines: receive the line increments added to all_chi and all_eta
+    ! over i0:i1, so a caller can add them again later with the same result
+    real(4), intent(out), dimension(:,:,:,:), optional :: chi_lines, eta_lines
     class(spectrum_type) :: sp
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
     real(8), intent(in) :: dlam
@@ -1404,6 +1407,8 @@ contains
         end do
       end do
     end do
+    if (present(chi_lines)) chi_lines = chi_l
+    if (present(eta_lines)) eta_lines = eta_l
     deallocate(vpr)
 
     ! working units -> physical extinction for the scattering component
