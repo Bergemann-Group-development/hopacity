@@ -82,7 +82,12 @@ $(BUILD)/%.o: %.f90 | $(BUILD)
 $(BUILD):
 	mkdir -p $@
 
+# gfortran searches the compilation directory for .mod files ahead of -I and -J, so a
+# module file left in this source directory shadows the freshly built one in $(BUILD)
+# and makes later compiles fail on stale derived types.  Nothing here produces .mod
+# files on purpose, so clean removes any that a stray -fsyntax-only run has dropped.
 clean:
 	rm -rf $(BUILD)
+	rm -f *.mod
 
 .PHONY: all clean bindings hop_prune.x
