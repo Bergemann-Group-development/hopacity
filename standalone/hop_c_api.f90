@@ -841,7 +841,7 @@ CONTAINS
 
   !-----------------------------------------------------------------------------
   ! Microturbulence [km/s] of the loaded state.  vmic enters only the line
-  ! broadening (composition%add_linelist_opacities2), never the EOS, so it can
+  ! broadening (composition%add_linelist_opacities), never the EOS, so it can
   ! be changed on a solved state instead of re-solving it.  A negative value is
   ! thermal-only broadening.
   !-----------------------------------------------------------------------------
@@ -1005,7 +1005,7 @@ CONTAINS
         do w = 1, nch_l
           call chunk_range(w, nch_l, n, i0, i1)
           if (i1 < i0) cycle
-          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1, llam_in=llam)
+          call comp%add_linelist_opacities(sp, chi4, ehat, dl, one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet, i0=i0, i1=i1, llam_in=llam)
         end do
         !$omp end parallel do
       else
@@ -1013,7 +1013,7 @@ CONTAINS
         do w = 1, nch_l
           call chunk_range(w, nch_l, n, i0, i1)
           if (i1 < i0) cycle
-          call comp%add_linelist_opacities2(sp, chi4, ehat, dl, i0=i0, i1=i1, llam_in=llam)
+          call comp%add_linelist_opacities(sp, chi4, ehat, dl, i0=i0, i1=i1, llam_in=llam)
         end do
         !$omp end parallel do
       endif
@@ -1072,7 +1072,7 @@ CONTAINS
   !-----------------------------------------------------------------------------
   ! Read one line-list file into the master instance, keeping only lines inside
   ! [lam(1)-dlam, lam(nlam)+dlam] (pass nlam=0 for no wavelength mask).  Mirrors
-  ! the composition%init_linelist2 calls dispatch makes at setup, one per file in
+  ! the composition%init_linelist calls dispatch makes at setup, one per file in
   ! linelist_folder; repeated calls accumulate.  Must be called after hop_init and
   ! BEFORE hop_load_state: the solve works on a fresh copy of master, and
   ! particle%ll is allocatable, so the copy carries the lines along.
@@ -1128,7 +1128,7 @@ CONTAINS
     ! the lam range is the hull of the merged intervals; the intervals do the masking
     allocate(lam8(2))
     lam8 = [minval(merged(1:nmerged)%blue_vac), maxval(merged(1:nmerged)%red_vac)]
-    call master%init_linelist2(file_f, dlam, lam8, merged(1:nmerged))
+    call master%init_linelist(file_f, dlam, lam8, merged(1:nmerged))
   END FUNCTION hop_init_linelist_windows
 
   !-----------------------------------------------------------------------------
@@ -1159,9 +1159,9 @@ CONTAINS
     if (nlam > 0) then
       allocate(lam8(nlam))
       lam8 = lam(1:nlam)
-      call master%init_linelist2(file_f, dlam, lam8)
+      call master%init_linelist(file_f, dlam, lam8)
     else
-      call master%init_linelist2(file_f, dlam)
+      call master%init_linelist(file_f, dlam)
     end if
   END FUNCTION hop_init_linelist
 

@@ -21,7 +21,7 @@
 !     pre-converting to Einstein Bij.
 !
 ! The orchestration that walks elements/ions/molecules stays in composition_mod
-! (add_linelist_opacities2 / init_linelist2), which owns the patch thermodynamic arrays
+! (add_linelist_opacities / init_linelist), which owns the patch thermodynamic arrays
 ! and the departure-coefficient lookup; per particle it now calls add_particle_opacity.
 !=======================================================================================
 MODULE linelist_mod
@@ -1266,12 +1266,12 @@ contains
 
   !=====================================================================================
   ! linelist_out.txt writers -- one block per (species, isotope), in the same format
-  ! the linelist reader (init_linelist2) and tumult's LineList.from_tumult_format
+  ! the linelist reader (init_linelist) and tumult's LineList.from_tumult_format
   ! parse:  "'Fe I'" / "'iso' nlines" / records "lam_air evi loggf gv ga gq i j
   ! strength reach". strength is a diagnostic both readers ignore. reach [Angstrom] is
   ! the half-width of the line's evaluation window, where its opacity falls to the
   ! tolerance times the continuum, maximised over the states the list was written from
-  ! (ll%reach times the vacuum wavelength). init_linelist2 reads it back so a run can
+  ! (ll%reach times the vacuum wavelength). init_linelist reads it back so a run can
   ! select lines by it (add_opacity); detailed (AoS) hydrogen lines record none and
   ! write 0.
   !-------------------------------------------------------------------------------------

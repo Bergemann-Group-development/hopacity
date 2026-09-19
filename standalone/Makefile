@@ -29,7 +29,8 @@ FFLAGS = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
 
 # Topologically ordered source list (verified USE graph)
 SRCS = ../qlg_mod.f90 ../hop_env_mod.f90 ../const_mod.f90 ../prec_mod.f90 ../op_math_mod.f90 \
-       ../interpol_mod.f90 ../handyfuncs_mod.f90 ../hvcs_mod.f90 \
+       ../interpol_mod.f90 ../handyfuncs_mod.f90 ../linelist_reader_mod.f90 \
+       ../hvcs_mod.f90 \
        ../level_mod.f90 ../line_types_mod.f90 ../bbtrans_mod.f90 \
        ../ion_mod.f90 ../element_mod.f90 ../molecule_mod.f90 \
        ../hprofl_mod.f90 ../linelist_mod.f90 \

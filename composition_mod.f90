@@ -11,6 +11,9 @@ MODULE composition_mod
   USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium, moleq_warn
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE line_types_mod, only: linelist_type
+  USE linelist_reader_mod, only: ll_file_t, ll_block_t, ll_open, ll_close, &
+                                 ll_next_block, ll_block_range, ll_whole_block, &
+                                 ll_read_slice, ll_read_ranges, ll_index_records
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
                           voigt_peak, interval_t, merge_intervals, in_any_interval, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
@@ -110,10 +113,10 @@ MODULE composition_mod
     procedure :: compute_grams_per_hydrogen
     procedure :: compute_damping_aux
     procedure :: overwrite_abundance
-    procedure :: init_linelist2
+    procedure :: init_linelist
     procedure :: mask_linelist
     procedure :: mask_departure_species
-    procedure :: add_linelist_opacities2
+    procedure :: add_linelist_opacities
     procedure :: print_ion_table
     procedure :: read_molec_file
     procedure :: parse_mol_id
@@ -852,6 +855,38 @@ contains
   END SUBROUTINE mask_linelist
 
   !===============================================================================
+  ! Whether the line-list block of species id (an element symbol or a molecule
+  ! formula, the first word of a block header) is to be read at all. This is the
+  ! test mask_linelist applies to the composition, hoisted to read time so the
+  ! blocks of unwanted species are never parsed: with only_elements naming the one
+  ! species a run synthesises, the master list is skipped a block at a time.
+  ! Both spellings are tried, since element ids are capitalised ('Fe') while
+  ! molecule formulae keep the list's own case ('MgH').
+  !===============================================================================
+  FUNCTION linelist_species_wanted (id) RESULT (wanted)
+    character(len=*), intent(in) :: id
+    character(len=512) :: drop, only
+    character(len=8) :: sym, cap
+    logical :: wanted
+    !-----------------------------------------------------------------------------
+    wanted = .true.
+    if (exclude_elements == '' .and. only_elements == '') return
+    sym = adjustl(id)
+    cap = capitalize(trim(sym))
+    drop = ''
+    only = ''
+    drop(2:len(drop)-1) = trim_between_words(exclude_elements)
+    only(2:len(only)-1) = trim_between_words(only_elements)
+    if (index(drop, ' '//trim(sym)//' ') > 0 .or. &
+        index(drop, ' '//trim(cap)//' ') > 0) then
+      wanted = .false.
+    else if (only_elements /= '') then
+      wanted = index(only, ' '//trim(sym)//' ') > 0 .or. &
+               index(only, ' '//trim(cap)//' ') > 0
+    endif
+  END FUNCTION linelist_species_wanted
+
+  !===============================================================================
   ! Disable the line list for every species named in ids (element symbol or
   ! molecule formula), at the same per-element / per-molecule granularity as the
   ! departure_matches association (an element key covers all its ion stages).
@@ -898,14 +933,16 @@ contains
   END SUBROUTINE mask_departure_species
 
   !===============================================================================
-  ! init_linelist2 -- structure-of-arrays reader for the new linelist path.
-  ! Reads the whole file into memory (no backspace), splits it into per-species
-  ! blocks, and builds each particle's SoA linelist (particle%ll) via linelist_mod.
-  ! Hydrogen lines are special (Stark profiles) and kept in the AoS particle%line
-  ! via add_h_block, which handles both the embedded H I block layout and the
-  ! dedicated 'Hlinedata' column layout (selected by the hlinedata flag).
+  ! init_linelist -- structure-of-arrays reader for the bulk linelist.
+  ! Walks the file's per-species blocks through linelist_reader_mod, which addresses
+  ! and bisects a block's records without reading what lies between them, and builds
+  ! each particle's SoA linelist (particle%ll) via linelist_mod from the byte ranges
+  ! the windows select. Hydrogen lines are special (Stark profiles) and kept in the
+  ! AoS particle%line via add_h_block, which handles both the embedded H I block
+  ! layout and the dedicated 'Hlinedata' column layout (selected by the hlinedata
+  ! flag); its block is read whole and masked there.
   !-------------------------------------------------------------------------------
-  SUBROUTINE init_linelist2 (self, linelist_file, dlam, lam, intervals)
+  SUBROUTINE init_linelist (self, linelist_file, dlam, lam, intervals)
     class(composition_type), target :: self
     class(particle_type), pointer :: particle
     character(len=*) :: linelist_file
@@ -914,13 +951,17 @@ contains
     type(interval_t), intent(in), dimension(:), optional :: intervals
     character(len=:), allocatable :: buf
     integer(8), allocatable :: lstart(:), lend(:)
-    character(20) :: ion_id, siso
+    character(20) :: ion_id
+    character(8) :: sym
     class(ion_type), pointer :: HI
+    type(ll_file_t) :: llf
+    type(ll_block_t) :: blk
     real(dp) :: lam_min, lam_max, vbar2e4
-    integer :: lunit, iostat, nrec, p, nline, iso, iso_idx, nbefore, nkh, rel
+    integer :: iostat, nslice, nline, iso, iso_idx, nbefore, nkh, iv
     integer :: i, j, nactive, ntotal, niso
-    integer(8) :: fsize, b0, bnl, e
-    logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals
+    integer(8) :: b0, b1, b_after
+    integer(8), allocatable :: r0(:), r1(:)
+    logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals, have_block
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
     !-----------------------------------------------------------------------------
     if (linelist_file == '' .and. .not. self%ll_initialised) return
@@ -940,7 +981,7 @@ contains
     ! hydrogen lines keep the AoS / Stark-profile treatment (add_h_block); a
     ! dedicated 'Hlinedata' file just uses the alternate H column layout there.
     hlinedata = endswith(linelist_file, 'Hlinedata')
-    call trace%begin ('composition_type%init_linelist2', itimer=itimer)
+    call trace%begin ('composition_type%init_linelist', itimer=itimer)
     self%ll_initialised = .true.
 
     lam_mask = present(lam)
@@ -953,66 +994,44 @@ contains
       lam_max = 0
     endif
 
-    ! slurp the whole file in one stream read, then index record boundaries in place.
-    ! Records are referenced by byte offsets into buf (no per-record string copy);
-    ! newlines are found with the fast index() intrinsic.
-    call trace%begin ('init_linelist2_read', itimer=it_read)
-    call os%check_file(linelist_file)
-    open(newunit=lunit, file=linelist_file, access='stream', form='unformatted', &
-         status='old', iostat=iostat)
-    inquire(unit=lunit, size=fsize)
-    allocate(character(len=fsize) :: buf)
-    read(lunit) buf
-    close(lunit)
+    ! Walk the file block by block, reading only what each block contributes.
+    ! linelist_reader_mod addresses a block's records without touching what lies
+    ! between them, so a block of an unwanted species costs its two header lines
+    ! and a narrow window costs its own records rather than the whole file. The
+    ! per-interval slice is widened by one record on either side, and the mask
+    ! below still decides membership in vacuum, so the selection is the one a
+    ! reader of the whole file would make.
+    call ll_open (llf, linelist_file)
+    if (llf%unit == 0) then
+      call trace%end(itimer)
+      return
+    end if
 
-    ! single pass: record [lstart,lend] byte offsets, growing the index geometrically
-    allocate(lstart(1048576), lend(1048576))
-    nrec = 0
-    b0 = 1
-    do
-      rel = index(buf(b0:fsize), char(10))
-      if (rel == 0) exit
-      bnl = b0 + rel - 1               ! newline position
-      nrec = nrec + 1
-      if (nrec > size(lstart)) then
-        call grow_i8(lstart); call grow_i8(lend)
-      endif
-      lstart(nrec) = b0
-      e = bnl - 1
-      if (e >= b0) then
-        if (buf(e:e) == char(13)) e = e - 1   ! drop CR (CRLF files)
-      endif
-      lend(nrec) = e
-      b0 = bnl + 1
-    end do
-    if (b0 <= fsize) then              ! trailing line without newline
-      nrec = nrec + 1
-      if (nrec > size(lstart)) then
-        call grow_i8(lstart); call grow_i8(lend)
-      endif
-      lstart(nrec) = b0
-      e = fsize
-      if (buf(e:e) == char(13)) e = e - 1
-      lend(nrec) = e
-    endif
-    call trace%end(it_read)
+    if (use_intervals) allocate (r0(size(intervals)), r1(size(intervals)))
 
-    ! walk the per-species blocks
-    call trace%begin ('init_linelist2_build', itimer=it_build)
-    p = 1
+    call trace%begin ('init_linelist_build', itimer=it_build)
     ntotal = 0
     nactive = 0
     nkh = 0
-    do while (p < nrec)
-      read(buf(lstart(p):lend(p)), *, iostat=iostat) ion_id   ; p = p + 1
-      read(buf(lstart(p):lend(p)), *, iostat=iostat) siso, nline ; p = p + 1
-      read(siso, *) iso
+    do
+      call ll_next_block (llf, blk, have_block)
+      if (.not. have_block) exit
+      nline = blk%nrec
+      ntotal = ntotal + nline
+      if (nline == 0) cycle
+      read (blk%id, *, iostat=iostat) ion_id
+      if (iostat /= 0) cycle
+      read (blk%siso, *, iostat=iostat) iso
+      if (iostat /= 0) cycle
       isotope = iso > 0
       ion_id = trim_between_words(ion_id)
+      ! species switches are applied here rather than after the read, so a block of
+      ! an unwanted species costs only its header (see linelist_species_wanted)
+      read(ion_id, *) sym
+      if (.not. linelist_species_wanted(sym)) cycle
       nullify(particle)
       call self%particle_by_id(ion_id(1:6), particle, verbose=.true., is_molecule=is_mol)
       ok = associated(particle)
-      ntotal = ntotal + nline
 
       iso_idx = 0
       if (ok .and. isotope) then
@@ -1027,17 +1046,18 @@ contains
 
       if (.not. ok) then
         if (isotope) print *, ion_id(1:6), ' isotope ', iso, ' not found!'
-        p = p + nline
         cycle
       endif
 
       if (particle%id == 'H I') then
-        ! hydrogen keeps the AoS / Stark-profile treatment (add_h_opacities)
+        ! hydrogen keeps the AoS / Stark-profile treatment (add_h_opacities), and
+        ! is read whole: its Stark wings reach far beyond any window margin
+        call ll_whole_block (blk, b0, b1)
+        call read_slice (b0, b1)
         nbefore = particle%nline
-        call add_h_block(particle, buf, lstart(p:p+nline-1), lend(p:p+nline-1), nline, &
+        call add_h_block(particle, buf, lstart(1:nslice), lend(1:nslice), nslice, &
                          lam_mask, lam_min, lam_max, intervals, use_intervals)
         nactive = nactive + (particle%nline - nbefore)
-        p = p + nline
         cycle
       endif
 
@@ -1049,23 +1069,52 @@ contains
 
       particle%in_linelist = .true.
       nbefore = particle%ll(iso_idx)%nline
-      if (use_intervals) then
-        call build_linelist(particle%ll(iso_idx), buf, lstart(p:p+nline-1), &
-          lend(p:p+nline-1), nline, particle%awgt, particle%j, particle%xion, is_mol, &
-          vbar2e4, lam_mask, lam_min, lam_max, intervals)
-      else
-        call build_linelist(particle%ll(iso_idx), buf, lstart(p:p+nline-1), &
-          lend(p:p+nline-1), nline, particle%awgt, particle%j, particle%xion, is_mol, &
+      if (.not. lam_mask) then
+        call ll_whole_block (blk, b0, b1)
+        call read_slice (b0, b1)
+        call build_linelist(particle%ll(iso_idx), buf, lstart(1:nslice), &
+          lend(1:nslice), nslice, particle%awgt, particle%j, particle%xion, is_mol, &
           vbar2e4, lam_mask, lam_min, lam_max)
+      else if (use_intervals) then
+        ! one byte range per interval, read into a single slice: windows far apart
+        ! cost only their own records, while build_linelist still sees one ascending
+        ! run of them and tests every record against every interval, as it does when
+        ! it is handed the whole block.  b_after keeps two ranges from overlapping,
+        ! so no record is added twice.
+        b_after = blk%dstart
+        do iv = 1, size(intervals)
+          call ll_block_range (llf, blk, vac2air(intervals(iv)%blue_vac), &
+                               vac2air(intervals(iv)%red_vac), b_after, r0(iv), r1(iv))
+          b_after = max(b_after, r1(iv))
+        end do
+        call trace%begin ('init_linelist_read', itimer=it_read)
+        call ll_read_ranges (llf, r0, r1, size(intervals), buf)
+        call ll_index_records (buf, lstart, lend, nslice)
+        call trace%end(it_read)
+        if (nslice > 0) &
+          call build_linelist(particle%ll(iso_idx), buf, lstart(1:nslice), &
+            lend(1:nslice), nslice, particle%awgt, particle%j, particle%xion, is_mol, &
+            vbar2e4, lam_mask, lam_min, lam_max, intervals)
+      else
+        call ll_block_range (llf, blk, vac2air(lam_min), vac2air(lam_max), &
+                             blk%dstart, b0, b1)
+        if (b1 > b0) then
+          call read_slice (b0, b1)
+          call build_linelist(particle%ll(iso_idx), buf, lstart(1:nslice), &
+            lend(1:nslice), nslice, particle%awgt, particle%j, particle%xion, is_mol, &
+            vbar2e4, lam_mask, lam_min, lam_max)
+        end if
       end if
       nactive = nactive + (particle%ll(iso_idx)%nline - nbefore)
-      p = p + nline
     end do
-    deallocate(buf, lstart, lend)
+    call ll_close (llf)
+    if (allocated(r0)) deallocate(r0, r1)
+    if (allocated(buf)) deallocate(buf)
+    if (allocated(lstart)) deallocate(lstart, lend)
     call trace%end(it_build)
 
     ! sort every touched particle's linelist by wavelength (march prerequisite)
-    call trace%begin ('init_linelist2_sort', itimer=it_sort)
+    call trace%begin ('init_linelist_sort', itimer=it_sort)
     do i=1, self%nel
       do j=lbound(self%elements(i)%ions,1), ubound(self%elements(i)%ions,1)
         do iso_idx=0, ubound(self%elements(i)%ions(j)%ll, 1)
@@ -1090,6 +1139,18 @@ contains
     call trace%end(itimer)
 
   contains
+    ! the byte range [b0,b1) of the open list as buf, with its record boundaries;
+    ! the offsets are into the slice, which is what build_linelist and add_h_block
+    ! index with
+    subroutine read_slice (b0, b1)
+      integer(8), intent(in) :: b0, b1
+      !-------------------------------------------------------------------------
+      call trace%begin ('init_linelist_read', itimer=it_read)
+      call ll_read_slice (llf, b0, b1, buf)
+      call ll_index_records (buf, lstart, lend, nslice)
+      call trace%end(it_read)
+    end subroutine read_slice
+
     ! allocate the per-isotope SoA linelist array ll(0:niso) once (0 = main isotope)
     subroutine ensure_ll_allocated(p)
       class(particle_type), intent(inout) :: p
@@ -1202,23 +1263,15 @@ contains
       particle%in_linelist = .true.
     end subroutine add_h_block
 
-    ! double the capacity of an int8 offset array, preserving contents
-    subroutine grow_i8(a)
-      integer(8), allocatable, intent(inout) :: a(:)
-      integer(8), allocatable :: t(:)
-      allocate(t(2_8*size(a)))
-      t(1:size(a)) = a
-      call move_alloc(t, a)
-    end subroutine grow_i8
-  END SUBROUTINE init_linelist2
+  END SUBROUTINE init_linelist
 
   !===============================================================================
-  ! add_linelist_opacities2 -- SoA opacity orchestrator. The hydrogen block uses
+  ! add_linelist_opacities -- SoA opacity orchestrator. The hydrogen block uses
   ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
   !-------------------------------------------------------------------------------
-  SUBROUTINE add_linelist_opacities2(self, sp, all_chi, all_eta, dlam, vproj, departures, &
-                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
-                                     i_set, window_lam, chi_lines, eta_lines)
+  SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures, &
+                                    only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
+                                    i_set, window_lam, chi_lines, eta_lines)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1271,7 +1324,7 @@ contains
     logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
-    call trace%begin ('composition_type%add_linelist_opacities2', itimer=itimer)
+    call trace%begin ('composition_type%add_linelist_opacities', itimer=itimer)
     m = shape(self%ne)
     nf = sp%nnu
     lo = 1;  hi = m(1)
@@ -1486,7 +1539,7 @@ contains
           population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       endif
     end subroutine particle_add_opacities_soa
-  END SUBROUTINE add_linelist_opacities2
+  END SUBROUTINE add_linelist_opacities
 
   !===============================================================================
   SUBROUTINE reassign_pointer(self)
@@ -2274,7 +2327,7 @@ contains
   ! OPACITY PIPELINE
   !
   ! Three primitives -- continuum_opacities, add_absmet_opacities and
-  ! add_linelist_opacities2 -- accumulate onto the same two buffers, and
+  ! add_linelist_opacities -- accumulate onto the same two buffers, and
   ! `opacity` below is a thin wrapper that runs all three for the callers that
   ! want one call.  The anisotropic rt_patch foreground drives the same
   ! primitives directly, interleaved with its bound-free/bound-bound kernels, so
@@ -2554,7 +2607,7 @@ contains
         chi_scat = 0
         call compute_epsilon_stage(1, sp%nu, self%temp, self%ne, one_m_eps(:,:,:,:,1))
         call compute_epsilon_stage(2, sp%nu, self%temp, self%ne, one_m_eps(:,:,:,:,2))
-        call self%add_linelist_opacities2(sp, chi, ehat, dl, vproj, departures=departures, &
+        call self%add_linelist_opacities(sp, chi, ehat, dl, vproj, departures=departures, &
           one_m_eps=one_m_eps, chi_scat=chi_scat, beta=bet)
         do k=1, m(3)
           do j=1, m(2)
@@ -2566,7 +2619,7 @@ contains
           end do
         end do
       else
-        call self%add_linelist_opacities2(sp, chi, ehat, dl, vproj, departures=departures)
+        call self%add_linelist_opacities(sp, chi, ehat, dl, vproj, departures=departures)
       endif
       ! (xhat, ehat) -> physical true absorption, once.  The line kernels add the
       ! whole LTE line to xhat and only *record* its (1-eps) share in chi_scat, so
