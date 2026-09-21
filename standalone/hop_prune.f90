@@ -55,7 +55,7 @@ PROGRAM hop_prune
   implicit none
 
   ! --- &atmos_params, the read_external_mod list; only the named few are used ----
-  character(len=512) :: atmos_file=''
+  character(len=512) :: atmos_file='', atmos_root=''
   character(len=64) :: atmos_format='unknown', amr=''
   integer :: dims=1, verbose=0, patches_per_mpi=1, nx=-1, ny=-1, nz=96, snap=0
   real(8) :: FeH=-99.9
@@ -63,7 +63,7 @@ PROGRAM hop_prune
   logical :: save_atmos=.true., use_rho=.true., use_ne=.true., pchip_interpolation=.true., &
              log_interpolation=.true., save_eos=.false., use_abnd=.false., use_vel=.true., &
              read_departures=.false., prune_top=.false.
-  namelist /atmos_params/ atmos_file, dims, verbose, patches_per_mpi, FeH, &
+  namelist /atmos_params/ atmos_root, atmos_file, dims, verbose, patches_per_mpi, FeH, &
     save_atmos, atmos_format, vmic, use_rho, use_ne, nx, ny, nz, snap, pchip_interpolation, &
     log_interpolation, save_eos, amr, use_abnd, timestamp, use_vel, read_departures, &
     prune_top, prune_tol
@@ -151,6 +151,7 @@ PROGRAM hop_prune
   abundances_in = abundances       ! hop_init resets the global unless set as an option
   if (output_file == '') call die('prune_params: output_file is required')
   if (atmos_file == '') call die('atmos_params: atmos_file is required')
+  if (atmos_root /= '') atmos_file = trim(atmos_root)//'/'//trim(atmos_file)
   if (linelist_folder /= '') &
     call die('linelist_params: linelist_folder is not supported; list the files in linelist_file')
   nfiles = count(linelist_file /= '')
