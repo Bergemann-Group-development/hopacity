@@ -13,9 +13,12 @@ make -C HOP/standalone -j8            # -> build/libhop.so, libhop.h, build/hop_
 make -C HOP/standalone clean          # rebuild from scratch after editing HOP/*.f90
 ```
 
-gfortran only. `OPT=-O2` overrides the default `-O1`. The wrapper finds the library at
-`HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points. The top-level `make`
-builds `hop_prune.x` alongside `dispatch.x` when the compiler is gfortran.
+The top-level `make` builds all of it alongside `dispatch.x`, with the same `COMPILER`
+(gfortran, ifort or ifx) and option group; invoked here, `COMPILER=ifort` selects ifort
+and `OPT=-O2` overrides the option group's optimisation. `libhop.h` is committed; `make bindings`
+rewrites it from the `BIND(C)` declarations with `gen_bindings.py` after an interface
+change, and `tests/test_hop_abi.py` fails on a stale one. The wrapper
+finds the library at `HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points.
 
 Check it loads:
 

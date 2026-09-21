@@ -116,6 +116,19 @@ PROGRAM hop_prune
   real(4), allocatable :: chi(:), scat(:)
   real(4) :: vmic_eff
   logical :: with_rho, with_ne
+  ! libc directly: getpid and rename are compiler extensions in Fortran (GNU intrinsics,
+  ! ifport in ifort), so the C interfaces are the portable spelling.
+  interface
+    function c_getpid() bind(C, name='getpid')
+      import c_int
+      integer(c_int) :: c_getpid
+    end function
+    function c_rename(old, new) bind(C, name='rename')
+      import c_char, c_int
+      character(kind=c_char), intent(in) :: old(*), new(*)
+      integer(c_int) :: c_rename
+    end function
+  end interface
   !-----------------------------------------------------------------------------
   linelist_file = ''
   abundances = ''                  ! module global without an initializer
@@ -220,10 +233,10 @@ PROGRAM hop_prune
   nkept = hop_linelist_count()
 
   ! --- output: temporary file, then an atomic rename ----------------------------------
-  write(tmp_file, '(A,A,I0,A)') trim(output_file), '.', getpid(), '.partial'
+  write(tmp_file, '(A,A,I0,A)') trim(output_file), '.', c_getpid(), '.partial'
   call check_status(hop_write_linelist(cstr(tmp_file)), 'hop_write_linelist')
-  call rename(trim(tmp_file), trim(output_file), iostat)
-  if (iostat /= 0) call die('cannot rename ' // trim(tmp_file) // ' to ' // trim(output_file))
+  if (c_rename(cstr(tmp_file), cstr(output_file)) /= 0) &
+    call die('cannot rename ' // trim(tmp_file) // ' to ' // trim(output_file))
   call write_provenance(trim(output_file) // '.provenance.nml')
   if (verbose >= 0) write(output_unit, '(A,I0,A,A)') 'hop_prune: ', nkept, &
     ' transitions written to ', trim(output_file)
@@ -351,11 +364,18 @@ CONTAINS
   END SUBROUTINE write_provenance
 
   !-----------------------------------------------------------------------------
+  !> A NUL-terminated C string as the character array the BIND(C) dummies declare.
+  !> A scalar result would rely on sequence association, which ifort rejects for a
+  !> function result (error #8284).
   FUNCTION cstr(s) RESULT(c)
     character(len=*), intent(in) :: s
-    character(kind=c_char, len=len_trim(s)+1) :: c
+    character(kind=c_char) :: c(len_trim(s)+1)
+    integer :: i
     !---------------------------------------------------------------------------
-    c = trim(s) // c_null_char
+    do i = 1, len_trim(s)
+      c(i) = s(i:i)
+    end do
+    c(len_trim(s)+1) = c_null_char
   END FUNCTION cstr
 
   FUNCTION itoa(i) RESULT(s)

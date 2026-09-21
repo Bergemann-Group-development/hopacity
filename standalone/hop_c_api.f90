@@ -691,9 +691,8 @@ CONTAINS
   FUNCTION hop_load_state(n, temp, ne, rho, vmic, use_rho, use_ne) &
            RESULT(status) BIND(c, name='hop_load_state')
     integer(c_int), value :: n, use_rho, use_ne
-    ! assumed-size, not temp(n): -fc-prototypes renders an explicit-shape dummy as a
-    ! by-value scalar (`const double temp`) and only gets `(*)` right as a pointer, so
-    ! the generated header is only trustworthy if every array dummy here is `(*)`
+    ! assumed-size: gen_bindings.py maps a dummy with any dimension to a pointer and a
+    ! `value` scalar to a C scalar; everything in this interface stays one of the two
     real(c_double), intent(in)    :: temp(*), rho(*)
     real(c_double), intent(inout) :: ne(*)
     real(c_float),  value         :: vmic

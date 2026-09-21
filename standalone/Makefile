@@ -4,28 +4,44 @@
 # branch of ../hop_env_mod.f90, and every source below lives under HOP/ --
 # nothing is pulled in from ../../SRC, so the package is self-contained.  This
 # directory is invisible to the main experiment build (its wildcard only scans
-# SRC/*.f90 HOP/*.f90); the top-level Makefile's hop_prune.x target invokes it,
-# and the objects here (compiled with -DHOP_STANDALONE) never mix with the
-# framework-enabled ones linked into dispatch.x.
+# SRC/*.f90 HOP/*.f90); the top-level Makefile's hop_standalone target invokes it
+# with its own COMPILER and OPTS, and the objects here (compiled with
+# -DHOP_STANDALONE) never mix with the framework-enabled ones linked into dispatch.x.
 #
-# Usage:  make [-j N] [OPT=-O2] [BUILD=dir]        # libhop.so + libhop.h
-#         make hop_prune.x                          # -> $(BUILD)/hop_prune.x
+# Usage:  make [-j N] [COMPILER=ifort] [OPT=-O2] [BUILD=dir]   # libhop.so, hop_prune.x
+#         make bindings                                        # rewrite libhop.h after an API change
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 HDR   := libhop.h
 PRUNE := $(BUILD)/hop_prune.x
-FC    := gfortran
 DISPATCH_TOP ?= ../../../..
+COMPILER ?= gfortran
 OPTS ?= hoppe
 # Match the application build's optimisation and architecture flags.  The fallbacks keep
 # this standalone Makefile usable when HOP is copied outside a Dispatch checkout.
--include $(DISPATCH_TOP)/config/compiler/gfortran/$(OPTS).mkf
+-include $(DISPATCH_TOP)/config/compiler/$(COMPILER)/$(OPTS).mkf
 OPT   ?= -O1
 HW    ?=
-DEBUG ?= -fbacktrace
-FFLAGS = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
-         -fno-range-check -fallow-argument-mismatch $(OPT) $(HW) $(DEBUG) \
-         -fopenmp -fPIC -I$(BUILD) -J$(BUILD)
+# Hide the compiler lines as the DISPATCH build does; `make E=` shows them.
+E = @
+
+ifeq ($(COMPILER),gfortran)
+  FC      = gfortran
+  DEBUG  ?= -fbacktrace
+  FFLAGS  = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
+            -fno-range-check -fallow-argument-mismatch -fopenmp \
+            $(OPT) $(HW) $(DEBUG) -fPIC -I$(BUILD) -J$(BUILD)
+  LDFLAGS = $(OPT) $(DEBUG) -fopenmp
+else ifneq ($(filter ifort ifx,$(COMPILER)),)
+  FC      = $(COMPILER)
+  DEBUG  ?= -traceback
+  FFLAGS  = -fpp -DHOP_STANDALONE -assume byterecl -diag-disable remark \
+            -diag-disable=16219,10448 -qopenmp $(OPT) $(HW) $(DEBUG) -fPIC \
+            -I$(BUILD) -module $(BUILD)
+  LDFLAGS = $(OPT) $(DEBUG) -qopenmp
+else
+  $(error COMPILER=$(COMPILER) is not supported here; use gfortran, ifort or ifx)
+endif
 
 # Topologically ordered source list (verified USE graph)
 SRCS = ../qlg_mod.f90 ../hop_env_mod.f90 ../const_mod.f90 ../prec_mod.f90 ../op_math_mod.f90 \
@@ -44,21 +60,15 @@ PRUNE_OBJS = $(addprefix $(BUILD)/,$(notdir $(PRUNE_SRCS:.f90=.o)))
 
 vpath %.f90 . ..
 
-all: $(LIB) $(HDR) $(PRUNE)
+all: $(LIB) $(PRUNE)
+	@:
 
-# The header is generated from the BIND(C) declarations, so it cannot drift from the
-# library.  It is committed; tests/test_hop_abi.py regenerates it and fails on a diff.
-#
-# gfortran dumps ~700 lines of derived types from the USEd modules ahead of the prototypes,
-# and they are not valid C (forward-referenced types), so only the hop_* prototypes are
-# kept.  That filtering is also what makes the header parseable by cffi, whose cdef()
-# handles neither #include nor #ifdef.  Depending on the object file rather than the source
-# keeps -fsyntax-only from racing the real compile over $(BUILD)/hop_c_api.mod.
-$(HDR): hop_c_api.f90 $(BUILD)/hop_c_api.o
-	$(FC) $(FFLAGS) -fsyntax-only -fc-prototypes $< 2>/dev/null \
-	  | grep -E '^[a-z].*\bhop_[a-z0-9_]+ *\(' | grep -v '^typedef' > $@
-
-bindings: $(HDR)
+# The header is the C prototypes of the BIND(C) functions, written by gen_bindings.py
+# from the shim source and committed.  It is source, not a build product: `make bindings`
+# rewrites it after an interface change, and tests/test_hop_abi.py fails on a stale
+# one, so building the library needs neither Python nor a header-writing compiler.
+bindings:
+	python3 gen_bindings.py hop_c_api.f90 > $(HDR)
 
 # Chain each object to its predecessor: the topological list stands in for
 # per-module .mod dependencies, so editing any module rebuilds everything
@@ -67,26 +77,30 @@ prev :=
 $(foreach o,$(OBJS),$(eval $(o): $(prev))$(eval prev := $(o)))
 
 $(LIB): $(OBJS)
-	$(FC) -shared $(OPT) -fopenmp $(DEBUG) -o $@ $(OBJS)
+	@if [ "x$(E)" == "x@" ] ; then echo " [ LD ]" $(notdir $@) ; fi
+	$(E)$(FC) -shared $(LDFLAGS) -o $@ $(OBJS)
 
 # hop_prune.x: the library objects plus the reader and the program, in that order
 $(BUILD)/atmos_reader_mod.o: $(lastword $(OBJS))
 $(BUILD)/hop_prune.o: $(BUILD)/atmos_reader_mod.o
 $(PRUNE): $(OBJS) $(PRUNE_OBJS)
-	$(FC) $(OPT) -fopenmp $(DEBUG) -o $@ $(OBJS) $(PRUNE_OBJS)
+	@if [ "x$(E)" == "x@" ] ; then echo " [ LD ]" $(notdir $@) ; fi
+	$(E)$(FC) $(LDFLAGS) -o $@ $(OBJS) $(PRUNE_OBJS)
 
 hop_prune.x: $(PRUNE)
 
 $(BUILD)/%.o: %.f90 | $(BUILD)
-	$(FC) $(FFLAGS) -c $< -o $@
+	@if [ "x$(E)" == "x@" ] ; then echo " [ FC ]" $(notdir $@) ; fi
+	$(E)$(FC) $(FFLAGS) -c $< -o $@
 
 $(BUILD):
-	mkdir -p $@
+	$(E)mkdir -p $@
 
 # gfortran searches the compilation directory for .mod files ahead of -I and -J, so a
 # module file left in this source directory shadows the freshly built one in $(BUILD)
-# and makes later compiles fail on stale derived types.  Nothing here produces .mod
-# files on purpose, so clean removes any that a stray -fsyntax-only run has dropped.
+# and makes later compiles fail on stale derived types.  Nothing here writes .mod files
+# into the source directory on purpose, so clean removes any that a stray compiler run
+# has dropped.
 clean:
 	rm -rf $(BUILD)
 	rm -f *.mod
