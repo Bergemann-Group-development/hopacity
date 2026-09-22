@@ -13,9 +13,13 @@ MODULE hvcs_mod
   !
   !  The tabulated profile is the WHOLE (already Doppler+resonance-convolved)
   !  line shape, so it replaces the analytic Voigt-core + Stark-wing
-  !  construction. phi_vcs returns a pure lineshape normalised to unit area in
-  !  frequency, matching the convention of hvoigt/stark1; the caller applies the
-  !  populations (nlo*Bij).
+  !  construction. vcs_prepare builds the profile for one (line, cell) and
+  !  vcs_eval samples it at a fractional frequency detuning q = (nu-nu0)/nu0,
+  !  returning a lineshape normalised to unit area in q (phi_nu*nu0), matching
+  !  the convention of hvoigt/stark1. The tables are symmetric about a single
+  !  line centre; hprofl_mod applies the fine-structure component pattern on
+  !  top (vcs_fine), as it does in the analytic path, and the populations
+  !  (nlo*Bij).
   USE const_mod, only: cc
   USE interpol_mod, only: pchip_slopes, hermite_value
   implicit none
@@ -74,12 +78,7 @@ MODULE hvcs_mod
     logical :: ok = .false.
   end type
 
-  !  Thread-private prepared cell backing the scalar phi_vcs entry point (used by
-  !  hprofile, which has no frequency loop to hoist out of).
-  type(vcs_profile_t), save :: cache_cell
-  !$omp threadprivate(cache_cell)
-
-  public :: ensure_vcs_loaded, vcs_supported, phi_vcs, vcs_prepare, vcs_eval
+  public :: ensure_vcs_loaded, vcs_supported, vcs_prepare, vcs_eval
 
 contains
 
@@ -177,25 +176,6 @@ contains
       endif
     enddo
   END FUNCTION vcs_row
-
-  !====================================================================
-  !  Tabulated VCS profile at fractional frequency detuning q for line (n,m).
-  !  Returned in the same convention as hvoigt/stark1: a lineshape normalised to
-  !  unit area in the FRACTIONAL detuning q = (nu-nu0)/nu0 (i.e. phi_nu*nu0), so
-  !  it plugs directly into add_h_opacities/hprofile where the caller applies
-  !  nlo*Bij. (A per-Hz normalisation would be a factor nu0 ~1e15 too small.)
-  !
-  !  The heavy (NH,T,Ne) interpolation onto the delta-lambda grid is memoised per
-  !  cell/line, so a whole frequency scan costs one grid interpolation plus a
-  !  cheap quadratic wavelength interpolation per point.
-  REAL(8) FUNCTION phi_vcs(n, m, q, nu0, temp, ne, nh) result(phi)
-    integer, intent(in) :: n, m
-    real(8), intent(in) :: q, nu0
-    real(4), intent(in) :: temp, ne, nh
-    !------------------------------------------------------------------
-    call vcs_prepare(n, m, nu0, temp, ne, nh, cache_cell)
-    phi = vcs_eval(cache_cell, q)
-  END FUNCTION phi_vcs
 
   !====================================================================
   !  Build (or reuse) the prepared profile for line (n,m) in one cell. Idempotent

@@ -4,7 +4,7 @@ MODULE hprofl_mod
   USE prec_mod, only: RYD
   USE const_mod
   USE interpol_mod, only: interp1d_sorted
-  USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, phi_vcs, ensure_vcs_loaded, &
+  USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, ensure_vcs_loaded, &
                       vcs_profile_t, vcs_prepare, vcs_eval
   implicit none
 
@@ -161,8 +161,8 @@ contains
     real(4), parameter :: tol=1e-7
     integer :: i,j,k,f, nf, m(3), itimer=0, lo, hi, io, mem_offset
     logical lymanalf, used, use_vcs
-    !  Prepared VCS profile for the current cell. A local (not the module-level
-    !  memo behind phi_vcs) so the frequency loops below touch no threadprivate
+    !  Prepared VCS profile for the current cell. A local (not the threadprivate
+    !  memo hprofile uses) so the frequency loops below touch no threadprivate
     !  storage: under gfortran that is a pthread_getspecific per reference.
     type(vcs_profile_t) :: vcsc
     !----------------------------------------------------------------------------------
@@ -232,7 +232,7 @@ contains
           do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
             if (use_vcs) then
-              phi = vcs_eval(vcsc, q)
+              phi = vcs_fine(self, vcsc, q)
             else if (lymanalf) then
               call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
             else
@@ -255,7 +255,7 @@ contains
           do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
             if (use_vcs) then
-              phi = vcs_eval(vcsc, q)
+              phi = vcs_fine(self, vcsc, q)
             else if (lymanalf) then
               call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
             else
@@ -294,10 +294,17 @@ contains
     real(8) :: hprofile
     real(4) :: vdw, resont, hwstk, hfwid, hwlor, phi
     logical :: lymanalf
+    !  hprofile is called per frequency with no loop to hoist out of, so the
+    !  prepared cell profile is memoised across calls (vcs_prepare is idempotent
+    !  for a repeated line/cell stamp).
+    type(vcs_profile_t), save :: vcsc
+    !$omp threadprivate(vcsc)
     !---------------------------------------------------------------------------
-    ! Optional tabulated VCS (Lemke 1997) profile: whole-profile replacement.
+    ! Optional tabulated VCS (Lemke 1997) profile: whole-profile replacement,
+    ! with the same fine-structure superposition as the analytic path.
     if (vcs_supported(self%i, self%j)) then
-      hprofile = phi_vcs(self%i, self%j, q, self%nu0, temp, ne, tothi)
+      call vcs_prepare(self%i, self%j, self%nu0, temp, ne, tothi, vcsc)
+      hprofile = vcs_fine(self, vcsc, q)
       return
     endif
 
@@ -346,6 +353,26 @@ contains
       vs = (q - self%dq(i)) * idf
       xv = qlg_bot_phi(a,vs) * idf
       phi = phi + self%wt(i)*xv
+    end do
+  END FUNCTION
+
+  !====================================================================================
+  !  Tabulated VCS profile with the same fine-structure superposition as hvoigt:
+  !  the prepared (symmetric, unit-area) table profile is shifted to each
+  !  component dq(i) and weighted by wt(i). The weights sum to one, so the
+  !  normalisation is preserved; lines with a single component reduce to
+  !  vcs_eval at q. Mirrors SIU's HYDL_AG_CON_FS, with HOP's component pattern.
+  !====================================================================================
+  FUNCTION vcs_fine (self, c, q) result(phi)
+    class(bbtrans_type), intent(in) :: self
+    type(vcs_profile_t), intent(in) :: c
+    real(8), intent(in) :: q
+    real(4) :: phi
+    integer :: i
+    !----------------------------------------------------------------------------------
+    phi = 0.0
+    do i=1, self%io
+      phi = phi + self%wt(i)*real(vcs_eval(c, q - self%dq(i)), 4)
     end do
   END FUNCTION
 
