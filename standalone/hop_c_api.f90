@@ -18,6 +18,7 @@
 !===============================================================================
 MODULE hop_c_api
   USE iso_c_binding
+  USE console_mod
   USE composition_mod
   USE spectrum_mod, only: spectrum_type, lam_tolerance
   USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_ga, disable_stark, &
@@ -52,11 +53,12 @@ MODULE hop_c_api
   ! re-entrant on one instance (ion_type keeps partially-deallocated state).
   type(composition_type), allocatable, save :: master, comp
   logical, save :: abundances_set = .false.
-  ! verbose is the one option that must survive being set before hop_init: the
-  ! messages it gates (abundance overrides, ...) are printed *during* injon.
-  ! The default is -1 rather than dispatch's 0, so that a library driven from
-  ! Python says nothing at all unless asked; 0 restores what a dispatch run
-  ! prints at its own default (the linelist line count), 1 and up add the rest.
+  ! verbose is HOP's console level (see console_mod) and the one option that must
+  ! survive being set before hop_init: the messages it gates (abundance
+  ! overrides, ...) are printed *during* init. The default is -1 rather than
+  ! dispatch's 1, so that a library driven from Python says nothing at all
+  ! unless asked; 0 adds warnings, 1 the setup summaries a dispatch run prints
+  ! by default (the linelist line count, ...), 2 and up the diagnostics.
   integer, save :: init_verbose = -1
   ! Abundances an atmosphere file supplies (MARCS carries log eps for Z=1..92),
   ! applied by hop_init between the [Fe/H]-scaled standard set and the explicit
@@ -483,7 +485,7 @@ CONTAINS
     call voigt_kernel_init
 
     allocate(master)
-    master%verbose = init_verbose           ! no default initializer in the type
+    call console_set_level (init_verbose, ch_hop)
     master%initialised = .false.
     if (.not. abundances_set) abundances = ''   ! module global, no initializer
 
@@ -678,7 +680,7 @@ CONTAINS
       call parse_int(val, iv, status)
       if (status == 0) then
         init_verbose = iv
-        if (allocated(master)) master%verbose = iv
+        call console_set_level (iv, ch_hop)
       end if
     case default
       call fail("unknown option '" // trim(nm) // "' (see hop_option_names)", 1, status)

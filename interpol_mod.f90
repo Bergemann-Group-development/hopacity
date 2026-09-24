@@ -17,6 +17,7 @@ MODULE interpol_mod
   !  codebase.
   USE prec_mod                       ! dp; single precision written as real(4)
   USE op_math_mod, only: searchsorted, option
+  USE console_mod
   implicit none
   private
 
@@ -556,13 +557,14 @@ contains
     logical, value :: sorted
     integer :: i, j, nx, ny
     procedure(interp1d_linear), pointer :: interp
+    character(len=256) :: msg
     !----------------------------------------------------------------------------
     nx = size(xx)
     ny = size(yy)
 
     if (nx /= ny) then
-      print *, 'X array is of length', nx
-      print *, 'but Y array is of lenght', ny
+      write(msg,'(a,i0,a,i0)') 'interp1d: x has length ', nx, ' but y has length ', ny
+      call console_error (msg)
       stop
     endif
 
@@ -570,13 +572,13 @@ contains
 
     if (order == 2) then
       if (nx < 3) then
-        print *, 'too few points for quadratic interpolation'
+        call console_error ('interp1d: too few points for quadratic interpolation')
         stop
       else
         interp => interp1d_quadratic
       endif
     elseif (order > 2) then
-      print *, 'only linear and quadratic are supported'
+      call console_error ('interp1d: only linear and quadratic are supported')
       stop
     endif
 

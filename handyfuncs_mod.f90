@@ -2,6 +2,7 @@ MODULE handyfuncs_mod
   USE op_math_mod
   USE interpol_mod, only: interp1d
   USE hop_env_mod, only: os
+  USE console_mod
   implicit none
 
   interface argsort
@@ -41,9 +42,8 @@ contains
         backspace lunit
         read(lunit,'(A)') line_text
       endif
-      print '(I4, 1x, A)', iostat, "Failed to read a line in file:"
-      print '(A)', trim(filename)
-      print '(A)', line_text
+      write(filename,'(a,i0,2a)') 'failed to read a line (iostat=', iostat, ') in ', trim(filename)
+      call console_error (trim(filename)//': '//trim(line_text))
       stop
     endif
   END SUBROUTINE print_failed_line
@@ -572,7 +572,7 @@ contains
     fb = f_ptr(right)
 
     if (fa * fb > 0.0) then
-      print *, "Root not bracketed"
+      call console_warn (ch_hop, 'root not bracketed')
       c = -1.0
       return
     elseif (fa == 0.0) then
@@ -703,6 +703,15 @@ contains
   END SUBROUTINE truncate_bool_array
 
   ! ==============================================================================
+  SUBROUTINE report_invalid (what, label, idx)
+    character(len=*), intent(in) :: what, label
+    integer, intent(in) :: idx(:)
+    character(len=256) :: msg
+    ! ----------------------------------------------------------------------
+    write(msg,'(4a,*(1x,i0))') what, ' in ', trim(label), ' at position', idx
+    call console_error (msg)
+  END SUBROUTINE report_invalid
+
   SUBROUTINE check_array_core_dp(arr, arr_shape, label, abort, check_zero, check_negative, ok)
     real(8), intent(in), dimension(:) :: arr
     integer, intent(in), dimension(:) :: arr_shape
@@ -733,20 +742,20 @@ contains
         end do
 
         if (arr(i) /= arr(i)) then
-          print *, 'ERROR: NaN in ', label, ' at position ', idx
+          call report_invalid ('NaN', label, idx)
         elseif (arr(i) > inf8) then
-          print *, 'ERROR: Infinity in ', label, ' at position ', idx
+          call report_invalid ('Infinity', label, idx)
         elseif (do_check_zero .and. arr(i) == 0.d0) then
-          print *, 'ERROR: Zero in ', label, ' at position ', idx
+          call report_invalid ('Zero', label, idx)
         elseif (do_check_negative .and. arr(i) < 0.d0) then
-          print *, 'ERROR: Negative value in ', label, ' at position ', idx
+          call report_invalid ('Negative value', label, idx)
         endif
       end if
     end do
 
     if (present(ok)) ok = .not. has_issue
     if (has_issue .and. abort) then
-      print *, 'Aborting due to invalid values in ', label
+      call console_error ('aborting due to invalid values in '//trim(label))
       stop
     end if
   END SUBROUTINE check_array_core_dp
@@ -780,20 +789,20 @@ contains
         end do
 
         if (arr(i) /= arr(i)) then
-          print *, 'ERROR: NaN in ', label, ' at position ', idx
+          call report_invalid ('NaN', label, idx)
         elseif (arr(i) > inf4) then
-          print *, 'ERROR: Infinity in ', label, ' at position ', idx
+          call report_invalid ('Infinity', label, idx)
         elseif (do_check_zero .and. arr(i) == 0.0) then
-          print *, 'ERROR: Zero in ', label, ' at position ', idx
+          call report_invalid ('Zero', label, idx)
         elseif (do_check_negative .and. arr(i) < 0.0) then
-          print *, 'ERROR: Negative value in ', label, ' at position ', idx
+          call report_invalid ('Negative value', label, idx)
         endif
       end if
     end do
 
     if (present(ok)) ok = .not. has_issue
     if (has_issue .and. abort) then
-      print *, 'Aborting due to invalid values in ', label
+      call console_error ('aborting due to invalid values in '//trim(label))
       stop
     end if
   END SUBROUTINE check_array_core_sp

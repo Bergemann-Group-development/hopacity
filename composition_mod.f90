@@ -1,5 +1,6 @@
 MODULE composition_mod
   USE hop_env_mod, only: io, os, trace
+  USE console_mod
   USE prec_mod
   USE op_math_mod
   USE handyfuncs_mod
@@ -8,7 +9,7 @@ MODULE composition_mod
   USE level_mod, only: level_type, wcalc
   USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
-  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium, moleq_warn
+  USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
   USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
   USE line_types_mod, only: linelist_type
   USE linelist_reader_mod, only: ll_file_t, ll_block_t, ll_open, ll_close, &
@@ -39,7 +40,7 @@ MODULE composition_mod
 
   type, public :: composition_type
     logical :: initialised, ll_initialised=.false., loaded=.false.
-    integer :: nel, nmolec, nline, verbose
+    integer :: nel, nmolec, nline
     real(dp) :: xmy, suma, grph, tmolim, molh, FeH
     type(element_type), allocatable :: elements(:)
     type(molec_type),   allocatable :: molecules(:)
@@ -333,8 +334,8 @@ contains
           else
             element%abund = abund
           endif
-          if (self%verbose > 0) &
-            print '(A, A, A, F8.3)', 'Changing abundance of ', trim(element%id), ' to ', element%abund
+          if (console_on(ch_hop, 1)) &
+            write(console_unit,'(A, A, A, F8.3)') 'Changing abundance of ', trim(element%id), ' to ', element%abund
         endif
       end do
     endif
@@ -426,7 +427,7 @@ contains
     read(absdat, *) nqtemp ! number of ions with PF(temp) instead of PF(temp, pe)
 
     do m=1, nqtemp
-      print *, 'tabulated partition functions to be implemented...'
+      call console_error ('tabulated partition functions are not implemented')
       stop
     end do
 
@@ -529,8 +530,6 @@ contains
     call march_line(text_line, 10, null)
 
     allocate(self%trans(nkomp))
-    self%trans%verbose = self%verbose
-    moleq_warn = self%verbose > 0
 
     self%elements(1)%ions%in_opac = .true.
     self%elements(2)%ions%in_opac = .true.
@@ -634,7 +633,7 @@ contains
 
       if (.not. associated(trans%ion)) then
         call trans%deactivate()
-        print *, trans%key,  ' deactivated!'
+        if (console_on(ch_hop, 2)) write(console_unit,'(2a)') trim(trans%key), ' deactivated'
       else
         trans%ion%in_opac = .true.
       endif
@@ -667,7 +666,7 @@ contains
       read(absdat, *, iostat=iostat) trans%lam
 
       if (iostat /= 0) then
-        print *, iostat, ' Error reading wavelength values for transition: ', trans%key
+        call console_error ('cannot read wavelength values for transition '//trim(trans%key))
         stop
       endif
 
@@ -721,7 +720,7 @@ contains
         read(absdat, *, iostat=iostat) trans%temp
 
         if (iostat /= 0) then
-          print *, iostat, ' Error reading temperature values for transition: ', trans%key
+          call console_error ('cannot read temperature values for transition '//trim(trans%key))
           stop
         endif
 
@@ -808,7 +807,7 @@ contains
       i = scan(line(1:n), '0123456789')
       read(line(i:n), *, iostat=iostat) val
       if (iostat /= 0) then
-        print *, iostat, ' Error reading fixed format line: ', trans%key, line
+        call console_error ('cannot read fixed format line for transition '//trim(trans%key)//': '//trim(line))
         stop
       endif
       line = line(n+1:)
@@ -837,7 +836,7 @@ contains
       if (in_drop .or. no_only) then
         element%ions%in_linelist = .false.
         if (sum(element%ions%nline, 1) > 0) then
-          print *, 'removing ', trim(element%id), ' from linelist'
+          if (console_on(ch_hop, 1)) write(console_unit,'(3a)') 'removing ', trim(element%id), ' from linelist'
         endif
       endif
     end do
@@ -848,7 +847,7 @@ contains
       if (in_drop .or. no_only) then
         mol%in_linelist = .false.
         if (mol%nline > 0) then
-          print *, 'removing ', trim(mol%id), ' from linelist'
+          if (console_on(ch_hop, 1)) write(console_unit,'(3a)') 'removing ', trim(mol%id), ' from linelist'
         endif
       endif
     end do
@@ -912,8 +911,8 @@ contains
         endif
       end do
       if (hit) then
-        if (sum(element%ions%nline, 1) > 0 .and. self%verbose > 0 .and. first_time) &
-          print *, 'sample_linelist: ', trim(element%id), ' has departures -> excluded from LTE table'
+        if (sum(element%ions%nline, 1) > 0 .and. console_on(ch_hop, 1) .and. first_time) &
+          write(console_unit,'(3a)') 'sample_linelist: ', trim(element%id), ' has departures -> excluded from LTE table'
         element%ions%in_linelist = .false.
       endif
     end do
@@ -926,8 +925,8 @@ contains
         endif
       end do
       if (hit) then
-        if (mol%nline > 0 .and. self%verbose > 0 .and. first_time) &
-          print *, 'sample_linelist: ', trim(mol%id), ' has departures -> excluded from LTE table'
+        if (mol%nline > 0 .and. console_on(ch_hop, 1) .and. first_time) &
+          write(console_unit,'(3a)') 'sample_linelist: ', trim(mol%id), ' has departures -> excluded from LTE table'
         mol%in_linelist = .false.
       endif
     end do
@@ -965,6 +964,7 @@ contains
     integer(8), allocatable :: r0(:), r1(:)
     logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals, have_block
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
+    character(len=256) :: msg
     !-----------------------------------------------------------------------------
     if (linelist_file == '' .and. .not. self%ll_initialised) return
 
@@ -1047,7 +1047,10 @@ contains
       endif
 
       if (.not. ok) then
-        if (isotope) print *, ion_id(1:6), ' isotope ', iso, ' not found!'
+        if (isotope) then
+          write(msg,'(2a,i0,a)') trim(ion_id(1:6)), ' isotope ', iso, ' not found'
+          call console_warn (ch_hop, msg)
+        endif
         cycle
       endif
 
@@ -1131,8 +1134,8 @@ contains
     end do
     call trace%end(it_sort)
 
-    if (self%verbose >= 0) &                ! standalone libhop uses -1 to keep quiet
-      print '(I12, a, I12, a, a)', nactive, ' of ', ntotal, &
+    if (console_on(ch_hop, 1)) &
+      write(console_unit,'(I0, a, I0, a, a)') nactive, ' of ', ntotal, &
         ' lines read from linelist ', trim(linelist_file)
     self%nline = nactive
     call self%ion_by_id('H I', HI)
@@ -1480,7 +1483,7 @@ contains
     endif
 
     if (ll_profile) then
-      print '(a,3(a,i0),a,f7.2,a,f6.2)', 'll_profile (cumulative):', &
+      write(console_unit,'(a,3(a,i0),a,f7.2,a,f6.2)') 'll_profile (cumulative):', &
         ' visit=', ll_nvisit, ' pass=', ll_npass, ' voigt=', ll_nvoigt, &
         ' | voigt/pass=', real(ll_nvoigt)/max(ll_npass,1_8), &
         ' pass%=', 100.*real(ll_npass)/max(ll_nvisit,1_8)
@@ -1624,12 +1627,12 @@ contains
     call trace%begin ('composition_type%load_state_variables', itimer=itimer)
 
     if (.not. self%initialised) then
-      print *, 'composition has not been initialised yet'
+      call console_error ('load_state_variables: composition has not been initialised yet')
       stop
     endif
 
     if (.not. (option(use_rho, .true.) .or. option(use_ne, .true.))) then
-      print *, 'ERROR: At least one of rho or ne must be provided to load_state_variables'
+      call console_error ('load_state_variables needs at least one of rho or ne')
       stop
     endif
 
@@ -1740,7 +1743,7 @@ contains
     real(4), intent(in), dimension(:,:,:), optional :: dlnt_dx, dlnt_dy, dpe_dx, dpe_dy
     !---------------------------------------------------------------------------
     if (.not. self%loaded) then
-      print *, 'set_gradients must be called after load_state_variables'
+      call console_error ('set_gradients must be called after load_state_variables')
       stop
     endif
     if (allocated(self%dlnt_dz)) deallocate(self%dlnt_dz, self%dpe_dz)
@@ -1769,12 +1772,13 @@ contains
     integer :: i, j, nions, itimer=0, itimer2=0, itimer3=0, x, y, z
     logical :: converged
     logical, save :: hocc_warned = .false.
+    character(len=256) :: msg
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%thermal_equilibrium', itimer=itimer)
     if ((mhd_eos .neqv. H_occupation_probability) .and. .not. hocc_warned) then
       hocc_warned = .true.
-      print '(a)', ' WARNING: mhd_eos and H_occupation_probability differ;'// &
-                   ' EOS and opacity treat H level dissolution inconsistently'
+      call console_warn (ch_hop, 'mhd_eos and H_occupation_probability differ;'// &
+                   ' EOS and opacity treat H level dissolution inconsistently')
     endif
     allocate(fe, xnen, xnecno, toth, mold=temp)
     call self%set_aux_data(temp, ne)
@@ -1905,7 +1909,8 @@ contains
       do y=1, size(rho,2)
         do x=1, size(rho,1)
           if (rho(x,y,z) /= rho(x,y,z)) then
-            print *, 'NaN in thermal_equilibrium at (', x, ',', y, ',', z, ')'
+            write(msg,'(a,3(1x,i0))') 'NaN density in thermal_equilibrium at x,y,z =', x, y, z
+            call console_warn (ch_hop, msg)
           endif
         end do
       end do
@@ -1973,6 +1978,7 @@ contains
     integer :: i, nconverged, arr_size, m(3), ix, iy, iz
     real(dp) :: nh, tt, sc, nel
     integer, parameter :: nmax = 40 ! max number of iteration
+    character(len=256) :: msg
     !---------------------------------------------------------------------------
     m = shape(temp)
     arr_size = size(temp)
@@ -2083,7 +2089,9 @@ contains
     end do
 
     if (nconverged /= arr_size) then
-      write(*,fmt="(5x,'it [',I3.3,']',1x,'n-converged:',1x,I8,1X,'/ total size: ',I8)") i, nconverged, arr_size
+      write(msg,'(a,i0,a,i0,a,i0,a)') 'electron density: ', nconverged, ' of ', arr_size, &
+        ' points converged after ', i, ' iterations'
+      call console_warn (ch_hop, msg)
     endif
 
     where (.not. ne_converged)
@@ -2817,8 +2825,8 @@ contains
       enddo
 
       frac_change = maxval(abs(fe-fe0) / max(abs(fe0), tiny(1d0)))
-      if (frac_change > 1d-3 .and. self%verbose > 0) &
-        print '(a,i0,a,es10.3)', ' abundance set ', s, &
+      if (frac_change > 1d-3 .and. console_on(ch_hop, 2)) &
+        write(console_unit,'(a,i0,a,es10.3)') 'abundance set ', s, &
           ' changes the electron fraction at fixed ne by ', frac_change
 
       ! Back to the base state for the next set and for the RT. The number
@@ -3011,7 +3019,7 @@ contains
     if (idx == 0) then
       molecule => null()
       if (option(verbose)) then
-        print *, 'molecule with id=' // id // ' was not found.'
+        call console_warn (ch_hop, 'molecule '//trim(id)//' not found')
       endif
     else
       molecule => self%molecules(idx)
@@ -3031,7 +3039,7 @@ contains
     element => null()
     if (idx == 0) then
       if (option(verbose)) then
-        print *, 'Opacity package: element with id = ' // id // ' was not found.'
+        call console_warn (ch_hop, 'element '//trim(id)//' not found')
       endif
     else
       element => self%elements(idx)
@@ -3057,7 +3065,7 @@ contains
     element => null()
     if (iostat /= 0) then
       if (option(verbose)) then
-        print *, 'ion with id = ' // id // ' was not found.'
+        call console_warn (ch_hop, 'ion '//trim(id)//' not found')
       endif
     else
       trim_id = trim(eid)//' '//trim(iid)
@@ -3068,7 +3076,7 @@ contains
           idx = idx + lbound(element%ions,1) - 1
         endif
         if (idx < lbound(element%ions,1) .or. idx>ubound(element%ions,1)) then
-          print *, 'ion with id = ' // trim_id // ' was not found.'
+          call console_warn (ch_hop, 'ion '//trim(trim_id)//' not found')
         else
           ion => element%ions(idx)
         endif
@@ -3131,7 +3139,7 @@ contains
     if (present(mol) .and. is_mol) mol = imol
     if (present(is_molecule)) is_molecule = is_mol
     if (option(verbose) .and. .not. associated(particle)) then
-      print *, 'Particle id = ', id, ' is not recognised by opacity package.'
+      call console_warn (ch_hop, 'particle '//trim(id)//' not recognised')
     endif
   END SUBROUTINE particle_by_id
 
@@ -3151,7 +3159,7 @@ contains
       endif
     end do
 
-    print *, 'transition key = ', id, ' not found. Stopping...'
+    call console_error ('transition key '//trim(id)//' not found')
     stop
   END SUBROUTINE trans_by_id
 
@@ -3192,7 +3200,7 @@ contains
         endif
       end do
      class default
-      print *, 'Particle is not recognised by opacity package.'
+      call console_warn (ch_hop, 'set_abundance: particle not recognised')
       return
     end select
 
@@ -3203,7 +3211,8 @@ contains
       a = abnd
     endif
     if (abund /= a) then
-      print '(A, A, A, F5.2, A, F5.2)', 'Changing abundance of ', trim(element%id), ' from ', abund, ' to ', a
+      if (console_on(ch_hop, 1)) write(console_unit,'(A, A, A, F5.2, A, F5.2)') &
+        'Changing abundance of ', trim(element%id), ' from ', abund, ' to ', a
       element%abund = 10.0**(a - 12.0)
       !if (.not. associated(mol)) element%awgt = awgt
       call self%compute_grams_per_hydrogen()
@@ -3500,7 +3509,7 @@ contains
             mol%awgt = mol%awgt + ion%awgt
           end do
         else
-          print *, 'Error: element ' // trim(elem) // ' not found for molecule ' // trim(mol%id)
+          call console_error ('element '//trim(elem)//' not found for molecule '//trim(mol%id))
           stop
         endif
       elseif (c == '+') then

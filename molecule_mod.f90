@@ -1,5 +1,6 @@
 MODULE molecule_mod
   USE hop_env_mod, only: os, trace
+  USE console_mod
   USE prec_mod
   USE op_math_mod
   USE ion_mod
@@ -34,7 +35,6 @@ MODULE molecule_mod
   end type
 
   logical, public :: irwin_dis=.true.
-  logical, public :: moleq_warn=.false. 
 
 contains
 
@@ -250,6 +250,7 @@ contains
     real(dp), parameter :: step_max  = 3d0        ! cap on |d ln f| per step
     real(dp), parameter :: lam_min   = 1d0/1024d0 ! smallest damping factor
     integer :: itimer=0
+    character(len=256) :: msg
     !---------------------------------------------------------------------------
     call trace%begin ('molecule_mod%molecular_equilibrium', itimer=itimer)
 
@@ -784,9 +785,10 @@ contains
       end do
     end do
 
-    if (nfail > 0 .and. moleq_warn) then
-      print *, 'molecular_equilibrium: ', nfail, '/', nx*ny*nz, ' points not converged after', &
-        niter_max, ' iterations; worst scaled residual:', worst
+    if (nfail > 0 .and. console_level(ch_hop) >= 1) then
+      write(msg,'(a,i0,a,i0,a,i0,a,es10.3)') 'molecular_equilibrium: ', nfail, '/', nx*ny*nz, &
+        ' points not converged after ', niter_max, ' iterations; worst scaled residual ', worst
+      call console_warn (ch_hop, msg)
     endif
 
     call trace%end(itimer)
@@ -1119,7 +1121,7 @@ contains
         idx = solve_index(p2)
         if (idx > 0) return
       end do
-      print *, 'molecular_equilibrium: no solve element for constituent ', c%id
+      call console_error ('molecular_equilibrium: no solve element for constituent '//trim(c%id))
       stop
     end subroutine constituent_root
 

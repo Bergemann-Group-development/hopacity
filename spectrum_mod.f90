@@ -1,6 +1,7 @@
 !---------------------------------------------------------------------
 MODULE spectrum_mod 
     USE hop_env_mod, only: io, os
+    USE console_mod
     USE const_mod
     USE handyfuncs_mod, only: air2vac, remove_close_entries, sort_asc
     USE op_math_mod, only: get_ivl=>get_interval
@@ -70,7 +71,7 @@ MODULE spectrum_mod
       real(8), dimension(:), allocatable :: lam_seg, all_lam
       integer, dimension(:), allocatable :: seg_first, seg_last
       real(8), dimension(:), allocatable :: seg_blue, seg_red
-      character(len=256) :: line
+      character(len=256) :: line, msg
       logical :: is_comment
 
       ! Read window file
@@ -158,7 +159,9 @@ MODULE spectrum_mod
         nnu_seg = ceiling(log(red_vac/blue_vac) / log(fac)) + 1
 
         if (nnu_seg < 2) then
-          write(*,*) 'window ', i, ': blue=', blue_vac, ' red=', red_vac, ' -> ', nnu_seg, ' points'
+          write(msg,'(a,i0,2(a,f12.4),a,i0,a)') 'window ', i, ': blue=', blue_vac, ' red=', red_vac, &
+            ' -> ', nnu_seg, ' points'
+          call console_error (msg)
           stop 'window_file: each window must have at least 2 points'
         endif
 
@@ -517,7 +520,7 @@ MODULE spectrum_mod
       if (n==0) then
         return
       elseif (n==1) then
-        print *, 'weight for single frequency wanted!'
+        call console_warn (ch_hop, 'integration weight requested for a single frequency')
         weight(1) = 1.0
         return
       elseif (size(weight) /= n) then

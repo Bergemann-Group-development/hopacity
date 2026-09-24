@@ -11,7 +11,7 @@ MODULE bftrans_mod
   private
 
   type, public :: bftrans_type
-    integer :: k, ntt, nnu, verbose
+    integer :: k, ntt, nnu
     type(level_type) :: level
     class(particle_type), pointer :: ion => null()
     class(particle_type), pointer :: ion2 => null()

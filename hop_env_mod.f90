@@ -19,6 +19,7 @@ MODULE hop_env_mod
   public:: io, os, trace
 #else
   USE omp_lib
+  USE console_mod
   implicit none
   private
 
@@ -76,7 +77,7 @@ CONTAINS
     !---------------------------------------------------------------------------
     inquire (file=name, exist=exists)
     if (.not. exists) then
-      write(*,*) 'Error: File not found - ', trim(name)
+      call console_error ('file not found: '//trim(name))
       error stop 'File not found'
     endif
   END SUBROUTINE check_file
@@ -123,16 +124,16 @@ CONTAINS
     if (iostat_l == 0) return
     if (iostat_l < 0 .and. .not. present(error)) return
     if (iostat_l < 0) then
-      write(*,*) 'WARNING: namelist '//trim(namelist)//' missing'
+      call console_warn (ch_hop, 'namelist '//trim(namelist)//' missing')
     else
-      write(*,*) 'WARNING: problem reading namelist '//trim(namelist)
+      call console_warn (ch_hop, 'problem reading namelist '//trim(namelist))
     end if
   END SUBROUTINE namelist_warning
 
   SUBROUTINE warning (text)
     character(len=*), optional:: text
     !---------------------------------------------------------------------------
-    if (present(text)) write(*,*) 'WARNING: '//trim(text)
+    if (present(text)) call console_warn (ch_hop, text)
   END SUBROUTINE warning
 #endif
 END MODULE hop_env_mod

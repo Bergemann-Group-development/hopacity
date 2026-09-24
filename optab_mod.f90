@@ -1,5 +1,6 @@
 MODULE optab_mod
   USE hop_env_mod, only: os, trace
+  USE console_mod
   USE prec_mod
   USE const_mod
   USE spectrum_mod, only: spectrum_type
@@ -89,7 +90,7 @@ contains
     character(len=*), intent(in) :: opac_table
     integer :: i, lunit, iostat
     !---------------------------------------------------------------------------
-    print '(A,A)', 'Reading opacity table: ', trim(opac_table)
+    if (console_on(ch_hop, 1)) write(console_unit,'(A,A)') 'Reading opacity table: ', trim(opac_table)
 
     call os%check_file(trim(opac_table)//'.txt')
     open(file=trim(opac_table)//'.txt', newunit=lunit, form='formatted')

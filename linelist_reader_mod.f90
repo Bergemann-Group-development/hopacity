@@ -30,6 +30,7 @@
 !===============================================================================
 MODULE linelist_reader_mod
   USE hop_env_mod, only: os, trace
+  USE console_mod
   USE prec_mod
   implicit none
   private
@@ -75,7 +76,7 @@ SUBROUTINE ll_open (self, path)
   open (newunit=self%unit, file=self%path, access='stream', form='unformatted', &
         status='old', action='read', iostat=iostat)
   if (iostat /= 0) then
-    print *, 'linelist_reader: cannot open ', self%path
+    call console_error ('linelist_reader: cannot open '//trim(self%path))
     self%unit = 0
     return
   end if
@@ -162,8 +163,8 @@ SUBROUTINE ll_next_block (self, blk, ok)
   ! a block whose records descend breaks every bisection here; say so once and
   ! leave the caller to read it whole (ll_block_range then returns the full range)
   if (blk%lam_last < blk%lam_first) then
-    print *, 'linelist_reader: ', trim(blk%id), ' in ', self%path, &
-             ' is not ascending in wavelength; reading it whole'
+    call console_warn (ch_hop, 'linelist_reader: '//trim(blk%id)//' in '//trim(self%path)// &
+             ' is not ascending in wavelength; reading it whole')
     blk%width = -1
   end if
 

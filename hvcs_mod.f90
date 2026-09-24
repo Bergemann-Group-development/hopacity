@@ -22,6 +22,7 @@ MODULE hvcs_mod
   !  (nlo*Bij).
   USE const_mod, only: cc
   USE interpol_mod, only: pchip_slopes, hermite_value
+  USE console_mod
   implicit none
   private
 
@@ -107,7 +108,7 @@ contains
     !------------------------------------------------------------------
     open(newunit=lunit, file=fname, status='old', form='formatted', iostat=ios)
     if (ios /= 0) then
-      write(*,*) 'hvcs_mod: cannot open VCS grid file ', trim(fname)
+      call console_error ('hvcs_mod: cannot open VCS grid file '//trim(fname))
       error stop 'hvcs_mod: missing VCS data file'
     endif
 
@@ -121,7 +122,7 @@ contains
         ((((grid_vcs(i,j,kk,l,k,s), i=1,NNHW), j=1,nhhnr(k,s)), kk=1,NNHT), l=1,NNHE)
       if (ios /= 0) exit
       if (nhhnr(k,s) > NNHH) then
-        write(*,*) 'hvcs_mod: nhhnr exceeds NNHH in ', trim(fname), nhhnr(k,s)
+        call console_error ('hvcs_mod: nhhnr exceeds NNHH in '//trim(fname))
         error stop 'hvcs_mod: VCS grid dimension mismatch'
       endif
       k = k + 1
@@ -131,7 +132,7 @@ contains
     close(lunit)
 
     if (nlines(s) < 1) then
-      write(*,*) 'hvcs_mod: no line blocks parsed in ', trim(fname)
+      call console_error ('hvcs_mod: no line blocks parsed in '//trim(fname))
       error stop 'hvcs_mod: empty/unreadable VCS grid'
     endif
 

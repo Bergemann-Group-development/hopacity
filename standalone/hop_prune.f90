@@ -31,7 +31,6 @@
 !===============================================================================
 PROGRAM hop_prune
   USE iso_c_binding, only: c_char, c_null_char, c_int
-  USE iso_fortran_env, only: error_unit, output_unit
   USE hop_c_api, only: hop_init, hop_free, hop_set_option, hop_set_external_abundances, &
                        hop_init_linelist_windows, hop_load_state, hop_set_vmic, &
                        hop_opacity, hop_write_linelist, hop_linelist_count, hop_last_error
@@ -52,12 +51,13 @@ PROGRAM hop_prune
   USE osmet_mod, only: eosmet
   USE const_mod, only: bk
   USE handyfuncs_mod, only: lowercase
+  USE console_mod
   implicit none
 
   ! --- &atmos_params, the read_external_mod list; only the named few are used ----
   character(len=512) :: atmos_file='', atmos_root=''
   character(len=64) :: atmos_format='unknown', amr=''
-  integer :: dims=1, verbose=0, patches_per_mpi=1, nx=-1, ny=-1, nz=96, snap=0
+  integer :: dims=1, verbose=console_inherit, patches_per_mpi=1, nx=-1, ny=-1, nz=96, snap=0
   real(8) :: FeH=-99.9
   real(4) :: vmic=-1, timestamp=-1.0, prune_tol=0.0
   logical :: save_atmos=.true., use_rho=.true., use_ne=.true., pchip_interpolation=.true., &
@@ -76,7 +76,7 @@ PROGRAM hop_prune
   character(len=256) :: molec_file='./input/molec_data_BC.txt'
   character(len=256) :: save_species=''
   real(4) :: tmolim=-99, alpha_enhancement=0.0, r_process_enhancement=0.0
-  integer :: comp_verbose=0
+  integer :: comp_verbose=console_inherit
 
   ! --- &opac_table_params: only opac_table_vmic influences the selection ------------
   character(len=256) :: opac_table='', absmet_file=''
@@ -104,6 +104,10 @@ PROGRAM hop_prune
   character(len=512) :: output_file=''
   integer :: sample_count=8
   namelist /prune_params/ output_file, sample_count
+
+  ! --- &console_params: the global console level, as in dispatch.x ---------------
+  integer :: level=1
+  namelist /console_params/ level
 
   type(atmos_data_t) :: atmos
   type(spectrum_type) :: sp
@@ -143,6 +147,8 @@ PROGRAM hop_prune
   io%namelist = echo_unit
 
   ! --- the namelist groups; the atmosphere and the output are mandatory --------------
+  call read_group('console_params')
+  call console_set_level (level)
   call read_group('atmos_params', required=.true.)
   call read_group('composition_params')
   call read_group('opac_table_params')
@@ -239,7 +245,7 @@ PROGRAM hop_prune
   if (c_rename(cstr(tmp_file), cstr(output_file)) /= 0) &
     call die('cannot rename ' // trim(tmp_file) // ' to ' // trim(output_file))
   call write_provenance(trim(output_file) // '.provenance.nml')
-  if (verbose >= 0) write(output_unit, '(A,I0,A,A)') 'hop_prune: ', nkept, &
+  if (console_on(ch_hop, 0)) write(console_unit, '(A,I0,A,A)') 'hop_prune: ', nkept, &
     ' transitions written to ', trim(output_file)
   iostat = hop_free()
 
@@ -256,6 +262,7 @@ CONTAINS
     !---------------------------------------------------------------------------
     rewind(nml_unit)
     select case (name)
+    case ('console_params');      read(nml_unit, nml=console_params, iostat=ios)
     case ('atmos_params');        read(nml_unit, nml=atmos_params, iostat=ios)
     case ('composition_params');  call read_composition(ios)
     case ('opac_table_params');   read(nml_unit, nml=opac_table_params, iostat=ios)
@@ -414,7 +421,7 @@ CONTAINS
   SUBROUTINE die(text)
     character(len=*), intent(in) :: text
     !---------------------------------------------------------------------------
-    write(error_unit, '(A)') 'hop_prune: ' // text
+    call console_error ('hop_prune: ' // text)
     call exit(1)
   END SUBROUTINE die
 

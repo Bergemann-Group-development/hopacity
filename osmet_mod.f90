@@ -1,5 +1,6 @@
 MODULE osmet_mod
   USE hop_env_mod, only: os, trace
+  USE console_mod
   USE prec_mod
   USE const_mod
   USE op_math_mod
@@ -42,7 +43,7 @@ contains
     integer, save :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin('osmet_type%init', itimer=itimer)
-    print '(A, A)', 'Reading absmet file: ', trim(absmet_file)
+    if (console_on(ch_hop, 1)) write(console_unit,'(A, A)') 'Reading absmet file: ', trim(absmet_file)
     call os%check_file(absmet_file)
     open(file=absmet_file, newunit=lunit, form='unformatted')
     read(lunit, iostat=iostat) !textatom
