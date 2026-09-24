@@ -901,6 +901,7 @@ contains
     class(molec_type), pointer :: mol
     integer :: i, di
     logical :: hit
+    logical, save :: first_time = .true.
     ! ----------------------------------------------------------------------------
     do i=1, self%nel
       element => self%elements(i)
@@ -911,7 +912,7 @@ contains
         endif
       end do
       if (hit) then
-        if (sum(element%ions%nline, 1) > 0) &
+        if (sum(element%ions%nline, 1) > 0 .and. self%verbose > 0 .and. first_time) &
           print *, 'sample_linelist: ', trim(element%id), ' has departures -> excluded from LTE table'
         element%ions%in_linelist = .false.
       endif
@@ -925,11 +926,12 @@ contains
         endif
       end do
       if (hit) then
-        if (mol%nline > 0) &
+        if (mol%nline > 0 .and. self%verbose > 0 .and. first_time) &
           print *, 'sample_linelist: ', trim(mol%id), ' has departures -> excluded from LTE table'
         mol%in_linelist = .false.
       endif
     end do
+    first_time = .false.
   END SUBROUTINE mask_departure_species
 
   !===============================================================================
