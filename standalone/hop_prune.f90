@@ -59,14 +59,13 @@ PROGRAM hop_prune
   character(len=64) :: atmos_format='unknown', amr=''
   integer :: dims=1, verbose=console_inherit, patches_per_mpi=1, nx=-1, ny=-1, nz=96, snap=0
   real(8) :: FeH=-99.9
-  real(4) :: vmic=-1, timestamp=-1.0, prune_tol=0.0
+  real(4) :: vmic=-1, timestamp=-1.0
   logical :: save_atmos=.true., use_rho=.true., use_ne=.true., pchip_interpolation=.true., &
              log_interpolation=.true., save_eos=.false., use_abnd=.false., use_vel=.true., &
-             read_departures=.false., prune_top=.false.
+             read_departures=.false.
   namelist /atmos_params/ atmos_root, atmos_file, dims, verbose, patches_per_mpi, FeH, &
     save_atmos, atmos_format, vmic, use_rho, use_ne, nx, ny, nz, snap, pchip_interpolation, &
-    log_interpolation, save_eos, amr, use_abnd, timestamp, use_vel, read_departures, &
-    prune_top, prune_tol
+    log_interpolation, save_eos, amr, use_abnd, timestamp, use_vel, read_departures
 
   ! --- &composition_params, the composition_patch_mod list (group in read_composition,
   !     whose 'verbose' would otherwise clash with the atmos_params one) -------------
