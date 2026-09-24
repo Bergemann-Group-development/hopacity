@@ -487,7 +487,7 @@ contains
     allocate(fakt, mold=temp)
     fakt(lo:hi,:,:) = huge(1d0)
     if (.not. allocated(self%ion%n)) then
-      stop 'add_absorption: ion%n not allocated'
+      error stop 'add_absorption: ion%n not allocated'
     endif
     call self%load_lam_interp_weights(lam, active, fs, fe, iw, quad, lagrange)
 

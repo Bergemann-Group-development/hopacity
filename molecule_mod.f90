@@ -1122,7 +1122,7 @@ contains
         if (idx > 0) return
       end do
       call console_error ('molecular_equilibrium: no solve element for constituent '//trim(c%id))
-      stop
+      error stop
     end subroutine constituent_root
 
     !---------------------------------------------------------------------------

@@ -428,7 +428,7 @@ contains
 
     do m=1, nqtemp
       call console_error ('tabulated partition functions are not implemented')
-      stop
+      error stop
     end do
 
     ! IFISH IS A PARAMETER FOR THE CHOICE OF THE ASYMPTOTIC PARTITION
@@ -483,7 +483,7 @@ contains
         if (j >= 0 .and. j <= 10) then
           ion%id = trim(element%id(:3)) // trim(roman(j))
         else
-          stop 'Ion id construction needs to be updated for j > 10'
+          error stop 'Ion id construction needs to be updated for j > 10'
         end if
 
         if(j < ubound(element%ions, 1)) ion%above => element%ions(j+1)
@@ -667,7 +667,7 @@ contains
 
       if (iostat /= 0) then
         call console_error ('cannot read wavelength values for transition '//trim(trans%key))
-        stop
+        error stop
       endif
 
       if (trans%loglam) then
@@ -721,7 +721,7 @@ contains
 
         if (iostat /= 0) then
           call console_error ('cannot read temperature values for transition '//trim(trans%key))
-          stop
+          error stop
         endif
 
         if (iteta > 0) then
@@ -808,7 +808,7 @@ contains
       read(line(i:n), *, iostat=iostat) val
       if (iostat /= 0) then
         call console_error ('cannot read fixed format line for transition '//trim(trans%key)//': '//trim(line))
-        stop
+        error stop
       endif
       line = line(n+1:)
     end subroutine march_line
@@ -1514,7 +1514,7 @@ contains
       real(8) :: no_ev(1)              ! placeholder dep_ev; unused in the LTE call
       !-------------------------------------------------------------------------
       if (.not. ptc%in_linelist) return
-      if (.not. allocated(ptc%n)) stop 'particle density not allocated'
+      if (.not. allocated(ptc%n)) error stop 'particle density not allocated'
 
       call get_departure_coefficients(ptc, dep)
       if (skip_lte .and. .not. associated(dep)) return   ! LTE species live in the sampled table
@@ -1628,12 +1628,12 @@ contains
 
     if (.not. self%initialised) then
       call console_error ('load_state_variables: composition has not been initialised yet')
-      stop
+      error stop
     endif
 
     if (.not. (option(use_rho, .true.) .or. option(use_ne, .true.))) then
       call console_error ('load_state_variables needs at least one of rho or ne')
-      stop
+      error stop
     endif
 
     ! NOTE: this cleanup is partial (chi500/fo/vbar2h/t3nhe are not freed, and
@@ -1744,7 +1744,7 @@ contains
     !---------------------------------------------------------------------------
     if (.not. self%loaded) then
       call console_error ('set_gradients must be called after load_state_variables')
-      stop
+      error stop
     endif
     if (allocated(self%dlnt_dz)) deallocate(self%dlnt_dz, self%dpe_dz)
     if (allocated(self%dlnt_dx)) deallocate(self%dlnt_dx, self%dlnt_dy)
@@ -3160,7 +3160,7 @@ contains
     end do
 
     call console_error ('transition key '//trim(id)//' not found')
-    stop
+    error stop
   END SUBROUTINE trans_by_id
 
   !=========================================================================
@@ -3510,7 +3510,7 @@ contains
           end do
         else
           call console_error ('element '//trim(elem)//' not found for molecule '//trim(mol%id))
-          stop
+          error stop
         endif
       elseif (c == '+') then
         mol%ions(nions)%p => ion%above

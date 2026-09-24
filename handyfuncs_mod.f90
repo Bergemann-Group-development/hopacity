@@ -44,7 +44,7 @@ contains
       endif
       write(filename,'(a,i0,2a)') 'failed to read a line (iostat=', iostat, ') in ', trim(filename)
       call console_error (trim(filename)//': '//trim(line_text))
-      stop
+      error stop
     endif
   END SUBROUTINE print_failed_line
 
@@ -756,7 +756,7 @@ contains
     if (present(ok)) ok = .not. has_issue
     if (has_issue .and. abort) then
       call console_error ('aborting due to invalid values in '//trim(label))
-      stop
+      error stop
     end if
   END SUBROUTINE check_array_core_dp
 
@@ -803,7 +803,7 @@ contains
     if (present(ok)) ok = .not. has_issue
     if (has_issue .and. abort) then
       call console_error ('aborting due to invalid values in '//trim(label))
-      stop
+      error stop
     end if
   END SUBROUTINE check_array_core_sp
 

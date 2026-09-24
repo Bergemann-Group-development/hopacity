@@ -565,7 +565,7 @@ contains
     if (nx /= ny) then
       write(msg,'(a,i0,a,i0)') 'interp1d: x has length ', nx, ' but y has length ', ny
       call console_error (msg)
-      stop
+      error stop
     endif
 
     interp => interp1d_linear
@@ -573,13 +573,13 @@ contains
     if (order == 2) then
       if (nx < 3) then
         call console_error ('interp1d: too few points for quadratic interpolation')
-        stop
+        error stop
       else
         interp => interp1d_quadratic
       endif
     elseif (order > 2) then
       call console_error ('interp1d: only linear and quadratic are supported')
-      stop
+      error stop
     endif
 
     allocate(newy, mold=newx)
@@ -745,7 +745,7 @@ contains
     get_dy = present(dfdy)
     get_dz = present(dfdz)
     if ((get_dx .or. get_dy .or. get_dz) .and. .not. do_pchip) &
-      stop 'linterpolate_3d: derivative output requires pchip interpolation'
+      error stop 'linterpolate_3d: derivative output requires pchip interpolation'
     allocate(fx(nx,oy,oz))
     allocate(fxy(nx,ny,oz))
     if (get_dx) allocate(gx(nx,oy,oz), gxy(nx,ny,oz))
@@ -832,7 +832,7 @@ contains
     do_pchip = option(pchip, .true.)
     get_dz = present(dfdz)
     if (get_dz .and. .not. do_pchip) &
-      stop 'linterpolate_3d_rotated: derivative output requires pchip interpolation'
+      error stop 'linterpolate_3d_rotated: derivative output requires pchip interpolation'
     allocate(fx(nx,oy,oz))
     allocate(fxy(nx,ny,oz))
     delta = vec(1:2) / (vec(3) * [dx, dy])

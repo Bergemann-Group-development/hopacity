@@ -90,7 +90,7 @@ MODULE spectrum_mod
       end do
 
       if (n_windows == 0) then
-        stop 'window_file is empty (all comments or blank lines)'
+        error stop 'window_file is empty (all comments or blank lines)'
       endif
 
       ! Allocate and read windows
@@ -113,11 +113,11 @@ MODULE spectrum_mod
         red = windows(i, 2)
 
         if (.not. (blue > 0 .and. red > 0 .and. isfinite(blue) .and. isfinite(red))) then
-          stop 'window_file: endpoints must be finite and positive'
+          error stop 'window_file: endpoints must be finite and positive'
         endif
 
         if (red <= blue) then
-          stop 'window_file: red edge must be > blue edge'
+          error stop 'window_file: red edge must be > blue edge'
         endif
       end do
 
@@ -128,7 +128,7 @@ MODULE spectrum_mod
       call merge_overlapping_windows(windows, n_windows)
 
       if (n_windows == 0) then
-        stop 'window_file: all windows were rejected during merging'
+        error stop 'window_file: all windows were rejected during merging'
       endif
 
       ! Convert endpoints to vacuum if needed
@@ -162,7 +162,7 @@ MODULE spectrum_mod
           write(msg,'(a,i0,2(a,f12.4),a,i0,a)') 'window ', i, ': blue=', blue_vac, ' red=', red_vac, &
             ' -> ', nnu_seg, ' points'
           call console_error (msg)
-          stop 'window_file: each window must have at least 2 points'
+          error stop 'window_file: each window must have at least 2 points'
         endif
 
         allocate(lam_seg(nnu_seg))
@@ -187,7 +187,7 @@ MODULE spectrum_mod
       ! Verify grid is strictly ascending (no gaps allowed, but concatenated segments are)
       do i = 2, size(all_lam)
         if (all_lam(i) <= all_lam(i-1)) then
-          stop 'build_segmented_grid: grid not strictly ascending after concatenation'
+          error stop 'build_segmented_grid: grid not strictly ascending after concatenation'
         endif
       end do
 
@@ -332,16 +332,16 @@ MODULE spectrum_mod
       ! Validate that window_file is not used with incompatible options
       if (window_file /= '') then
         if (R <= 0) then
-          stop 'window_file requires R > 0 for constant-R grid construction'
+          error stop 'window_file requires R > 0 for constant-R grid construction'
         endif
         if (lam_file /= '') then
-          stop 'window_file and lam_file are mutually exclusive'
+          error stop 'window_file and lam_file are mutually exclusive'
         endif
         if (give_lam) then
-          stop 'window_file and give_lam are mutually exclusive'
+          error stop 'window_file and give_lam are mutually exclusive'
         endif
         if (in_log) then
-          stop 'window_file and in_log are mutually exclusive; grid is built in linear vacuum wavelength'
+          error stop 'window_file and in_log are mutually exclusive; grid is built in linear vacuum wavelength'
         endif
       endif
       if (give_lam .and. nnu>0) then
@@ -400,7 +400,7 @@ MODULE spectrum_mod
           lam = [(aa_blue + i*daa, i=0,nnu-1)]
         endif
       else
-        stop 'Give either wavelength set or aa_red and aa_blue in spectrum_params'
+        error stop 'Give either wavelength set or aa_red and aa_blue in spectrum_params'
       endif
       if (in_log) lam = exp(lam)
       if (in_air .and. .not. grid_in_vac) lam = air2vac(lam)
@@ -524,7 +524,7 @@ MODULE spectrum_mod
         weight(1) = 1.0
         return
       elseif (size(weight) /= n) then
-        stop 'weight and nu do not have the same number of elements!'
+        error stop 'weight and nu do not have the same number of elements!'
       endif
   
       weight(1) = 0.5 * ( nu(2) - nu(1) )
