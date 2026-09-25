@@ -46,10 +46,11 @@ contains
     integer :: defix, n_irwin, n_de, ios
     character(256) :: line
     !---------------------------------------------------------------------------
-    ! Pull the header in as a whole record. The trailing nuclear-spin weight is
-    ! optional, and parsing it out of an internal file lets a missing 4th field
-    ! fail cleanly -- a list-directed read straight off the unit would instead
-    ! run on into the next record looking for the item.
+    ! Pull the header in as a whole record. The trailing nuclear-spin weight and
+    ! polynomial low-temperature limit are optional, and parsing them out of an
+    ! internal file lets a missing field fail cleanly -- a list-directed read
+    ! straight off the unit would instead run on into the next record looking
+    ! for the item.
     do
       read(lunit, '(a)', iostat=iostat) line
       if (iostat /= 0) return
@@ -57,7 +58,13 @@ contains
     end do
     if (allocated(self%de)) deallocate(self%de)
     if (allocated(self%irwin)) deallocate(self%irwin)
-    read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear
+    self%g_nuclear = 1
+    self%irwin_tmin = 1000
+    read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear, self%irwin_tmin
+    if (ios /= 0) then
+      self%irwin_tmin = 1000
+      read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear
+    endif
     if (ios /= 0) then
       ! 3-field header: partition function is in the nuclear-spin-free
       ! convention, so nothing to divide out
