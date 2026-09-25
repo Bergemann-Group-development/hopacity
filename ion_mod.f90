@@ -31,6 +31,14 @@ MODULE ion_mod
     ! structure-of-arrays bulk linelist (new path), one per isotope (index 0 = main)
     type(linelist_type), allocatable :: ll(:)
     real(dp), allocatable, dimension(:) :: irwin
+    ! lowest temperature the Irwin polynomial is fitted over. Below it the
+    ! partition function is continued as a power law anchored on the polynomial
+    ! at irwin_tmin and 1.5*irwin_tmin. Irwin's own atomic and diatomic fits
+    ! start at 1000 K, but a polyatomic Q curves far too strongly there for a
+    ! power law to follow -- extrapolating one from 1000/1500 K undershoots the
+    ! true Q by a factor of several at 300 K -- so a fit that reaches lower
+    ! declares it here and keeps the polynomial down to its own limit.
+    real(dp) :: irwin_tmin = 1000
     logical :: in_linelist=.false., in_opac=.false.
     logical :: allocated=.false.
   contains
@@ -199,8 +207,8 @@ contains
     real(dp), intent(in) :: temp
     real(dp) :: ulog1, ulog2, ulog, tt1, tt2
     !---------------------------------------------------------------------------
-    if (temp < 1000.) then
-      tt1=1000; tt2=1500
+    if (temp < self%irwin_tmin) then
+      tt1=self%irwin_tmin; tt2=1.5*self%irwin_tmin
       ulog1 = self%irwin_poly(log(tt1))
       ulog2 = self%irwin_poly(log(tt2))
       ulog = (ulog2 - ulog1) * log(temp/tt1) / log(tt2/tt1) + ulog1
