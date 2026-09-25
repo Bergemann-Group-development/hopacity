@@ -223,12 +223,12 @@ contains
     class(bbtrans_type), intent(inout)  :: self
     real(dp), intent(in) :: gq, cnt_ev
     integer, intent(in) :: j
-    real(dp), parameter :: scale=1e-4*one_sixth
+    real(dp), parameter :: scale = 1e4**(-one_sixth)   ! (T/1e4 K)**(1/6), with T**(1/6) in stark_pe
     real(dp), parameter :: c19=log10(39.*(8./(PI*EM*BK**5))**one_sixth) ! 19.4
     real(dp) :: nu0_ev, upper_ev, c1
     !----------------------------------------------------------------------------------
     if (gq < -10) then
-      ! recipe c4 SIU (formula from gray, p.237)
+      ! recipe c4 SIU (Gray 2005, eqs. 11.26-11.27)
       ! make negative to mark this recipe
       self%gq = - BK * 10**(c19 + two_third*gq)
     elseif (gq < 0) then
@@ -238,13 +238,14 @@ contains
       nu0_ev = H_E * self%nu0
       upper_ev = self%lower_ev + nu0_ev
       if (self%lower_ev < cnt_ev) then
-        c1 = (j/(cnt_ev - upper_ev))**2
+        ! Cowley (1971) eqs. 5 and 6 at 1e4 K, which he recommends using at all T;
+        ! c1 is n*^4 of the upper level (his eq. 4)
+        c1 = (j**2 * RydV / (cnt_ev - upper_ev))**2
         if (j == 1) then
-          c1 = 2.26e-7 * c1
+          self%gq = 2.26e-7 * c1
         else
-          c1 = 5.42e-7 / (j+1)**2
+          self%gq = 5.42e-7 * c1 / (j+1)**2
         endif
-        self%gq = RydV*c1
       endif
     else
       self%gq = gq
@@ -260,8 +261,9 @@ contains
     real(dp), intent(in) :: ga
     !----------------------------------------------------------------------------------
     if (ga == 0) then
-      ! Here we assume Aji for the radiative broadening, Turbospectrum devides this by
-      ! the upper statistical weight, but KORG does not. MOOg assumes GF/GU=3 instead.
+      ! Default as in Korg: 8 pi^2 e^2 nu0^2 gf / (m_e c^3) = g_u A_ul. Turbospectrum
+      ! divides this by g_u, giving A_ul; MOOG uses the classical damping constant
+      ! 8 pi^2 e^2 nu0^2 / (3 m_e c^3), which equals A_ul only for gf/g_u = 1/3.
       ! We cannot reuse Aji at this point, because it may contain isotope fractions.
       self%ga = f_conv * 10**self%loggf * self%nu0**2
     else
@@ -279,7 +281,11 @@ contains
     real(dp), intent(in) :: gv, cnt_ev, vbar2e4
     logical, intent(in) :: is_mol
     real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625, vbar2
-    real(dp), parameter :: uns=8.411*1.283984e-12 !8.411~(13.598**2)**0.4, 1.283984e-12~17*(1.61e-33)**0.4
+    ! uns = 17*C_U**0.4 (CGS, energies in eV). Unsold (1955, eqs. 82.48 and 82.55) gives
+    ! gamma_6 = 17 C6**0.4 v**0.6 N with C6 = 1.61e-33*(13.5*Z)**2*[...], i.e. C_U = 2.93e-31
+    ! and uns = 1.041e-11; Gray (2005, eq. 11.30) uses C_U = 3.0e-31. The factors below
+    ! correspond to C_U = 3.22e-31, which makes these widths 3.7% larger than Unsold's.
+    real(dp), parameter :: uns=8.411*1.283984e-12
     real(dp), parameter :: barklem = (1e-2*Rbohr)**2 ! 2.80028e-21 bohr radius in m and squared
     !----------------------------------------------------------------------------------
     ! compute van der waals broadening due to hydrogen
@@ -306,10 +312,6 @@ contains
       elseif (gv.ne.0.0) then
         upper_ev = self%lower_ev + H_E * self%nu0
         ! Unsold approximation
-        ! Jul  5 2010 jorritl: I'm sceptical about the numerical
-        ! constant  1.283984e-12. According to Gray it should be
-        ! 0.3d-30^0.4 = 6.1780059e-13 and  8.411 should be 17
-        ! I haven't found the original reference to Unsold 1955 yet...
         if (self%lower_ev < cnt_ev) then
           c1 = 1./(cnt_ev - upper_ev)**2 - 1./(cnt_ev - self%lower_ev)**2
           if (c1 > 0) then

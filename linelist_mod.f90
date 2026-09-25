@@ -1175,6 +1175,7 @@ contains
     real(dp), intent(in)  :: ga_in, nu0, loggf
     !-----------------------------------------------------------------------------------
     if (ga_in == 0) then
+      ! as in Korg, g_u A_ul; see bbtrans_mod prepare_Radiative for the other codes
       ga = f_conv * 10**loggf * nu0**2
     else
       ga = ga_in                      ! radiative damping rate, 1/s
@@ -1188,25 +1189,26 @@ contains
     real(dp), intent(out) :: gq
     real(dp), intent(in)  :: gq_in, nu0, lower_ev, cnt_ev
     integer,  intent(in)  :: j
-    real(dp), parameter :: scale = 1e-4 * one_sixth
+    real(dp), parameter :: scale = 1e4**(-one_sixth)   ! (T/1e4 K)**(1/6), with T**(1/6) in stark_pe
     real(dp), parameter :: c19 = log10(39. * (8. / (PI*EM*BK**5))**one_sixth) ! ~19.4
     real(dp) :: upper_ev, c1
     !-----------------------------------------------------------------------------------
     gq = 0
     if (gq_in < -10) then
-      gq = - BK * 10**(c19 + two_third*gq_in)   ! recipe c4 SIU (Gray p.237); sign marks recipe
+      gq = - BK * 10**(c19 + two_third*gq_in)   ! recipe c4 SIU (Gray 2005, eqs. 11.26-11.27); sign marks recipe
     elseif (gq_in < 0) then
       gq = - 10**gq_in * scale                  ! sign marks recipe
     elseif (gq_in == 0) then
       upper_ev = lower_ev + H_E * nu0
       if (lower_ev < cnt_ev) then
-        c1 = (j / (cnt_ev - upper_ev))**2
+        ! Cowley (1971) eqs. 5 and 6 at 1e4 K, which he recommends using at all T;
+        ! c1 is n*^4 of the upper level (his eq. 4)
+        c1 = (j**2 * RydV / (cnt_ev - upper_ev))**2
         if (j == 1) then
-          c1 = 2.26e-7 * c1
+          gq = 2.26e-7 * c1
         else
-          c1 = 5.42e-7 / (j+1)**2
+          gq = 5.42e-7 * c1 / (j+1)**2
         end if
-        gq = RydV * c1
       end if
     else
       gq = gq_in
@@ -1224,6 +1226,10 @@ contains
     integer,  intent(in)  :: lower_ion
     logical,  intent(in)  :: is_mol
     real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625
+    ! uns = 17*C_U**0.4 (CGS, energies in eV). Unsold (1955, eqs. 82.48 and 82.55) gives
+    ! gamma_6 = 17 C6**0.4 v**0.6 N with C6 = 1.61e-33*(13.5*Z)**2*[...], i.e. C_U = 2.93e-31
+    ! and uns = 1.041e-11; Gray (2005, eq. 11.30) uses C_U = 3.0e-31. The factors below
+    ! correspond to C_U = 3.22e-31, which makes these widths 3.7% larger than Unsold's.
     real(dp), parameter :: uns = 8.411 * 1.283984e-12
     real(dp), parameter :: barklem = (1e-2 * Rbohr)**2
     !-----------------------------------------------------------------------------------
