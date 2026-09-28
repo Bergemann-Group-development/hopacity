@@ -18,7 +18,7 @@ MODULE composition_mod
                                  ll_read_slice, ll_read_ranges, ll_index_records
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
                           append_h_line, bij_const, merge_ll_diag, &
-                          voigt_peak, interval_t, merge_intervals, in_any_interval, &
+                          voigt_peak, in_any_interval, print_ll_particle, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type, window_file
   USE optab_mod, only: pca_transform_type
@@ -127,6 +127,7 @@ MODULE composition_mod
     procedure :: prepare_abundance_sets
     procedure :: set_population
     procedure :: population_ratio
+    procedure :: write_linelists
   end type
 
   type, public :: departure_pointer_t
@@ -158,7 +159,7 @@ MODULE composition_mod
   logical, public :: line_scattering=.false.
   real(4), public :: opac_table_vmic=-1
 
-  character(len=3), save :: &
+  character(len=3), parameter, public :: &
     element_ids(92) = [ &
     'H ','He','Li','Be','B ','C ','N ','O ','F ', &
     'Ne','Na','Mg','Al','Si','P ','S ','Cl','Ar', &
@@ -3646,4 +3647,42 @@ contains
     call io%lock%unset('opacity_contributions')
     call trace%end(itimer)
   END SUBROUTINE print_opacity_contributions
+  !===============================================================================
+  ! Write the used line-list lines of every ion and molecule to unit, in the
+  ! linelist_out.txt format (linelist_mod%print_ll_particle).
+  !-------------------------------------------------------------------------------
+  SUBROUTINE write_linelists (self, unit)
+    class(composition_type), target :: self
+    integer, intent(in) :: unit
+    integer :: i, j
+    !-----------------------------------------------------------------------------
+    if (allocated(self%elements)) then
+      do i=1, self%nel
+        if (.not. allocated(self%elements(i)%ions)) cycle
+        if (.not. any(self%elements(i)%ions%in_linelist)) cycle
+        do j=lbound(self%elements(i)%ions,1), ubound(self%elements(i)%ions,1)
+          call write_particle(self%elements(i)%ions(j))
+        end do
+      end do
+    end if
+    if (allocated(self%molecules)) then
+      do i=1, self%nmolec
+        call write_particle(self%molecules(i))
+      end do
+    end if
+  contains
+    subroutine write_particle (ptc)
+      class(particle_type), target :: ptc
+      integer, allocatable :: iso_values(:)
+      integer :: k, niso
+      !---------------------------------------------------------------------------
+      if (.not. allocated(ptc%ll)) return   ! no SoA linelists were built
+      niso = 0
+      if (associated(ptc%isotope)) niso = size(ptc%isotope)
+      allocate(iso_values(niso))
+      iso_values = [(ptc%isotope(k)%iso, k=1, niso)]
+      call print_ll_particle(unit, ptc%id, iso_values, ptc%ll)
+    end subroutine write_particle
+  END SUBROUTINE write_linelists
+
 END MODULE composition_mod

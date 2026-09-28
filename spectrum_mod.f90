@@ -4,7 +4,7 @@ MODULE spectrum_mod
     USE console_mod
     USE const_mod
     USE handyfuncs_mod, only: air2vac, remove_close_entries, sort_asc
-    USE op_math_mod, only: get_ivl=>get_interval
+    USE op_math_mod, only: get_ivl=>get_interval, interval_t, merge_intervals
     USE trans_mod, only: transition_type
     implicit none
 
@@ -66,6 +66,8 @@ MODULE spectrum_mod
       class(spectrum_type), intent(inout) :: self
 
       real(8), dimension(:,:), allocatable :: windows
+      type(interval_t), allocatable :: merged(:)
+      integer :: n_merged
       integer :: i, j, n_windows, nnu_seg, lunit, iostat, n_kept
       real(8) :: blue, red, fac, blue_vac, red_vac
       real(8), dimension(:), allocatable :: lam_seg, all_lam
@@ -121,11 +123,11 @@ MODULE spectrum_mod
         endif
       end do
 
-      ! Sort windows by blue edge
-      call sort_windows(windows, n_windows)
-
-      ! Merge overlapping or touching windows
-      call merge_overlapping_windows(windows, n_windows)
+      ! Sort and merge overlapping or touching windows
+      call merge_intervals(windows, n_windows, 0d0, merged, n_merged)
+      n_windows = n_merged
+      windows(1:n_windows, 1) = merged%blue_vac
+      windows(1:n_windows, 2) = merged%red_vac
 
       if (n_windows == 0) then
         error stop 'window_file: all windows were rejected during merging'
@@ -203,57 +205,6 @@ MODULE spectrum_mod
 
       deallocate(windows, seg_first, seg_last, seg_blue, seg_red, all_lam)
     END SUBROUTINE build_segmented_grid
-
-    !===============================================================================
-    ! Sort windows by blue edge in ascending order (simple bubble sort for small n)
-    !===============================================================================
-    SUBROUTINE sort_windows(windows, n)
-      real(8), intent(inout) :: windows(:, :)
-      integer, intent(in) :: n
-      integer :: i, j
-      real(8) :: tmp_blue, tmp_red
-
-      do i = 1, n-1
-        do j = i+1, n
-          if (windows(j, 1) < windows(i, 1)) then
-            tmp_blue = windows(i, 1)
-            tmp_red = windows(i, 2)
-            windows(i, 1) = windows(j, 1)
-            windows(i, 2) = windows(j, 2)
-            windows(j, 1) = tmp_blue
-            windows(j, 2) = tmp_red
-          endif
-        end do
-      end do
-    END SUBROUTINE sort_windows
-
-    !===============================================================================
-    ! Merge overlapping or touching windows. Windows must be sorted by blue edge.
-    ! Updates the windows array in place and reduces n.
-    !===============================================================================
-    SUBROUTINE merge_overlapping_windows(windows, n)
-      real(8), intent(inout) :: windows(:, :)
-      integer, intent(inout) :: n
-      integer :: i, j
-      real(8), parameter :: merge_tol = 1d-10
-
-      i = 1
-      do while (i < n)
-        ! Check if window i and i+1 overlap or touch
-        if (windows(i+1, 1) <= windows(i, 2) + merge_tol) then
-          ! Merge: extend window i's red edge to the maximum of the two
-          windows(i, 2) = max(windows(i, 2), windows(i+1, 2))
-          ! Remove window i+1 by shifting
-          do j = i+1, n-1
-            windows(j, 1) = windows(j+1, 1)
-            windows(j, 2) = windows(j+1, 2)
-          end do
-          n = n - 1
-        else
-          i = i + 1
-        endif
-      end do
-    END SUBROUTINE merge_overlapping_windows
 
     !===============================================================================
     ! Append array b to array a, growing a in place

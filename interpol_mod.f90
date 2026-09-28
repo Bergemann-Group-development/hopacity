@@ -450,12 +450,15 @@ contains
   END SUBROUTINE hermite_derivative
 
   !===============================================================================
+  !  Cubic-Hermite interpolation of the nodes (x, y, dydx) at xx, held constant
+  !  outside [x(1), x(n)].
+  !===============================================================================
   PURE SUBROUTINE hermite_interpolation_single(yy,xx,x,y,dydx)
     real(kind=8), dimension(:), intent(in)  :: x,y,dydx
     real(8),intent(in) :: xx
     real(8),intent(out):: yy
     integer :: n,i
-    real(8) :: q,q2,q3,dx,p
+    real(8) :: dx
     !---------------------------------------------------------------------------
     n=size(x)
 
@@ -464,19 +467,10 @@ contains
     else if (xx>=x(n)) then
       yy = y(n)
     else
-
       i = searchsorted(x, xx, outbounds_ok=.true.)
-
       dx = x(i+1)-x(i)
-      q = (xx-x(i)) / dx
-      q2=q**2
-      q3=q2*q
-      p = 3.0d0*q2 - 2.0d0*q3
-
-      yy = (1.0d0-p)*y(i) + p*y(i+1) + dx * ((q3-2.0d0*q2 +q)*dydx(i) + (q3-q2)*dydx(i+1))
-
+      yy = hermite_value8((xx-x(i)) / dx, dx, y(i), y(i+1), dydx(i), dydx(i+1))
     end if
-
   END SUBROUTINE hermite_interpolation_single
 
   !===============================================================================
@@ -484,33 +478,11 @@ contains
     real(kind=8), dimension(:), intent(in)  :: x,y,dydx
     real(8), dimension(:),intent(in) :: xx
     real(8), dimension(:),intent(out):: yy
-    integer :: n,i,k
-    real(8) :: q,q2,q3,dx,p
+    integer :: k
     !---------------------------------------------------------------------------
-    n=size(x)
-
     do k=1,size(xx)
-
-      if (xx(k)<=x(1)) then
-        yy(k) = y(1)
-      else if (xx(k)>=x(n)) then
-        yy(k) = y(n)
-      else
-
-        i = searchsorted(x, xx(k), outbounds_ok=.true.)
-
-        dx = x(i+1)-x(i)
-        q = (xx(k)-x(i)) / dx
-        q2=q**2
-        q3=q2*q
-        p = 3.0d0*q2 - 2.0d0*q3
-
-        yy(k) = (1.0d0-p)*y(i) + p*y(i+1) + dx * ((q3-2.0d0*q2 +q)*dydx(i) + (q3-q2)*dydx(i+1))
-
-      end if
-
+      call hermite_interpolation_single(yy(k),xx(k),x,y,dydx)
     end do
-
   END SUBROUTINE hermite_interpolation_1d
 
   !===============================================================================
@@ -518,33 +490,13 @@ contains
     real(kind=8), dimension(:), intent(in)  :: x,y,dydx
     real(8), dimension(:),intent(in) :: xx
     real(4), dimension(:),intent(out):: yy
-    integer :: n,i,k
-    real(8) :: q,q2,q3,dx,p
+    real(8) :: y8
+    integer :: k
     !---------------------------------------------------------------------------
-    n=size(x)
-
     do k=1,size(xx)
-
-      if (xx(k)<=x(1)) then
-        yy(k) = y(1)
-      else if (xx(k)>=x(n)) then
-        yy(k) = y(n)
-      else
-
-        i = searchsorted(x, xx(k), outbounds_ok=.true.)
-
-        dx = x(i+1)-x(i)
-        q = (xx(k)-x(i)) / dx
-        q2=q**2
-        q3=q2*q
-        p = 3.0d0*q2 - 2.0d0*q3
-
-        yy(k) = (1.0d0-p)*y(i) + p*y(i+1) + dx * ((q3-2.0d0*q2 +q)*dydx(i) + (q3-q2)*dydx(i+1))
-
-      end if
-
+      call hermite_interpolation_single(y8,xx(k),x,y,dydx)
+      yy(k) = y8
     end do
-
   END SUBROUTINE hermite_interpolation_1d4
 
   !===============================================================================

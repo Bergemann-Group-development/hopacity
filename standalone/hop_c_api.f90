@@ -28,8 +28,8 @@ MODULE hop_c_api
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
-  USE linelist_mod, only: ll_profile, voigt_kernel, &
-                          print_ll_particle, interval_t, merge_intervals
+  USE linelist_mod, only: ll_profile, voigt_kernel
+  USE op_math_mod,  only: interval_t, merge_intervals
   USE qlg,          only: qlg_init
   USE osmet_mod,    only: eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase, vac2air
@@ -199,8 +199,7 @@ CONTAINS
   FUNCTION hop_write_linelist(path) RESULT(status) BIND(c, name='hop_write_linelist')
     character(kind=c_char), intent(in) :: path(*)
     integer(c_int) :: status
-    integer, allocatable :: iso_values(:)
-    integer :: lunit, i, j, k, niso, iostat
+    integer :: lunit, iostat
     !---------------------------------------------------------------------------
     status = 0
     if (.not. allocated(comp)) then
@@ -213,32 +212,8 @@ CONTAINS
       call fail('hop_write_linelist: cannot open the output file', 3, status)
       return
     end if
-    if (allocated(comp%elements)) then
-      do i = 1, comp%nel
-        if (.not. allocated(comp%elements(i)%ions)) cycle
-        do j = lbound(comp%elements(i)%ions, 1), ubound(comp%elements(i)%ions, 1)
-          call write_particle(comp%elements(i)%ions(j))
-        end do
-      end do
-    end if
-    if (allocated(comp%molecules)) then
-      do i = 1, comp%nmolec
-        call write_particle(comp%molecules(i))
-      end do
-    end if
+    call comp%write_linelists(lunit)
     close(lunit)
-  contains
-    subroutine write_particle (ptc)
-      class(particle_type), target :: ptc
-      !-------------------------------------------------------------------------
-      if (.not. allocated(ptc%ll)) return       ! no SoA linelists were built
-      niso = 0
-      if (associated(ptc%isotope)) niso = size(ptc%isotope)
-      if (allocated(iso_values)) deallocate(iso_values)
-      allocate(iso_values(niso))
-      iso_values = [(ptc%isotope(k)%iso, k=1, niso)]
-      call print_ll_particle(lunit, ptc%id, iso_values, ptc%ll)
-    end subroutine write_particle
   END FUNCTION hop_write_linelist
 
   !-----------------------------------------------------------------------------

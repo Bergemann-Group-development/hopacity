@@ -10,6 +10,11 @@ MODULE op_math_mod
     module procedure searchsorted4, searchsorted8
   end interface searchsorted
 
+  ! A wavelength range [blue_vac, red_vac]; the line-list masks hold vacuum Angstrom
+  type, public :: interval_t
+    real(dp) :: blue_vac, red_vac
+  end type interval_t
+
 contains
 
   !====================================================================================
@@ -483,4 +488,93 @@ contains
     n1    = ceiling((pmax1 - pmin1)/dc(1)) + 1 + 2*np
     n2    = ceiling((pmax2 - pmin2)/dc(2)) + 1 + 2*np
   END SUBROUTINE pca_grid_2d
+  !=====================================================================================
+  ! Build a union of wavelength windows and return it sorted and merged.
+  ! Input:
+  !   windows(:,1) = blue edges [Angstrom]
+  !   windows(:,2) = red edges [Angstrom]
+  !   dlam = expansion margin (in Angstrom)
+  ! Output:
+  !   merged_intervals = sorted, non-overlapping intervals
+  !   n_merged = number of merged intervals
+  !
+  ! The routine:
+  ! 1. Expands each window by dlam on both sides
+  ! 2. Clamps the lower edge to a physically valid wavelength
+  ! 3. Sorts the expanded intervals
+  ! 4. Merges overlapping or touching intervals
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
+    real(dp), intent(in) :: windows(:,:)
+    integer, intent(in) :: n_windows
+    real(dp), intent(in) :: dlam
+    type(interval_t), intent(out), allocatable :: merged_intervals(:)
+    integer, intent(out) :: n_merged
+    type(interval_t), allocatable :: expanded(:)
+    integer :: i, j
+    real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
+    !-----------------------------------------------------------------------------------
+
+    if (n_windows <= 0) then
+      allocate(merged_intervals(0))
+      n_merged = 0
+      return
+    end if
+
+    ! Step 1: Expand windows by dlam
+    allocate(expanded(n_windows))
+    do i = 1, n_windows
+      expanded(i)%blue_vac = max(windows(i,1) - dlam, min_lam)
+      expanded(i)%red_vac  = windows(i,2) + dlam
+    end do
+
+    ! Step 2: Sort by blue edge
+    call sort_intervals(expanded, n_windows)
+
+    ! Step 3: Merge overlapping/touching intervals
+    allocate(merged_intervals(n_windows))  ! worst case: no merging
+    n_merged = 1
+    merged_intervals(1) = expanded(1)
+
+    do i = 2, n_windows
+      ! if current interval starts before or at the end of the last merged one, merge them
+      if (expanded(i)%blue_vac <= merged_intervals(n_merged)%red_vac) then
+        ! merge: extend the red edge if needed
+        merged_intervals(n_merged)%red_vac = max(merged_intervals(n_merged)%red_vac, &
+                                                  expanded(i)%red_vac)
+      else
+        ! gap: start a new merged interval
+        n_merged = n_merged + 1
+        merged_intervals(n_merged) = expanded(i)
+      end if
+    end do
+
+    ! trim to actual size
+    if (n_merged < n_windows) then
+      merged_intervals = merged_intervals(1:n_merged)
+    end if
+
+  END SUBROUTINE merge_intervals
+
+  !=====================================================================================
+  ! Sort an array of intervals by blue edge (ascending).
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE sort_intervals(intervals, n)
+    type(interval_t), intent(inout) :: intervals(:)
+    integer, intent(in) :: n
+    integer :: i, j
+    type(interval_t) :: temp
+    !-----------------------------------------------------------------------------------
+    ! simple bubble sort for small arrays
+    do i = 1, n-1
+      do j = i+1, n
+        if (intervals(j)%blue_vac < intervals(i)%blue_vac) then
+          temp = intervals(i)
+          intervals(i) = intervals(j)
+          intervals(j) = temp
+        end if
+      end do
+    end do
+  END SUBROUTINE sort_intervals
+
 END MODULE op_math_mod

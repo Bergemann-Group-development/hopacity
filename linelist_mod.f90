@@ -29,9 +29,9 @@ MODULE linelist_mod
   USE const_mod
   USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: air2vac, vac2air
-  USE op_math_mod, only: find_closest
-  USE bbtrans_mod, only: disable_ga, disable_stark, disable_vdw, &
-                         f_conv, tol => tolerance, line_reject_frac
+  USE op_math_mod, only: find_closest, interval_t
+  USE bbtrans_mod, only: f_conv, tol => tolerance, line_reject_frac, &
+                         prepare_radiative, prepare_stark, prepare_vanderwaals
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
   ! The one Voigt kernel. qlg_bot_sweep is the window form, used by add_opacity_equi;
@@ -45,12 +45,7 @@ MODULE linelist_mod
   public :: add_particle_opacity
   public :: append_line, append_h_line, write_ll_header, write_ll_record, bij_const
   public :: reserve_linelist, print_ll_particle, print_ll_atom, merge_ll_diag
-  public :: merge_intervals, in_any_interval
-
-  ! Interval type: represents a wavelength range [blue_vac, red_vac] in vacuum Angstrom
-  type, public :: interval_t
-    real(dp) :: blue_vac, red_vac
-  end type interval_t
+  public :: in_any_interval
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
@@ -170,86 +165,55 @@ contains
 
     call grow(ll, nkeep)
 
-    call trace%begin ('ll_build_parse', itimer=it_parse)
-    if (present(intervals)) then
-      ! multi-window: iterate the record blocks found above and check intervals
-      k = ll%nline
-      do ib = 1, nblk
-      do i = blk_lo(ib), blk_hi(ib)
-        call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
-        lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
-        gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
-        r_i = fields(7); r_j = fields(8)
-        lam_vac = air2vac(lam_air)
-        if (.not. in_any_interval(lam_vac, intervals)) cycle
-
-        k = k + 1
-        ll%nline = k
-        nu0   = HZ_TO_AA / lam_vac
-        ll%llam0(k)    = log(lam_vac)
-        ll%nu0(k)      = nu0
-        ll%lower_ev(k) = lower_ev
-        ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
-        ll%lev_i(k)    = nint(r_i)
-        ll%lev_j(k)    = nint(r_j)
-        ll%active(k)   = .true.
-        ll%used(k)     = .false.
-        ll%strength(k) = 0
-        ll%reach(k)    = 0
-        ll%reach_in(k) = merge(real(fields(10) / lam_vac, 4), -1.0, nvalue >= 10)
-        ll%loggf(k)    = loggf
-        ll%gv_in(k)    = gv_in
-        ll%ga_in(k)    = ga_in
-        ll%gq_in(k)    = gq_in
-
-        call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
-        call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
-        call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
-                                  lower_ev, ion_j, xion, vbar2e4, is_mol)
-        ll%ga(k)  = ga_t
-        ll%gq(k)  = gq_t
-        ll%gw1(k) = gw1_t
-        ll%gw2(k) = gw2_t
-      end do
-      end do
-    else
-      ! single-window or no mask: use the contiguous slice [lo:hi]
-      do i = lo, hi
-        call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
-        lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
-        gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
-        r_i = fields(7); r_j = fields(8)
-
-        k = ll%nline + 1
-        ll%nline = k
-        lam_vac = air2vac(lam_air)
-        nu0   = HZ_TO_AA / lam_vac
-        ll%llam0(k)    = log(lam_vac)
-        ll%nu0(k)      = nu0
-        ll%lower_ev(k) = lower_ev
-        ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
-        ll%lev_i(k)    = nint(r_i)
-        ll%lev_j(k)    = nint(r_j)
-        ll%active(k)   = .true.
-        ll%used(k)     = .false.
-        ll%strength(k) = 0
-        ll%reach(k)    = 0
-        ll%reach_in(k) = merge(real(fields(10) / lam_vac, 4), -1.0, nvalue >= 10)
-        ll%loggf(k)    = loggf
-        ll%gv_in(k)    = gv_in
-        ll%ga_in(k)    = ga_in
-        ll%gq_in(k)    = gq_in
-
-        call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
-        call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
-        call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
-                                  lower_ev, ion_j, xion, vbar2e4, is_mol)
-        ll%ga(k)  = ga_t
-        ll%gq(k)  = gq_t
-        ll%gw1(k) = gw1_t
-        ll%gw2(k) = gw2_t
-      end do
+    ! a single-window or unmasked selection is the one contiguous block [lo:hi]
+    if (.not. allocated(blk_lo)) then
+      nblk = 1
+      blk_lo = [lo]
+      blk_hi = [hi]
     end if
+
+    call trace%begin ('ll_build_parse', itimer=it_parse)
+    k = ll%nline
+    do ib = 1, nblk
+    do i = blk_lo(ib), blk_hi(ib)
+      call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
+      lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
+      gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
+      r_i = fields(7); r_j = fields(8)
+      lam_vac = air2vac(lam_air)
+      if (present(intervals)) then
+        if (.not. in_any_interval(lam_vac, intervals)) cycle
+      end if
+
+      k = k + 1
+      ll%nline = k
+      nu0   = HZ_TO_AA / lam_vac
+      ll%llam0(k)    = log(lam_vac)
+      ll%nu0(k)      = nu0
+      ll%lower_ev(k) = lower_ev
+      ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
+      ll%lev_i(k)    = nint(r_i)
+      ll%lev_j(k)    = nint(r_j)
+      ll%active(k)   = .true.
+      ll%used(k)     = .false.
+      ll%strength(k) = 0
+      ll%reach(k)    = 0
+      ll%reach_in(k) = merge(real(fields(10) / lam_vac, 4), -1.0, nvalue >= 10)
+      ll%loggf(k)    = loggf
+      ll%gv_in(k)    = gv_in
+      ll%ga_in(k)    = ga_in
+      ll%gq_in(k)    = gq_in
+
+      call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
+      call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
+      call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
+                                lower_ev, ion_j, xion, vbar2e4, is_mol)
+      ll%ga(k)  = ga_t
+      ll%gq(k)  = gq_t
+      ll%gw1(k) = gw1_t
+      ll%gw2(k) = gw2_t
+    end do
+    end do
     call trace%end(it_parse)
   END SUBROUTINE build_linelist
 
@@ -1193,109 +1157,6 @@ contains
     end do
   END SUBROUTINE select_lines
 
-  !=====================================================================================
-  ! Ported broadening setup (scalar versions of the bbtrans_mod prepare_* routines).
-  ! Results are scaled by over_4pi/nu0, as there.
-  !-------------------------------------------------------------------------------------
-  PURE SUBROUTINE prepare_radiative(ga, ga_in, nu0, loggf)
-    real(dp), intent(out) :: ga
-    real(dp), intent(in)  :: ga_in, nu0, loggf
-    !-----------------------------------------------------------------------------------
-    if (ga_in == 0) then
-      ! as in Korg, g_u A_ul; see bbtrans_mod prepare_Radiative for the other codes
-      ga = f_conv * 10**loggf * nu0**2
-    else
-      ga = ga_in                      ! radiative damping rate, 1/s
-    end if
-    ga = ga * over_4pi / nu0
-    if (disable_ga) ga = 0
-  END SUBROUTINE prepare_radiative
-
-  !-------------------------------------------------------------------------------------
-  PURE SUBROUTINE prepare_stark(gq, gq_in, nu0, lower_ev, j, cnt_ev)
-    real(dp), intent(out) :: gq
-    real(dp), intent(in)  :: gq_in, nu0, lower_ev, cnt_ev
-    integer,  intent(in)  :: j
-    real(dp), parameter :: scale = 1e4**(-one_sixth)   ! (T/1e4 K)**(1/6), with T**(1/6) in stark_pe
-    real(dp), parameter :: c19 = log10(39. * (8. / (PI*EM*BK**5))**one_sixth) ! ~19.4
-    real(dp) :: upper_ev, c1
-    !-----------------------------------------------------------------------------------
-    gq = 0
-    if (gq_in < -10) then
-      gq = - BK * 10**(c19 + two_third*gq_in)   ! recipe c4 SIU (Gray 2005, eqs. 11.26-11.27); sign marks recipe
-    elseif (gq_in < 0) then
-      gq = - 10**gq_in * scale                  ! sign marks recipe
-    elseif (gq_in == 0) then
-      upper_ev = lower_ev + H_E * nu0
-      if (lower_ev < cnt_ev) then
-        ! Cowley (1971) eqs. 5 and 6 at 1e4 K, which he recommends using at all T;
-        ! c1 is n*^4 of the upper level (his eq. 4)
-        c1 = (j**2 * RydV / (cnt_ev - upper_ev))**2
-        if (j == 1) then
-          gq = 2.26e-7 * c1
-        else
-          gq = 5.42e-7 * c1 / (j+1)**2
-        end if
-      end if
-    else
-      gq = gq_in
-    end if
-    gq = gq * over_4pi / nu0
-    if (disable_stark) gq = 0
-  END SUBROUTINE prepare_stark
-
-  !-------------------------------------------------------------------------------------
-  PURE SUBROUTINE prepare_vanderwaals(gw1, gw2, unsold, gv, nu0, lower_ev, lower_ion, &
-                                      cnt_ev, vbar2e4, is_mol)
-    real(dp), intent(out) :: gw1, gw2
-    logical,  intent(out) :: unsold
-    real(dp), intent(in)  :: gv, nu0, lower_ev, cnt_ev, vbar2e4
-    integer,  intent(in)  :: lower_ion
-    logical,  intent(in)  :: is_mol
-    real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625
-    ! uns = 17*C_U**0.4 (CGS, energies in eV). Unsold (1955, eqs. 82.48 and 82.55) gives
-    ! gamma_6 = 17 C6**0.4 v**0.6 N with C6 = 1.61e-33*(13.5*Z)**2*[...], i.e. C_U = 2.93e-31
-    ! and uns = 1.041e-11; Gray (2005, eq. 11.30) uses C_U = 3.0e-31. The factors below
-    ! correspond to C_U = 3.22e-31, which makes these widths 3.7% larger than Unsold's.
-    real(dp), parameter :: uns = 8.411 * 1.283984e-12
-    real(dp), parameter :: barklem = (1e-2 * Rbohr)**2
-    !-----------------------------------------------------------------------------------
-    gw1 = 0
-    gw2 = 0
-    unsold = .false.
-    if (gv >= 20.0) then
-      ! Barklem cross section + velocity exponent
-      sigma  = barklem * int(gv)
-      alpha  = gv - int(gv)
-      gx     = 1.0 - 0.5*alpha
-      gammaf = 1 + (-.5748646 + (.9512363 + (-.6998588 + (.4245549 - .1010678*gx)*gx)*gx)*gx)*gx
-      balfac = (4.0/pi)**(0.5*alpha) * gammaf * 2.e10
-      gw2 = 0.5*(1 - alpha)
-      gw1 = balfac * sigma * 10**(-12*gw2)
-    elseif (.not. is_mol) then    ! Unsold is not used for molecules
-      unsold = .true.
-      if (gv < -20.0) then
-        c625 = 10**(0.4 * gv)       ! recipe c6 SIU
-        gw1  = 17. * c625
-      elseif (gv < 0.0) then
-        gw1 = 10**gv / (vbar2e4)**0.3  ! recipe 'W' Turbospectrum
-      elseif (gv /= 0.0) then
-        upper_ev = lower_ev + H_E * nu0
-        if (lower_ev < cnt_ev) then    ! Unsold approximation
-          c1 = 1./(cnt_ev - upper_ev)**2 - 1./(cnt_ev - lower_ev)**2
-          if (c1 > 0) then
-            c625 = (lower_ion**2 * c1)**0.4
-            gw1  = gv * uns * c625
-          end if
-        end if
-      end if
-    end if
-    gw1 = gw1 * over_4pi / nu0
-    if (disable_vdw) then
-      unsold = .true.
-      gw1 = 0
-    end if
-  END SUBROUTINE prepare_vanderwaals
 
   !=====================================================================================
   ! linelist_out.txt writers -- one block per (species, isotope), in the same format
@@ -1845,93 +1706,5 @@ contains
     end do
   END FUNCTION in_any_interval
 
-  !=====================================================================================
-  ! Build a union of intervals from output segments and return them sorted and merged.
-  ! Input:
-  !   windows(:,1) = blue edges (in vacuum Angstrom)
-  !   windows(:,2) = red edges (in vacuum Angstrom)
-  !   dlam = expansion margin (in Angstrom)
-  ! Output:
-  !   merged_intervals = sorted, non-overlapping intervals
-  !   n_merged = number of merged intervals
-  !
-  ! The routine:
-  ! 1. Expands each window by dlam on both sides
-  ! 2. Clamps the lower edge to a physically valid wavelength
-  ! 3. Sorts the expanded intervals
-  ! 4. Merges overlapping or touching intervals
-  !-------------------------------------------------------------------------------------
-  SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
-    real(dp), intent(in) :: windows(:,:)
-    integer, intent(in) :: n_windows
-    real(dp), intent(in) :: dlam
-    type(interval_t), intent(out), allocatable :: merged_intervals(:)
-    integer, intent(out) :: n_merged
-    type(interval_t), allocatable :: expanded(:)
-    integer :: i, j
-    real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
-    !-----------------------------------------------------------------------------------
-
-    if (n_windows <= 0) then
-      allocate(merged_intervals(0))
-      n_merged = 0
-      return
-    end if
-
-    ! Step 1: Expand windows by dlam
-    allocate(expanded(n_windows))
-    do i = 1, n_windows
-      expanded(i)%blue_vac = max(windows(i,1) - dlam, min_lam)
-      expanded(i)%red_vac  = windows(i,2) + dlam
-    end do
-
-    ! Step 2: Sort by blue edge
-    call sort_intervals(expanded, n_windows)
-
-    ! Step 3: Merge overlapping/touching intervals
-    allocate(merged_intervals(n_windows))  ! worst case: no merging
-    n_merged = 1
-    merged_intervals(1) = expanded(1)
-
-    do i = 2, n_windows
-      ! if current interval starts before or at the end of the last merged one, merge them
-      if (expanded(i)%blue_vac <= merged_intervals(n_merged)%red_vac) then
-        ! merge: extend the red edge if needed
-        merged_intervals(n_merged)%red_vac = max(merged_intervals(n_merged)%red_vac, &
-                                                  expanded(i)%red_vac)
-      else
-        ! gap: start a new merged interval
-        n_merged = n_merged + 1
-        merged_intervals(n_merged) = expanded(i)
-      end if
-    end do
-
-    ! trim to actual size
-    if (n_merged < n_windows) then
-      merged_intervals = merged_intervals(1:n_merged)
-    end if
-
-  END SUBROUTINE merge_intervals
-
-  !=====================================================================================
-  ! Sort an array of intervals by blue edge (ascending).
-  !-------------------------------------------------------------------------------------
-  SUBROUTINE sort_intervals(intervals, n)
-    type(interval_t), intent(inout) :: intervals(:)
-    integer, intent(in) :: n
-    integer :: i, j
-    type(interval_t) :: temp
-    !-----------------------------------------------------------------------------------
-    ! simple bubble sort for small arrays
-    do i = 1, n-1
-      do j = i+1, n
-        if (intervals(j)%blue_vac < intervals(i)%blue_vac) then
-          temp = intervals(i)
-          intervals(i) = intervals(j)
-          intervals(j) = temp
-        end if
-      end do
-    end do
-  END SUBROUTINE sort_intervals
 
 END MODULE linelist_mod
