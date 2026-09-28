@@ -950,10 +950,8 @@ contains
     class(element_type), intent(in) :: element
     integer :: j
     !-----------------------------------------------------------------------------
-    element_has_lines = .false.
-    do j=lbound(element%ions,1), ubound(element%ions,1)
-      if (has_lines(element%ions(j))) element_has_lines = .true.
-    end do
+    element_has_lines = any([(has_lines(element%ions(j)), &
+                              j=lbound(element%ions,1), ubound(element%ions,1))])
   END FUNCTION element_has_lines
 
   !===============================================================================
@@ -1554,26 +1552,27 @@ contains
   SUBROUTINE merge_line_diagnostics(self, src)
     class(composition_type), target :: self
     class(composition_type), intent(in) :: src
-    integer :: i, j, k
+    integer :: i, j
     !-----------------------------------------------------------------------------
     do i=1, self%nel
       do j=lbound(self%elements(i)%ions,1), ubound(self%elements(i)%ions,1)
-        associate (dst_p => self%elements(i)%ions(j), src_p => src%elements(i)%ions(j))
-          if (.not. allocated(dst_p%ll) .or. .not. allocated(src_p%ll)) cycle
-          do k=lbound(dst_p%ll,1), ubound(dst_p%ll,1)
-            call merge_ll_diag(dst_p%ll(k), src_p%ll(k))
-          end do
-        end associate
+        call merge_particle(self%elements(i)%ions(j), src%elements(i)%ions(j))
       end do
     end do
     do i=1, self%nmolec
-      associate (dst_p => self%molecules(i), src_p => src%molecules(i))
-        if (.not. allocated(dst_p%ll) .or. .not. allocated(src_p%ll)) cycle
-        do k=lbound(dst_p%ll,1), ubound(dst_p%ll,1)
-          call merge_ll_diag(dst_p%ll(k), src_p%ll(k))
-        end do
-      end associate
+      call merge_particle(self%molecules(i), src%molecules(i))
     end do
+  contains
+    subroutine merge_particle (dst_p, src_p)
+      class(particle_type), intent(inout) :: dst_p
+      class(particle_type), intent(in) :: src_p
+      integer :: k
+      !---------------------------------------------------------------------------
+      if (.not. allocated(dst_p%ll) .or. .not. allocated(src_p%ll)) return
+      do k=lbound(dst_p%ll,1), ubound(dst_p%ll,1)
+        call merge_ll_diag(dst_p%ll(k), src_p%ll(k))
+      end do
+    end subroutine merge_particle
   END SUBROUTINE merge_line_diagnostics
 
   !===============================================================================

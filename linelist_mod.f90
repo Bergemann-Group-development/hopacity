@@ -323,8 +323,8 @@ contains
   !=====================================================================================
   ! Append one H I line-list line with principal quantum numbers n_lo -> n_up. Only the
   ! identification is stored: add_h_opacities rebuilds the Stark, resonance and van der
-  ! Waals widths from (n_lo, n_up, nu0) with hydrogen_line, so ga/gw1/gw2/gq stay 0.
-  ! lev_i/lev_j start as n_lo/n_up.
+  ! Waals widths from (n_lo, n_up, nu0) with hydrogen_line and Bij from loggf, so
+  ! gpref/ga/gw1/gw2/gq stay 0. lev_i/lev_j start as n_lo/n_up.
   !-------------------------------------------------------------------------------------
   SUBROUTINE append_h_line(ll, llam0, nu0, lower_ev, loggf, gv_in, ga_in, gq_in, &
                            n_lo, n_up)
@@ -341,7 +341,7 @@ contains
     ll%llam0(k)    = llam0
     ll%nu0(k)      = nu0
     ll%lower_ev(k) = lower_ev
-    ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
+    ll%gpref(k)    = 0
     ll%ga(k)       = 0
     ll%gw1(k)      = 0
     ll%gw2(k)      = 0

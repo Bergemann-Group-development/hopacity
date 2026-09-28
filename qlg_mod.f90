@@ -453,14 +453,13 @@ contains
   !##  one point at a time on abscissae that are not uniform ramps:
   !##
   !##    hprofl_mod        hydrogen fine-structure components, per component per point
+  !##                      (through the split qlg_bot_coef / qlg_bot_eval form below)
   !##    rt_patch_mod      the NLTE rate integrals, over line%q
   !##    linelist_mod      add_opacity, the non-uniform-grid twin of add_opacity_equi,
   !##                      and the NLTE rate accumulation
   !##
-  !##  These used to call bbtrans_mod's voigt_function2 and voigt_profile (Traving /
-  !##  Eriksson, Landolt-Bornstein), which are now deleted.  qlg_bot_phi and
-  !##  qlg_bot_profile are their replacements in the same two conventions, so those call
-  !##  sites change by name only.
+  !##  qlg_bot_phi takes the Doppler-unit offset v; qlg_bot_profile takes the relative
+  !##  detuning q with 1/df and applies the nu/nu0 Jacobian.
   !##
   !##  COST.  A one-point call redoes QLG-bot's per-line setup -- the half-width, r, and
   !##  the three coefficient polynomials, ~15 flops -- which the sweep form amortises over

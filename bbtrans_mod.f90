@@ -1,7 +1,6 @@
 MODULE bbtrans_mod
   USE prec_mod
   USE const_mod
-  USE hop_env_mod, only: trace
   implicit none
 
   type :: bbtrans_type
@@ -56,20 +55,9 @@ contains
   END SUBROUTINE init_einstein_coefficients
 
   !====================================================================================
-  ! THE VOIGT ROUTINES USED TO LIVE HERE.
-  !
-  ! voigt_function2 (Traving / Eriksson 1974, after Landolt-Bornstein) and voigt_profile
-  ! (the same branch tree on the relative-frequency abscissa, with the nu/nu0 Jacobian)
-  ! were this module's pointwise Voigt evaluations, and the three unused variants beside
-  ! them -- voigt_function, new_voigt, dirty_voigt -- their earlier drafts.
-  !
-  ! All five are gone. HOP/qlg_mod.f90 is the one Voigt kernel now: qlg_bot_sweep for a
-  ! whole line window, and qlg_bot_phi / qlg_bot_profile for a single point in the two
-  ! conventions the first two had. See linelist_mod's kernel note for why QLG-bot, and
-  ! the `voigt-kernel-zoo` branch for what it was measured against.
-  !
-  ! pseudo_voigt, further down, is a different thing -- a fitted line shape for the
-  ! convolution kernels -- and stays.
+  ! Voigt profiles are evaluated in HOP/qlg_mod.f90 (qlg_bot_sweep for a line window,
+  ! qlg_bot_phi / qlg_bot_profile for single points). pseudo_voigt, further down, is a
+  ! fitted line shape for the convolution kernels.
   !------------------------------------------------------------------------------------
 
   !====================================================================================

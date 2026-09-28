@@ -215,8 +215,6 @@ contains
     if (size(chi, 2) /= m(1)) &
       error stop 'hprofl add_h_opacities: chi/eta extent does not match the cell range'
 
-    !phi = debug_hprofl(3,4,18751.05d0,18756.05D0,4e3,1e13,1e17,1e16,1e-7)
-
     do k=1, m(3)
       do j=1, m(2)
         do i=lo, hi
@@ -249,7 +247,6 @@ contains
             phi = hprofile(h, hc, q)
             lchi = phi * cchi
             leta = phi * ceta
-            !if (lymanalf .and. k==m(3)) print *, f, phi, cchi, ceta/(exp(HH*nu(f)/(BK*temp(i,j,k)))-1.0)
             chi(f,io,j,k) = chi(f,io,j,k) + lchi
             eta(f,io,j,k) = eta(f,io,j,k) + leta
             if (f==f0) then
@@ -266,12 +263,10 @@ contains
             phi = hprofile(h, hc, q)
             lchi = phi * cchi
             leta = phi * ceta
-            !if (lymanalf .and. k==m(3)) print *, f, phi, cchi, ceta/(exp(HH*nu(f)/(BK*temp(i,j,k)))-1.0)
             chi(f,io,j,k) = chi(f,io,j,k) + lchi
             eta(f,io,j,k) = eta(f,io,j,k) + leta
             f = f - 1
           end do
-          !if (lymanalf .and. k==m(3)) stop
         end do
       end do
     end do
@@ -618,26 +613,6 @@ contains
     self%wt  = h%wt(1:h%io)
     self%da  = spread(0d0, 1, h%io)
   END SUBROUTINE prepare_hydrogen_damping
-
-  !====================================================================================
-  ! The hydrogen_line record of a transition prepared by prepare_hydrogen_damping.
-  !------------------------------------------------------------------------------------
-  FUNCTION hline_of (self) result(h)
-    class(bbtrans_type), intent(in) :: self
-    type(hline_t) :: h
-    !----------------------------------------------------------------------------------
-    h%n   = self%i
-    h%m   = self%j
-    h%nu0 = self%nu0
-    h%ga  = self%ga
-    h%gq  = self%gq
-    h%gw1 = self%gw1
-    h%gw2 = self%gw2
-    h%gw3 = self%gw3
-    h%io  = self%io
-    h%dq(1:h%io) = self%dq(1:h%io)
-    h%wt(1:h%io) = self%wt(1:h%io)
-  END FUNCTION hline_of
 
   !===============================================================================
   FUNCTION lyman_interp(arr, dx, x0, newx) result(out)
@@ -1031,29 +1006,5 @@ contains
       vcse1f = (x*(x+2.334733)+0.25062)/(x*(x+3.330657)+ 1.681534)/x*exp(-x)
     end if
   END FUNCTION vcse1f
-
-  !====================================================================================
-  FUNCTION debug_hprofl(n,m,wave,waveh,t,xne,h1frc,he1frc,dopph) result(phi)
-    integer, intent(in) :: n, m
-    real(8), intent(in) :: wave, waveh
-    real(4), intent(in) :: t, xne, h1frc, he1frc, dopph
-    real(4) :: phi
-    real(4) :: t43, t3nhe, fo, vbar2h
-    real(8) :: nu, q
-    type(hline_t) :: line
-    type(hcell_t) :: c
-    !----------------------------------------------------------------------------------
-    line = hydrogen_line(n, m, cc * 1.0d8 / waveh)
-
-    nu = cc * 1.0e8 / wave
-    q = (nu - line%nu0) / line%nu0
-
-    t43 = (t/10000.)**0.3
-    t3nhe = t43*he1frc
-    fo = 1.25e-9*xne**0.66667 ! holtsmark normal field strength
-    vbar2h = 4.2008e8 * t
-    call hcell_prepare(line, t, xne, fo, vbar2h, h1frc, t3nhe, 1/dopph, c)
-    phi = hvoigt(line, c, q)
-  END FUNCTION debug_hprofl
 
 END MODULE
