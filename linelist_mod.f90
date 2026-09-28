@@ -1,20 +1,20 @@
 !=======================================================================================
 ! linelist_mod -- structure-of-arrays (SoA) bulk linelist handling.
 !
-! This is a fresh, performance-oriented reimplementation of the bulk metal/molecular
-! linelist opacity that lived, in array-of-structures (AoS) form, as particle%line(:)
-! (bbtrans_type); that AoS bb form now survives only for hydrogen (Stark profiles).
+! Every line-list line of a composition particle lives in its linelist_type, one per
+! isotope. Metals and molecules go through the kernels here; the H I lines keep their
+! Stark-profile kernel (hprofl_mod%add_h_opacities, driven by composition_mod) and add
+! only their principal quantum numbers to the store (append_h_line).
 ! The plain linelist_type data
 ! container lives in the leaf module line_types_mod, so that particle_type (ion_mod) can
 ! embed it without depending on this heavy module. That inversion lets linelist_mod, in
 ! turn, USE ion_mod and drive the opacity kernels directly from a particle_type (see
 ! add_particle_opacity), while the low-level kernels still take plain patch work arrays.
 !
-! Key differences from the AoS path:
-!   * SoA storage: one linelist_type per particle, parallel arrays over lines.
+! The metal/molecule kernel:
 !   * The opacity kernel (add_opacity) loops the SPATIAL domain in the outer loop, then
 !     lines (sorted ascending in wavelength), then frequencies. A monotonic frequency
-!     cursor ("march") replaces the per-line get_center search.
+!     cursor ("march") locates each line centre.
 !   * Works in log(lambda): the thermal Doppler width is constant per cell and the
 !     Doppler shift is additive, so the profile abscissa is vs = idf*(llam(f) - llc).
 !   * loggf is folded into the Boltzmann exponential, exp(loggf*ln10 - ex), instead of
@@ -31,7 +31,7 @@ MODULE linelist_mod
   USE handyfuncs_mod, only: air2vac, vac2air
   USE op_math_mod, only: find_closest
   USE bbtrans_mod, only: disable_ga, disable_stark, disable_vdw, &
-                         f_conv, tol => tolerance, bbtrans_type, line_reject_frac
+                         f_conv, tol => tolerance, line_reject_frac
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
   ! The one Voigt kernel. qlg_bot_sweep is the window form, used by add_opacity_equi;
@@ -43,8 +43,8 @@ MODULE linelist_mod
 
   public :: build_linelist, finalize_linelist, add_opacity, add_opacity_equi, voigt_peak
   public :: add_particle_opacity
-  public :: append_line, write_ll_header, write_ll_record, bij_const
-  public :: reserve_linelist, print_ll_particle, print_ll_atom
+  public :: append_line, append_h_line, write_ll_header, write_ll_record, bij_const
+  public :: reserve_linelist, print_ll_particle, print_ll_atom, merge_ll_diag
   public :: voigt_kernel_init, merge_intervals, in_any_interval
 
   ! Interval type: represents a wavelength range [blue_vac, red_vac] in vacuum Angstrom
@@ -57,7 +57,7 @@ MODULE linelist_mod
   real(dp), parameter :: over_h4pi = 1.0_dp / h_4pi
   real(4),  parameter :: over_pi   = 0.3183098862
   real(4),  parameter :: sqrt_pi   = 1.7724538509
-  real(dp), parameter :: ex_cutoff = -85.0_dp  ! skip lines whose log(Rij) underflows
+  real(4),  parameter :: ex_cutoff = -85.0     ! skip lines whose log(Rij) underflows
   ! 1/sqrt(pi): the peak of the profile in qlg_bot_phi's convention, at a = v = 0. The
   ! tolerance pre-tests below rely on it being an exact upper bound.
   real(4), parameter  :: voigt_peak = 0.5641895835
@@ -321,6 +321,48 @@ contains
   END SUBROUTINE append_line
 
   !=====================================================================================
+  ! Append one H I line-list line with principal quantum numbers n_lo -> n_up. Only the
+  ! identification is stored: add_h_opacities rebuilds the Stark, resonance and van der
+  ! Waals widths from (n_lo, n_up, nu0) with hydrogen_line, so ga/gw1/gw2/gq stay 0.
+  ! lev_i/lev_j start as n_lo/n_up.
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE append_h_line(ll, llam0, nu0, lower_ev, loggf, gv_in, ga_in, gq_in, &
+                           n_lo, n_up)
+    type(linelist_type), intent(inout) :: ll
+    real(8), intent(in) :: llam0, nu0, lower_ev, loggf, gv_in, ga_in, gq_in
+    integer, intent(in) :: n_lo, n_up
+    integer :: k
+    !-----------------------------------------------------------------------------------
+    call grow(ll, 1)
+    call growi(ll%n_lo, ll%nline, ll%nline + 1)
+    call growi(ll%n_up, ll%nline, ll%nline + 1)
+    k = ll%nline + 1
+    ll%nline = k
+    ll%llam0(k)    = llam0
+    ll%nu0(k)      = nu0
+    ll%lower_ev(k) = lower_ev
+    ll%gpref(k)    = loggf*ln10 + log(bij_const / nu0)
+    ll%ga(k)       = 0
+    ll%gw1(k)      = 0
+    ll%gw2(k)      = 0
+    ll%gq(k)       = 0
+    ll%unsold(k)   = .false.
+    ll%lev_i(k)    = n_lo
+    ll%lev_j(k)    = n_up
+    ll%n_lo(k)     = n_lo
+    ll%n_up(k)     = n_up
+    ll%active(k)   = .true.
+    ll%used(k)     = .false.
+    ll%strength(k) = 0
+    ll%reach(k)    = 0
+    ll%reach_in(k) = -1
+    ll%loggf(k)    = loggf
+    ll%gv_in(k)    = gv_in
+    ll%ga_in(k)    = ga_in
+    ll%gq_in(k)    = gq_in
+  END SUBROUTINE append_h_line
+
+  !=====================================================================================
   ! After all blocks for a particle have been appended, sort every parallel array by
   ! llam0 ascending so the kernel's monotonic march is valid across isotope blocks.
   !-------------------------------------------------------------------------------------
@@ -376,6 +418,10 @@ contains
     call permutel(ll%unsold,   idx)
     call permutel(ll%active,   idx)
     call permutel(ll%used,     idx)
+    if (allocated(ll%n_lo)) then
+      call permutei(ll%n_lo,    idx)
+      call permutei(ll%n_up,    idx)
+    end if
     ! model-atom extensions (bulk linelists leave these unallocated)
     if (allocated(ll%ipart)) then
       call permutei(ll%ipart,   idx)
@@ -467,7 +513,7 @@ contains
     integer  :: fe
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
     real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge, lref_o
-    real(8)  :: arg
+    real(4)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart, outside
     integer(8) :: c_visit, c_pass, c_voigt, c_march
@@ -602,7 +648,7 @@ contains
               bj = 1.0
             end if
 
-            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
+            ! damping parameter (physical, then scaled by idf)
             a = ll%ga(l)
             if (ll%unsold(l)) then
               a = a + ll%gw1(l) * unsold_c
@@ -617,7 +663,7 @@ contains
             a = a * idf
 
             if (outside) then
-              vm2 = max(real(arg - lref_o), a*Rij*over_pi/ref)
+              vm2 = max(arg - lref_o, a*Rij*over_pi/ref)
               dl  = sqrt(vm2) / idf
               ll%reach(l) = max(ll%reach(l), real(dl, 4))
               dl  = min(dl, real(ll%reach_in(l), 8))
@@ -634,7 +680,7 @@ contains
               ! a straight (data-independent) loop over [fa,fb], centre included,
               ! pipelines much better than a walk whose exit condition depends on
               ! the previous Voigt value. The unclipped half-width is the line's reach.
-              vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
+              vm2  = max(arg - lref_c, a*Rij*over_pi/ref)
               dl   = sqrt(vm2) / idf
               ll%reach(l) = max(ll%reach(l), real(dl, 4))
               edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
@@ -725,7 +771,7 @@ contains
     integer  :: fe
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
     real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, lref_o
-    real(8)  :: arg
+    real(4)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart, outside
     integer(8) :: c_visit, c_pass, c_voigt, c_fill
@@ -858,7 +904,7 @@ contains
               bj = 1.0
             end if
 
-            ! damping parameter (physical, then scaled by idf as in the AoS kernel)
+            ! damping parameter (physical, then scaled by idf)
             a = ll%ga(l)
             if (ll%unsold(l)) then
               a = a + ll%gw1(l) * unsold_c
@@ -901,7 +947,7 @@ contains
             if (outside) then
               ! the window is the extent at the chunk-end reference, capped by the reach
               ! and rounded to the nearest grid index like f0
-              vm2 = max(real(arg - lref_o), a*Rij*over_pi/ref)
+              vm2 = max(arg - lref_o, a*Rij*over_pi/ref)
               dl  = sqrt(vm2) / idf
               ll%reach(l) = max(ll%reach(l), real(dl, 4))
               dl  = min(dl, real(ll%reach_in(l), 8))
@@ -912,7 +958,7 @@ contains
             else
               ll%used(l) = .true.
               ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
-              vm2  = max(real(arg - lref_c), a*Rij*over_pi/ref)
+              vm2  = max(arg - lref_c, a*Rij*over_pi/ref)
               rnoff = sqrt(vm2) * nfac
               ! the unclipped half-width in log(lambda) is the line's reach
               ll%reach(l) = max(ll%reach(l), rnoff * real(dllam, 4))
@@ -1168,7 +1214,7 @@ contains
 
   !=====================================================================================
   ! Ported broadening setup (scalar versions of the bbtrans_mod prepare_* routines).
-  ! Results are scaled by over_4pi/nu0, identical to the AoS path.
+  ! Results are scaled by over_4pi/nu0, as there.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE prepare_radiative(ga, ga_in, nu0, loggf)
     real(dp), intent(out) :: ga
@@ -1278,8 +1324,7 @@ contains
   ! the half-width of the line's evaluation window, where its opacity falls to the
   ! tolerance times the continuum, maximised over the states the list was written from
   ! (ll%reach times the vacuum wavelength). init_linelist reads it back so a run can
-  ! select lines by it (add_opacity); detailed (AoS) hydrogen lines record none and
-  ! write 0.
+  ! select lines by it (add_opacity); hydrogen lines record none and write 0.
   !-------------------------------------------------------------------------------------
   SUBROUTINE write_ll_header(unit, id, iso, n)
     integer, intent(in) :: unit, iso, n
@@ -1299,17 +1344,33 @@ contains
   END SUBROUTINE write_ll_record
 
   !=====================================================================================
-  ! All linelist_out.txt blocks of one composition particle: for each isotope (main
-  ! first), a header plus the detailed AoS records (incl. hydrogen) and the bulk SoA
-  ! records that were used. ll is the per-isotope SoA array (0 = main, k = isotope
-  ! iso_values(k)); the AoS lines still carry their own iso_idx into iso_values.
+  ! Accumulate the used/strength/reach diagnostics of src into dst, two copies of the
+  ! same linelist (a composition and one of its per-patch copies), so dst ends up with
+  ! the maximum over every copy merged into it.
   !-------------------------------------------------------------------------------------
-  SUBROUTINE print_ll_particle(unit, id, iso_values, ll, lines)
+  SUBROUTINE merge_ll_diag(dst, src)
+    type(linelist_type), intent(inout) :: dst
+    type(linelist_type), intent(in) :: src
+    integer :: n
+    !-----------------------------------------------------------------------------------
+    n = dst%nline
+    if (n == 0) return
+    if (src%nline /= n) error stop 'merge_ll_diag: the linelists are not copies'
+    dst%used(1:n)     = dst%used(1:n) .or. src%used(1:n)
+    dst%strength(1:n) = max(dst%strength(1:n), src%strength(1:n))
+    dst%reach(1:n)    = max(dst%reach(1:n), src%reach(1:n))
+  END SUBROUTINE merge_ll_diag
+
+  !=====================================================================================
+  ! All linelist_out.txt blocks of one composition particle: for each isotope (main
+  ! first), a header plus the records that were used. ll is the per-isotope SoA array
+  ! (0 = main, k = isotope iso_values(k)).
+  !-------------------------------------------------------------------------------------
+  SUBROUTINE print_ll_particle(unit, id, iso_values, ll)
     integer,             intent(in) :: unit
     character(len=*),    intent(in) :: id
     integer,             intent(in) :: iso_values(:)
     type(linelist_type), intent(in) :: ll(0:)
-    type(bbtrans_type),  intent(in), optional :: lines(:)
     integer :: l, kiso, isoval, n
     !-----------------------------------------------------------------------------------
     do kiso=0, ubound(ll,1)
@@ -1317,29 +1378,12 @@ contains
       if (kiso > 0) isoval = iso_values(kiso)
       ! first pass: block size (the header carries the record count)
       n = 0
-      if (present(lines)) then
-        do l=1, size(lines)
-          if (lines(l)%active .and. lines(l)%used .and. lines(l)%iso_idx == kiso) n = n+1
-        end do
-      endif
       do l=1, ll(kiso)%nline
         if (ll(kiso)%active(l) .and. ll(kiso)%used(l)) n = n + 1
       end do
       if (n == 0) cycle
 
       call write_ll_header(unit, id, isoval, n)
-      ! detailed (AoS) transitions, incl. hydrogen
-      if (present(lines)) then
-        do l=1, size(lines)
-          associate(line => lines(l))
-            if (line%active .and. line%used .and. line%iso_idx == kiso) then
-              call write_ll_record(unit, line%lam_air, line%lower_ev, line%loggf, &
-                line%gv_in, line%ga_in, line%gq_in, line%i, line%j, line%strength, 0d0)
-            endif
-          end associate
-        end do
-      endif
-      ! bulk (SoA) linelist lines
       do l=1, ll(kiso)%nline
         associate(sll => ll(kiso))
           if (.not. (sll%active(l) .and. sll%used(l))) cycle

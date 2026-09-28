@@ -1,10 +1,7 @@
 MODULE bbtrans_mod
   USE prec_mod
   USE const_mod
-  USE op_math_mod, only: searchsorted, find_closest
   USE hop_env_mod, only: trace
-  USE handyfuncs_mod, only: find_closest_from_center
-  USE qlg, only: qlg_bot_phi          ! the one Voigt kernel; see the note below add_opacities
   implicit none
 
   type :: bbtrans_type
@@ -19,9 +16,6 @@ MODULE bbtrans_mod
     ! transition from the lower to the upper
     ! level
     logical :: active=.true., unsold
-    logical, pointer :: used => null()
-    real(dp), pointer :: strength => null()
-    integer :: iso_idx=0 ! isotope index for lines in line list
     ! Added to deal with multi component lines
     ! IO > 1 leads to the following being read from the atom file
     integer :: io = 0 ! number of components in term (lifted from Multi 2.3)
@@ -36,11 +30,9 @@ MODULE bbtrans_mod
     procedure :: prepare_Radiative
     procedure :: prepare_Stark
     procedure :: prepare_VanderWaals
-    procedure :: get_center
     procedure :: deactivate
   end type
 
-  integer, save :: count1, count2, count3, count4, count5, count6
   logical, public :: disable_stark=.false., disable_vdw=.false., disable_ga=.false.
   logical, public :: ga_fallback=.false.
   real(4), public, save :: tolerance=1e-4
@@ -62,119 +54,6 @@ contains
     self%Aji = self%Aij * gij
     self%Bji = self%Bij * gij
   END SUBROUTINE init_einstein_coefficients
-
-  !====================================================================================
-  SUBROUTINE add_opacities(self, f0, nu, vproj, inv_df, e_kT, dxij, inv_part, &
-    ne, tothi, vbar2, stark_pe, unsold, bi, bj, chi, eta, cont, do_nlte)
-    type(bbtrans_type), intent(inout) :: self
-    integer, intent(in) :: f0
-    real(8), dimension(:), intent(in), contiguous :: nu
-    real(4), dimension(:,:,:), intent(in), contiguous :: vproj, inv_df, inv_part
-    real(4), dimension(:,:,:), intent(in), pointer :: bi, bj
-    real(4), dimension(:,:,:), intent(in), contiguous :: e_kT, dxij, ne, tothi, vbar2, stark_pe, unsold
-    real(4), dimension(:,:,:,:), intent(inout) :: chi, eta
-    real(4), dimension(:,:,:,:), intent(in) :: cont
-    logical, intent(in) :: do_nlte
-    real(4) :: ex, ni, vs, phi, lchi, leta, ceta, cchi, Rij
-    real(4) :: a, idf, idf_nu, v, ref, ekt, inv_nu0, strength
-    integer :: i,j,k,f, nf, m(3), itimer=0
-    logical :: used
-    !----------------------------------------------------------------------------------
-    !call trace%begin('add_lte_opacities_1', itimer=itimer)
-    m = shape(vproj)
-    nf = size(nu)
-    inv_nu0 = 1.0 / self%nu0
-    used = .false.
-    strength = 0.0
-
-    do k=1, m(3)
-      do j=1, m(2)
-        do i=1, m(1)
-          ! Fixed Broadening
-          a = self%ga
-          ! Van der Waals Broadening
-          if (self%unsold) then
-            a = a + self%gw1 * unsold(i,j,k)
-          else
-            a = a + self%gw1 * vbar2(i,j,k)**self%gw2 * tothi(i,j,k)
-          endif
-          ! Stark Broadening
-          if (self%gq >= 0.0) then
-            a = a + self%gq * ne(i,j,k)
-          else! if line%gq < 0
-            a = a - self%gq * stark_pe(i,j,k)
-          end if
-
-          ! fetch variables
-          idf = inv_df(i,j,k)
-          idf_nu = idf * inv_nu0
-          v   = (vproj(i,j,k) + 1)*self%nu0
-          ekt = e_kT(i,j,k)
-          ex  = (self%lower_ev - dxij(i,j,k)) * ekt
-
-          if (ex < 85.) then
-            a = a * idf
-            ni = inv_part(i,j,k) * exp(-ex)
-            ! ni is really ni/gi, the factor gi is contained in Bij
-            ! since we have used loggf to compute Aij and hence Bij
-
-            Rij = ni * self%Bij * idf
-            if (do_nlte) then
-              ceta = Rij * bj(i,j,k)
-              cchi = Rij * bi(i,j,k)
-            else
-              ceta = Rij
-              cchi = Rij
-            endif
-
-            ! check if line peak is larger than continuum tolerance
-            ref = tolerance * cont(f0,i,j,k)
-
-            vs = (nu(f0) - v) * idf_nu
-            phi = qlg_bot_phi(a, vs)
-            lchi = phi * cchi
-            leta = phi * ceta
-            if (lchi > ref) then
-              used = .true.
-              strength = max(strength, lchi / cont(f0,i,j,k))
-
-              chi(f0,i,j,k) = chi(f0,i,j,k) + lchi
-              eta(f0,i,j,k) = eta(f0,i,j,k) + leta
-
-              f = f0+1
-              do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
-                vs = (nu(f) - v) * idf_nu
-                phi = qlg_bot_phi(a, vs)
-                lchi = phi * cchi
-                leta = phi * ceta
-                chi(f,i,j,k) = chi(f,i,j,k) + lchi
-                eta(f,i,j,k) = eta(f,i,j,k) + leta
-                f = f + 1
-              end do
-
-              f = f0-1
-              lchi = ref
-              do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
-                vs = (nu(f) - v) * idf_nu
-                phi = qlg_bot_phi(a, vs)
-                lchi = phi * cchi
-                leta = phi * ceta
-                chi(f,i,j,k) = chi(f,i,j,k) + lchi
-                eta(f,i,j,k) = eta(f,i,j,k) + leta
-                f = f - 1
-              end do
-            endif
-          endif
-        end do
-      end do
-    end do
-    if (used) then
-      self%used = used
-      self%strength = max(self%strength, strength)
-    endif
-    !call trace%end(itimer)
-  END SUBROUTINE add_opacities
-  !------------------------------------------------------------------------------------
 
   !====================================================================================
   ! THE VOIGT ROUTINES USED TO LIVE HERE.
@@ -331,23 +210,6 @@ contains
   END SUBROUTINE prepare_VanderWaals
   !------------------------------------------------------------------------------------
 
-  !====================================================================================
-  SUBROUTINE get_center(self, lam, dlam, i0)
-    class(bbtrans_type), intent(in)  :: self
-    real(dp), dimension(:), intent(in) :: lam
-    real(dp), intent(in) :: dlam
-    integer, intent(out) :: i0
-    !----------------------------------------------------------------------------------
-    if (dlam == 0) then
-      i0 = findloc(lam, self%lam0, 1)
-    else
-      i0 = find_closest(lam, self%lam0)
-      if (abs(lam(i0) - self%lam0) > dlam) then
-        i0  = 0
-      endif
-    endif
-  END SUBROUTINE get_center
-  !------------------------------------------------------------------------------------
   
   !====================================================================================
   PURE SUBROUTINE deactivate(self)

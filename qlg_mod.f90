@@ -68,6 +68,12 @@ MODULE qlg
   public :: qlg_toy_sweep, qlg_bot_sweep, qlg_mid_sweep, qlg_top_sweep
   public :: qlg_ref_f64
   public :: qlg_bot_phi, qlg_bot_profile          ! local addition, see the bottom of this file
+  public :: qlg_bot_coef, qlg_bot_eval             ! local addition, as is qlg_bot_coef_t
+
+  ! QLG-bot's per-line setup for one damping a (local addition, see qlg_bot_coef)
+  type, public :: qlg_bot_coef_t
+    real(4) :: ih, bL, gG, cZH, cL2
+  end type qlg_bot_coef_t
 
   !-------------------------------------------------------------------------------------
   ! Scalar constants of Eq. (5): ln2, sqrt(pi), 1/pi, sqrt(ln2/pi), sqrt(ln2).
@@ -437,33 +443,33 @@ contains
   !##  LOCAL ADDITION -- NOT PART OF THE PAPER'S MODULE.
   !##
   !##  Everything above this banner is qlg_mod.f90 as it ships with the paper, verbatim,
-  !##  apart from two lines in the header block (the ISQPI parameter and the public
-  !##  statement that these two routines need).  Everything below is OpenMULTI3D's, and a
+  !##  apart from the header-block lines marked "local addition" (the ISQPI parameter,
+  !##  the public statements and the qlg_bot_coef_t type the routines below need).  Everything below is OpenMULTI3D's, and a
   !##  future re-copy from the paper's source should re-apply it rather than lose it.
   !##
   !##  WHY.  The module's four members are window sweeps, and OpenMULTI3D's hot path --
   !##  linelist_mod's add_opacity_equi -- calls qlg_bot_sweep that way, which is where
-  !##  QLG-bot's advantage lies.  But the code has four colder Voigt paths that evaluate
+  !##  QLG-bot's advantage lies.  But the code has three colder Voigt paths that evaluate
   !##  one point at a time on abscissae that are not uniform ramps:
   !##
   !##    hprofl_mod        hydrogen fine-structure components, per component per point
   !##    rt_patch_mod      the NLTE rate integrals, over line%q
-  !##    bbtrans_mod       add_opacities, marching out from the line centre until the
-  !##                      opacity drops under tolerance -- the extent is not known first
   !##    linelist_mod      add_opacity, the non-uniform-grid twin of add_opacity_equi,
   !##                      and the NLTE rate accumulation
   !##
   !##  These used to call bbtrans_mod's voigt_function2 and voigt_profile (Traving /
-  !##  Eriksson, Landolt-Bornstein), which are now deleted.  The two routines here are
-  !##  their replacements in the same two conventions, so those call sites change by name
-  !##  only.
+  !##  Eriksson, Landolt-Bornstein), which are now deleted.  qlg_bot_phi and
+  !##  qlg_bot_profile are their replacements in the same two conventions, so those call
+  !##  sites change by name only.
   !##
   !##  COST.  A one-point call redoes QLG-bot's per-line setup -- the half-width, r, and
   !##  the three coefficient polynomials, ~15 flops -- which the sweep form amortises over
-  !##  a window.  That is the right trade here: it is comparable to the branch tree it
-  !##  replaces, and these paths are not where the time goes.  It will not inline across
-  !##  the module boundary without -flto (see this file's header, on fexp2).  Do not
-  !##  "optimise" the hot path into these; call qlg_bot_sweep directly, as it does.
+  !##  a window.  It will not inline across the module boundary without -flto (see this
+  !##  file's header, on fexp2).  A caller that evaluates many points at one damping on a
+  !##  non-uniform abscissa, as the hydrogen profiles do per cell, splits the call instead:
+  !##  qlg_bot_coef(a) once, then qlg_bot_eval(c, v) per point.  The setup there repeats
+  !##  qlg_bot_sweep's, which stays verbatim above.  Do not "optimise" the hot path into
+  !##  these; call qlg_bot_sweep directly, as it does.
   !##
   !##  qlg_init MUST have been called first, as for qlg_bot_sweep itself: these read the
   !##  same TGX/TH2X.  linelist_mod's voigt_kernel_init does it, from
@@ -488,6 +494,47 @@ contains
     call qlg_bot_sweep (a, v, 0.0, 1, K1)
     h = K1(1) * ISQPI
   END FUNCTION qlg_bot_phi
+
+  !=====================================================================================
+  ! qlg_bot_phi split at the damping: qlg_bot_coef holds qlg_bot_sweep's per-line setup
+  ! for damping a, and qlg_bot_eval(c, v) is the profile at one point. It equals
+  ! qlg_bot_phi(a, v) up to rounding: the compiler may contract the two forms into
+  ! fused multiply-adds differently, which is why qlg_bot_phi still calls the sweep.
+  !-------------------------------------------------------------------------------------
+  ELEMENTAL FUNCTION qlg_bot_coef (a) result (c)
+    real(4), intent(in) :: a
+    type(qlg_bot_coef_t) :: c
+    real(4) :: d, r, q, sc, qs, x
+    !-----------------------------------------------------------------
+    d  = 1.0 + a*0.60602209212341318
+    c%ih = d / (a*d + SQL2)
+    r  = a * c%ih
+    q  = r * (1.0 - r)
+    sc = RPI * c%ih
+    qs = q * sc
+    x  = 2.0*r - 1.0
+    c%bL = (OVERPI*r) * sc
+    c%gG = (GNORM*(1.0 - r)) * sc + qs*(-0.064924393191013452 + x*(-0.11019326278794868))
+    c%cZH = qs*(0.38494195930078284 + x*(-0.10567135279610407))
+    c%cL2 = qs*(0.04054415746208978 + x*(0.16241029253712097))
+  END FUNCTION qlg_bot_coef
+
+  ELEMENTAL FUNCTION qlg_bot_eval (c, v) result (h)
+    type(qlg_bot_coef_t), intent(in) :: c
+    real(4), intent(in) :: v
+    real(4) :: h, xs, u, L, G, W, p
+    integer :: ig
+    !-----------------------------------------------------------------
+    xs = abs(v) * c%ih
+    u  = xs * xs
+    L  = 1.0 / (1.0 + u)
+    ig = nint(min(xs*XSCL, RNX))
+    G  = TGX(ig)
+    W  = TH2X(ig)
+    p = (c%cL2 + c%cZH*W)
+    p = c%bL + L*p
+    h = (G*(c%gG) + L*p) * ISQPI
+  END FUNCTION qlg_bot_eval
 
   !=====================================================================================
   ! The convention of the retired voigt_profile: the same profile, but on the relative

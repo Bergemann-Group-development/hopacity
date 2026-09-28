@@ -236,11 +236,7 @@ CONTAINS
       if (allocated(iso_values)) deallocate(iso_values)
       allocate(iso_values(niso))
       iso_values = [(ptc%isotope(k)%iso, k=1, niso)]
-      if (allocated(ptc%line)) then
-        call print_ll_particle(lunit, ptc%id, iso_values, ptc%ll, ptc%line(1:ptc%nline))
-      else
-        call print_ll_particle(lunit, ptc%id, iso_values, ptc%ll)
-      end if
+      call print_ll_particle(lunit, ptc%id, iso_values, ptc%ll)
     end subroutine write_particle
   END FUNCTION hop_write_linelist
 
@@ -348,9 +344,7 @@ CONTAINS
   END SUBROUTINE collect_lines
 
   !-----------------------------------------------------------------------------
-  ! One particle's reported lines: the bulk SoA linelists (one per isotope) and, when
-  ! it has them, the detailed AoS transitions (hydrogen and model-atom lines, whose
-  ! strength/used are pointers and may be unset).
+  ! One particle's reported lines, from its line lists (one per isotope).
   !-----------------------------------------------------------------------------
   SUBROUTINE take_particle(ptc, pass, ntot)
     class(particle_type), intent(in) :: ptc
@@ -359,18 +353,6 @@ CONTAINS
     integer :: k, l, ispec
     !---------------------------------------------------------------------------
     ispec = 0
-    if (allocated(ptc%line)) then
-      do l = 1, ptc%nline
-        associate(line => ptc%line(l))
-          if (.not. line%active) cycle
-          if (.not. associated(line%used)) cycle
-          if (.not. line%used) cycle
-          if (.not. associated(line%strength)) cycle
-          call emit(ptc%id, ispec, pass, ntot, line%lam_air, line%lower_ev, &
-                    line%loggf, line%strength)
-        end associate
-      end do
-    end if
     if (.not. allocated(ptc%ll)) return
     do k = lbound(ptc%ll, 1), ubound(ptc%ll, 1)
       associate(sll => ptc%ll(k))

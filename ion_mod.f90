@@ -2,7 +2,6 @@ MODULE ion_mod
   USE hop_env_mod, only: os
   USE prec_mod
   USE level_mod
-  USE bbtrans_mod, only: bbtrans_type
   USE line_types_mod, only: linelist_type
   implicit none
 
@@ -21,14 +20,13 @@ MODULE ion_mod
   type, extends(isotope_type) :: particle_type
     real(dp), dimension(:,:,:), allocatable :: part
     integer :: j=1 ! ionisation stage (1 is neutral)
-    integer :: m(3)=[0,0,0], nk, nline=0
+    integer :: m(3)=[0,0,0], nk
     character(len=6) :: id
     integer :: niso=1
     class(isotope_type), dimension(:), pointer :: isotope => null()
     type(level_type), allocatable :: levels(:)
     type(level_type), allocatable :: nlte_levels(:)
-    type(bbtrans_type), dimension(:), allocatable :: line
-    ! structure-of-arrays bulk linelist (new path), one per isotope (index 0 = main)
+    ! line-list lines, one structure-of-arrays store per isotope (index 0 = main)
     type(linelist_type), allocatable :: ll(:)
     real(dp), allocatable, dimension(:) :: irwin
     ! lowest temperature the Irwin polynomial is fitted over. Below it the

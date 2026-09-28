@@ -1,7 +1,7 @@
 MODULE hprofl_mod
   USE bbtrans_mod, only: bbtrans_type, disable_ga, disable_stark, disable_vdw
-  USE qlg, only: qlg_bot_phi          ! the one Voigt kernel; see linelist_mod's kernel note
-  USE prec_mod, only: RYD
+  USE qlg, only: qlg_bot_coef_t, qlg_bot_coef, qlg_bot_eval   ! the one Voigt kernel; see linelist_mod's kernel note
+  USE prec_mod, only: RYD, dp
   USE const_mod
   USE interpol_mod, only: interp1d_sorted
   USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, ensure_vcs_loaded, &
@@ -138,12 +138,52 @@ MODULE hprofl_mod
 
   logical, public :: hydrogen_BPO=.true.
 
+  ! Profile parameters of one hydrogen line (see hydrogen_line). The widths carry the
+  ! over_4pi/nu0 scaling of the bbtrans_type broadening constants; dq(1:io), wt(1:io)
+  ! are the fine-structure offsets [nu/nu0] and weights.
+  type, public :: hline_t
+    integer  :: n=0, m=0          ! lower and upper principal quantum numbers
+    real(dp) :: nu0=0             ! rest frequency [Hz]
+    real(dp) :: ga=0, gq=0, gw1=0, gw2=0, gw3=0
+    integer  :: io=0
+    real(dp) :: dq(14)=0, wt(14)=0
+  end type hline_t
+
+  ! The q-independent part of stark_eval for one line in one cell (stark_prepare)
+  type :: stark_cell_t
+    logical  :: off = .true.      ! no Stark broadening (hwstk = 0)
+    integer  :: n = 0, m = 0
+    real(8)  :: hw5, pp, cne, ex, c1coef, g1, gcon1, gcon2, gam0
+  end type stark_cell_t
+
+  ! One hydrogen line in one cell, prepared by hcell_prepare for hprofile
+  type, public :: hcell_t
+    real(4) :: idf, ne, tothi, resont, vdw, hwstk, hwlor, hfwid
+    logical :: use_vcs = .false., lymanalf = .false.
+    type(stark_cell_t)   :: st
+    type(qlg_bot_coef_t) :: vcore, vwing   ! Voigt coefficients inside / outside hfwid
+    type(vcs_profile_t)  :: vcs
+    real(8) :: xholt4000 = 0              ! Lyman alpha: half the Stark profile at q4000
+  end type hcell_t
+
+  ! Lyman alpha wing regions, in relative detuning q
+  real(8), parameter :: LyA0 = 82259.105 ! wavenumber
+  real(8), parameter :: rayqcut = (1e8/1400.d0 - LyA0)/LyA0 !Changed from 1240 to 1400 by BPz 04/10-2007
+  real(8), parameter :: redthresh = 20000./LyA0 - 1d0
+  real(8), parameter :: q4000 = -4000./LyA0
+
 contains
 
   !====================================================================================
-  SUBROUTINE add_h_opacities(self, f0, nu, vproj, inv_df, temp, ni, nj, &
-    ne, tothi, vbar2h, fo, t3nhe, bi, bj, chi, eta, cont, do_nlte, i0, i1)
-    class(bbtrans_type), intent(in) :: self
+  SUBROUTINE add_h_opacities(h, Bij, f0, nu, vproj, inv_df, temp, ni, nj, &
+    ne, tothi, vbar2h, fo, t3nhe, bi, bj, chi, eta, cont, do_nlte, line_used, &
+    line_strength, i0, i1)
+    type(hline_t), intent(in) :: h
+    real(dp), intent(in) :: Bij                 ! Einstein Bij, incl. the h/4pi factor
+    ! diagnostics: set when the line is evaluated in some cell; the maximum centre
+    ! line/continuum opacity ratio
+    logical, intent(inout) :: line_used
+    real(4), intent(inout) :: line_strength
     integer, intent(in) :: f0
     real(8), dimension(:), intent(in), contiguous :: nu
     real(4), dimension(:,:,:), intent(in), contiguous :: vproj, inv_df, ni, nj
@@ -153,27 +193,17 @@ contains
     real(4), dimension(:,:,:,:), intent(in) :: cont
     logical, intent(in) :: do_nlte
     integer, intent(in), optional :: i0, i1
-    real(8), allocatable :: qq(:)
-    real(4), allocatable :: phis(:)
-    real(4) :: lchi, leta, phi, idf, cchi, ceta, v, ref, nh1, strength, nup, nlo
-    real(4) :: resont, vdw, hwstk, hwlor, hfwid, t, e, inv_nu0, Rij, blz0
+    real(4) :: lchi, leta, phi, idf, cchi, ceta, v, ref, strength, nup, nlo
+    real(4) :: inv_nu0, Rij
     real(8) :: q
     real(4), parameter :: tol=1e-7
-    integer :: i,j,k,f, nf, m(3), itimer=0, lo, hi, io, mem_offset
-    logical lymanalf, used, use_vcs
-    !  Prepared VCS profile for the current cell. A local (not the threadprivate
-    !  memo hprofile uses) so the frequency loops below touch no threadprivate
-    !  storage: under gfortran that is a pthread_getspecific per reference.
-    type(vcs_profile_t) :: vcsc
+    integer :: i,j,k,f, nf, m(3), lo, hi, io, mem_offset
+    logical used
+    type(hcell_t) :: hc                  ! the line in the current cell
     !----------------------------------------------------------------------------------
-    ! Lyman alpha wings require special treatment
-    lymanalf = (self%i == 1) .and. (self%j == 2)
-    ! Optional tabulated VCS (Lemke 1997) profile for this line; whole-profile
-    ! replacement of the analytic Voigt-core + Stark-wing construction.
-    use_vcs = vcs_supported(self%i, self%j)
     m = shape(vproj)
     nf = size(nu)
-    inv_nu0 = 1.0 / self%nu0
+    inv_nu0 = 1.0 / h%nu0
     used = .false.
     strength = 0.0
     lo = 1;  hi = m(1)
@@ -193,16 +223,13 @@ contains
           io = i - mem_offset            ! chunk-local index; cont and bi/bj stay whole-tile at i
           ! fetch variables
           idf = inv_df(io,j,k)
-          v   = (vproj(io,j,k) + 1)*self%nu0
-          t   = temp(io,j,k)
-          e   = ne(io,j,k)
-          nh1 = tothi(io,j,k)
+          v   = (vproj(io,j,k) + 1)*h%nu0
           nlo = ni(io,j,k)
           nup = nj(io,j,k)
 
-          ! we include the idf normalisation factor along with qlg_bot_phi
-          ! as stark1 is normalised differently, therefore we do not multiply by idf here
-          Rij = nlo * self%Bij
+          ! the idf normalisation is applied to the Voigt terms inside hprofile, since
+          ! the Stark profile is normalised differently; Rij does not carry it
+          Rij = nlo * Bij
           if (do_nlte) then
             ceta = Rij * bj(i,j,k)
             cchi = Rij * bi(i,j,k)
@@ -211,33 +238,15 @@ contains
             cchi = Rij
           endif
 
-          resont = nh1 * self%gw1
-          if (self%gw2 /= 0) then
-            resont = resont * vbar2h(io,j,k)**self%gw2
-          endif
-
-          hwstk = self%gq * fo(io,j,k)
-          vdw = self%gw3 * t3nhe(io,j,k)
-          hwlor = self%ga + resont + vdw
-
-          hfwid = max(1/idf, hwlor, hwstk) ! defines where we switch from Voigt to adding
+          call hcell_prepare(h, temp(io,j,k), ne(io,j,k), fo(io,j,k), vbar2h(io,j,k), &
+                             tothi(io,j,k), t3nhe(io,j,k), idf, hc)
           ref = tol * cont(f0,i,j,k)
-
-          !  The tabulated profile depends on the cell, not the frequency: build
-          !  it once here and let the two scans below just sample it.
-          if (use_vcs) call vcs_prepare(self%i, self%j, self%nu0, t, e, nh1, vcsc)
 
           f = f0
           lchi = ref
           do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
-            if (use_vcs) then
-              phi = vcs_fine(self, vcsc, q)
-            else if (lymanalf) then
-              call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
-            else
-              phi = hvoigt(self, q, hwlor, t, e, hfwid, hwstk, idf)
-            endif
+            phi = hprofile(h, hc, q)
             lchi = phi * cchi
             leta = phi * ceta
             !if (lymanalf .and. k==m(3)) print *, f, phi, cchi, ceta/(exp(HH*nu(f)/(BK*temp(i,j,k)))-1.0)
@@ -254,13 +263,7 @@ contains
           lchi = ref
           do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
-            if (use_vcs) then
-              phi = vcs_fine(self, vcsc, q)
-            else if (lymanalf) then
-              call lyman_voigt(self, q, hwlor, resont, t, e, nh1, hfwid, hwstk, vdw, idf, phi)
-            else
-              phi = hvoigt(self, q, hwlor, t, e, hfwid, hwstk, idf)
-            endif
+            phi = hprofile(h, hc, q)
             lchi = phi * cchi
             leta = phi * ceta
             !if (lymanalf .and. k==m(3)) print *, f, phi, cchi, ceta/(exp(HH*nu(f)/(BK*temp(i,j,k)))-1.0)
@@ -273,87 +276,90 @@ contains
       end do
     end do
     if (used) then
-      self%used = used
-      self%strength = max(self%strength, strength)
+      line_used = .true.
+      line_strength = max(line_strength, strength)
     endif
   END SUBROUTINE add_h_opacities
 
   !===============================================================================
-  !  Based on code by Deane Peterson and Bob Kurucz
+  ! The per-cell part of a hydrogen line's profile: widths, the Stark setup, the Voigt
+  ! coefficients of the core and wing branches, and the tabulated VCS profile. The
+  ! caller keeps c across cells, so an unchanged VCS stamp is not rebuilt.
   !===============================================================================
-  FUNCTION hprofile(self, q, temp, ne, fo, vbar2h, tothi, t3nhe, idf)
-    class(bbtrans_type), intent(inout)  :: self
-    real(8), intent(in) :: q
-    real(4), intent(in) :: temp
-    real(4), intent(in) :: ne
-    real(4), intent(in) :: fo
-    real(4), intent(in) :: vbar2h
-    real(4), intent(in) :: tothi
-    real(4), intent(in) :: t3nhe
-    real(4), intent(in) :: idf
-    real(8) :: hprofile
-    real(4) :: vdw, resont, hwstk, hfwid, hwlor, phi
-    logical :: lymanalf
-    !  hprofile is called per frequency with no loop to hoist out of, so the
-    !  prepared cell profile is memoised across calls (vcs_prepare is idempotent
-    !  for a repeated line/cell stamp).
-    type(vcs_profile_t), save :: vcsc
-    !$omp threadprivate(vcsc)
+  SUBROUTINE hcell_prepare (h, temp, ne, fo, vbar2h, tothi, t3nhe, idf, c)
+    type(hline_t), intent(in) :: h
+    real(4), intent(in) :: temp, ne, fo, vbar2h, tothi, t3nhe, idf
+    type(hcell_t), intent(inout) :: c
     !---------------------------------------------------------------------------
+    c%idf = idf
+    c%ne = ne
+    c%tothi = tothi
+    c%resont = tothi * h%gw1
+    if (h%gw2 /= 0) c%resont = c%resont * vbar2h**h%gw2
+    c%hwstk = h%gq * fo
+    c%vdw = h%gw3 * t3nhe
+    c%hwlor = h%ga + c%resont + c%vdw
+    c%hfwid = max(1/idf, c%hwlor, c%hwstk) ! defines where we switch from Voigt to adding
+
     ! Optional tabulated VCS (Lemke 1997) profile: whole-profile replacement,
     ! with the same fine-structure superposition as the analytic path.
-    if (vcs_supported(self%i, self%j)) then
-      call vcs_prepare(self%i, self%j, self%nu0, temp, ne, tothi, vcsc)
-      hprofile = vcs_fine(self, vcsc, q)
+    c%use_vcs = vcs_supported(h%n, h%m)
+    if (c%use_vcs) then
+      call vcs_prepare(h%n, h%m, h%nu0, temp, ne, tothi, c%vcs)
       return
     endif
 
-    lymanalf = (self%i == 1) .and. (self%j == 2)
-    hwstk = self%gq * fo
+    c%lymanalf = (h%n == 1) .and. (h%m == 2)
+    call stark_prepare(h%n, h%m, h%nu0, temp, ne, c%hwstk, c%st)
+    c%vcore = qlg_bot_coef((c%hwlor + c%hwstk) * idf)
+    c%vwing = qlg_bot_coef(c%hwlor * idf)
+    if (c%lymanalf) c%xholt4000 = 0.5*stark_eval(c%st, q4000)
+  END SUBROUTINE hcell_prepare
 
-    if (self%gw2 == 0) then
-      resont = self%gw1 * tothi
+  !===============================================================================
+  !  The profile at q = (nu - nu0)/nu0 in a cell prepared by hcell_prepare.
+  !  Based on code by Deane Peterson and Bob Kurucz
+  !===============================================================================
+  FUNCTION hprofile (h, c, q) result(phi)
+    type(hline_t), intent(in) :: h
+    type(hcell_t), intent(in) :: c
+    real(8), intent(in) :: q
+    real(4) :: phi
+    !---------------------------------------------------------------------------
+    if (c%use_vcs) then
+      phi = vcs_fine(h, c%vcs, q)
+    else if (c%lymanalf) then
+      call lyman_voigt(h, c, q, phi)
     else
-      resont = self%gw1 * vbar2h**self%gw2 * tothi
+      phi = hvoigt(h, c, q)
     endif
-
-    vdw = self%gw3 * t3nhe
-    hwlor = self%ga + resont + vdw
-
-    hfwid = max(1/idf, hwlor, hwstk) ! defines where we switch from Voigt to adding
-    if (lymanalf) then
-      call lyman_voigt(self, q, hwlor, resont, temp, ne, tothi, hfwid, hwstk, vdw, idf, phi)
-    else
-      phi = hvoigt(self, q, hwlor, temp, ne, hfwid, hwstk, idf)
-    endif
-    hprofile = phi
   END FUNCTION hprofile
 
   !====================================================================================
-  FUNCTION hvoigt (self, q, hwlor, temp, ne, hfwid, hwstk, idf) result(phi)
-    class(bbtrans_type), intent(in)  :: self
+  FUNCTION hvoigt (h, c, q) result(phi)
+    type(hline_t), intent(in) :: h
+    type(hcell_t), intent(in) :: c
     real(8), intent(in) :: q
-    real(4), intent(in) :: hwlor, temp, ne, hfwid, hwstk, idf
-    real(4) :: a, vs, xv, phi
+    real(4) :: vs, xv, phi
     integer :: i
     !----------------------------------------------------------------------------------
-    if (abs(q) > hfwid) then
+    if (abs(q) > c%hfwid) then
       !  Treat stark broadening separately
-      phi = stark1(self%i,self%j,q,self%nu0,temp,ne,hwstk)
-      a = hwlor
+      phi = stark_eval(c%st, q)
+      !  Including fine structure
+      do i=1, h%io
+        vs = (q - h%dq(i)) * c%idf
+        xv = qlg_bot_eval(c%vwing, vs) * c%idf
+        phi = phi + h%wt(i)*xv
+      end do
     else
       phi = 0.d0
-      a = hwlor + hwstk
+      do i=1, h%io
+        vs = (q - h%dq(i)) * c%idf
+        xv = qlg_bot_eval(c%vcore, vs) * c%idf
+        phi = phi + h%wt(i)*xv
+      end do
     endif
-
-    a = a * idf
-
-    !  Including fine structure
-    do i=1, self%io
-      vs = (q - self%dq(i)) * idf
-      xv = qlg_bot_phi(a,vs) * idf
-      phi = phi + self%wt(i)*xv
-    end do
   END FUNCTION
 
   !====================================================================================
@@ -363,35 +369,32 @@ contains
   !  normalisation is preserved; lines with a single component reduce to
   !  vcs_eval at q. Mirrors SIU's HYDL_AG_CON_FS, with HOP's component pattern.
   !====================================================================================
-  FUNCTION vcs_fine (self, c, q) result(phi)
-    class(bbtrans_type), intent(in) :: self
+  FUNCTION vcs_fine (h, c, q) result(phi)
+    type(hline_t), intent(in) :: h
     type(vcs_profile_t), intent(in) :: c
     real(8), intent(in) :: q
     real(4) :: phi
     integer :: i
     !----------------------------------------------------------------------------------
     phi = 0.0
-    do i=1, self%io
-      phi = phi + self%wt(i)*real(vcs_eval(c, q - self%dq(i)), 4)
+    do i=1, h%io
+      phi = phi + h%wt(i)*real(vcs_eval(c, q - h%dq(i)), 4)
     end do
   END FUNCTION
 
   !====================================================================================
-  SUBROUTINE lyman_voigt (self, q, hwlor, resont, temp, ne, tothi, hfwid, hwstk, vdw, idf, phi)
-    class(bbtrans_type), intent(in)  :: self
+  SUBROUTINE lyman_voigt (h, c, q, phi)
+    type(hline_t), intent(in) :: h
+    type(hcell_t), intent(in) :: c
     real(8), intent(in) :: q
-    real(4), intent(in) :: hwlor, resont, temp, ne, tothi, hfwid, hwstk, vdw, idf
     real(4), intent(out) :: phi
     real(4) :: a, vs, xv
     real(4) :: xfac, xlymanh2
-    real(8) :: htotal, xstark, xholt4000, sat4000
+    real(8) :: xstark, sat4000
+    type(qlg_bot_coef_t) :: vc
     integer :: i
-    real(8), parameter :: LyA0 = 82259.105 ! wavenumber
-    real(8), parameter :: rayqcut = (1e8/1400.d0 - LyA0)/LyA0 !Changed from 1240 to 1400 by BPz 04/10-2007
-    real(8), parameter :: redthresh = 20000./LyA0 - 1d0
-    real(8), parameter :: q4000 = -4000./LyA0
     !----------------------------------------------------------------------------------
-    if (abs(q) > hfwid) then
+    if (abs(q) > c%hfwid) then
       a = 0
       !  Lyman alpha:
       if (q > rayqcut) then
@@ -399,7 +402,7 @@ contains
         !  This is cut at 1400 AA in the red.
         !  Note that this is Rayleigh scattering and therefore the rayleigh scattering
         !  in composition_mod has to be cut below 1400 AA to avoid double counting.
-        a = self%ga*(q+1d0)**2
+        a = h%ga*(q+1d0)**2
       endif
       if (q > q4000) then
         !  Self broadening of Lyman alpha:
@@ -412,25 +415,26 @@ contains
         !  (below) at -4000 cm^-1 (62 A) detuning. A linear transition is used.
         xfac = 1.0
         if (q < 0) xfac = xfac + 0.13*q/q4000
-        a = a + xfac*resont + vdw
+        a = a + xfac*c%resont + c%vdw
       endif
+      ! the wing damping depends on q, so its coefficients are built per point
+      vc = qlg_bot_coef(a * c%idf)
     else
-      a = hwlor + hwstk
+      vc = c%vcore
     endif
 
     phi = 0.d0
-    a = a * idf
 
     !  Doppler core including fine structure
-    do i=1, self%io
-      vs = (q - self%dq(i)) * idf
+    do i=1, h%io
+      vs = (q - h%dq(i)) * c%idf
       !  if INSIDE HFWID WE USE VOIGT FUNCTION WITH DOP, STARK AND LOR
       !  if OUTSIDE JUST ADD THE DOPPLER PART - REST IS ADDED LATER IN DETAIL
-      xv = qlg_bot_phi(a,vs) * idf
-      phi = phi + self%wt(i)*xv
+      xv = qlg_bot_eval(vc, vs) * c%idf
+      phi = phi + h%wt(i)*xv
     end do
 
-    if (abs(q) > hfwid) then
+    if (abs(q) > c%hfwid) then
       if (q > redthresh) then
         !  Far red wing of Lyman Alpha in satellite region:
         !  Self-broadening following Kurucz's implementation of Allard et al
@@ -446,7 +450,7 @@ contains
           !  otherwise (1278 -> 1660 Angstrom) linear (in log10 profiles)
           !  interpolation
           xlymanh2 = lyman_interp(lymanh2, 200., -22000., q*LyA0)
-          phi = phi + LyA0 * tothi * 10.**xlymanh2
+          phi = phi + LyA0 * c%tothi * 10.**xlymanh2
 
           !  Stark section
 
@@ -462,25 +466,24 @@ contains
           !  If redward of last point (1487 -> 5000 Angstroem) extrapolate,
           !  otherwise (1278 -> 1487 Angstroem) interpolation.
           xlymanh2 = lyman_interp(lymanh2plus, 100., -15000., q*LyA0)
-          phi = phi + LyA0 * ne * 10.**xlymanh2
+          phi = phi + LyA0 * c%ne * 10.**xlymanh2
 
           !  There may be a contribution due to electrons also at long range.
           !  The static Holtsmark profile (1/2 the total STARK1) is used noting
           !  that the correction for quantum effects suggested by Stehle (1994,
           !  A&AS 104, 509 eqn 7) has been applied already.
-          phi = phi + 0.5*stark1(self%i,self%j,q,self%nu0,temp,ne,hwstk)
+          phi = phi + 0.5*stark_eval(c%st, q)
 
         else
           !  Stark wings due to ions and electrons.  If Lyman alpha this is for
           !  before (blueward of) the satellite region.
-          xstark = 0.5*stark1(self%i,self%j,q,self%nu0,temp,ne,hwstk)
+          xstark = 0.5*stark_eval(c%st, q)
 
           !  If Lyman alpha we match the static ion part to the Allard et al
           !  value at -4000 cm^-1 detuning on red wing.
           if (q < 0 .and. xstark > 0) then
-            xholt4000 = 0.5*stark1(self%i,self%j,q4000,self%nu0,temp,ne,hwstk)
-            sat4000 = LyA0 * ne * 10.**lymanh2plus(111)
-            xfac = 1. + (sat4000/xholt4000 - 1.)*q/q4000
+            sat4000 = LyA0 * c%ne * 10.**lymanh2plus(111)
+            xfac = 1. + (sat4000/c%xholt4000 - 1.)*q/q4000
             xstark = xstark * (1. + xfac)
           end if
           phi = phi + xstark
@@ -491,18 +494,23 @@ contains
   END SUBROUTINE
 
   !====================================================================================
-  SUBROUTINE prepare_hydrogen_damping (self)
-    class(bbtrans_type), intent(inout)  :: self
-    integer :: n, m, mmn, n2, m2, ipos, i, k, ifins
+  ! Profile parameters of the hydrogen line n -> m with rest frequency nu0 [Hz]:
+  ! Stark, natural, resonance and van der Waals widths, and the fine-structure
+  ! pattern. Depends only on its arguments and the disable_*/hydrogen_BPO switches,
+  ! so callers may rebuild it wherever it is needed instead of storing it.
+  !------------------------------------------------------------------------------------
+  FUNCTION hydrogen_line (n, m, nu0) result(h)
+    integer, intent(in) :: n, m
+    real(dp), intent(in) :: nu0
+    type(hline_t) :: h
+    integer :: mmn, n2, m2, ipos, i, k, ifins
     real(4) :: mn2, ignm
-    real(4) :: xknm, radamp, resont, vdw
-    real(8), save, dimension(14) :: finest, finswt
+    real(4) :: xknm, radamp, resont
+    real(8), dimension(size(h%dq)) :: finest, finswt
     !----------------------------------------------------------------------------------
-    ! Load the tabulated VCS grids on first use (idempotent, serial setup phase).
-    if (hydrogen_vcs_table) call ensure_vcs_loaded()
-
-    n = self%i
-    m = self%j
+    h%n = n
+    h%m = m
+    h%nu0 = nu0
     mmn = m-n
     n2 = n*n
     m2 = m*m
@@ -514,7 +522,7 @@ contains
     else
       xknm = 5.5E-5*ignm * mn2/(1. + .13/real(mmn))
     end if
-    self%gq = 5.*xknm*self%nu0/(cc*1e8)
+    h%gq = 5.*xknm*h%nu0/(cc*1e8)
 
     !  Natural damping taken from tables
     !  dnu/ nu_0 = 1/2 * 1/nu_0 * 1/2 pi * Gamma
@@ -523,7 +531,7 @@ contains
     else
       radamp = asum(n)+asum(m)
     end if
-    self%ga = radamp * over_4pi / self%nu0
+    h%ga = radamp * over_4pi / h%nu0
 
     !  Resonance broadening following Ali & Griem (1966, Phys Rev 144, 366).
     !  RESONT is dnu/nu per unit H density. Only the lower state is included
@@ -536,23 +544,23 @@ contains
     else
       resont = hfnm(1,m)/(1. - 1./m2)
     end if
-    self%gw1 = resont * 2.07E-24*ignm
-    self%gw2 = 0
+    h%gw1 = resont * 2.07E-24*ignm
+    h%gw2 = 0
 
     if (hydrogen_BPO .and. (n == 2) .and. (m <= 5)) then
       !  For low Balmer lines use Barklem, Piskunov & O'Mara (2000, A&A 363, 1091)
       !  instead of Ali & Griem for self-broadening.
       resont = balfac(mmn)*sigma(mmn) ! already contains factors 1e4 and 1e6
-      self%gw2 = 0.5*(1. - alf(mmn)) ! 0.5 is needed because we will be using VBARH squared
+      h%gw2 = 0.5*(1. - alf(mmn)) ! 0.5 is needed because we will be using VBARH squared
 
       ! The factor 1e-12 reconciles two differences from the original hbop.f:
       ! 1. The velocity constant here is 10,000x larger (4.2e8 vs 42008).
       ! 2. The original code normalized velocity by 1e4 (1e8 when squared).
       ! To compensate, we need (1/1e4) * (1/1e8) = 1e-12.
-      self%gw1 = resont * 1e-12**self%gw2 / (self%nu0 * 2*PI)
+      h%gw1 = resont * 1e-12**h%gw2 / (h%nu0 * 2*PI)
     endif
 
-    self%gw3 = 4.45E-26*ignm*(m2*(7.*m2 + 5.))**0.4
+    h%gw3 = 4.45E-26*ignm*(m2*(7.*m2 + 5.))**0.4
 
     !  Approximately include fine structure.  Exact pattern for alpha lines,
     !  M infinite pattern used for others.
@@ -577,23 +585,59 @@ contains
       end do
     end if
 
-    self%io = ifins
-    allocate(self%dq(ifins))
-    allocate(self%da(ifins))
-    allocate(self%wt(ifins))
+    h%io = ifins
+    h%dq(1:ifins) = finest(1:ifins) / h%nu0
+    h%wt(1:ifins) = finswt(1:ifins)
 
-    self%dq = finest(1:ifins) / self%nu0
-    self%wt = finswt(1:ifins)
-    self%da = 0
-
-    if (disable_ga) self%ga = 0
-    if (disable_stark) self%gq = 0
+    if (disable_ga) h%ga = 0
+    if (disable_stark) h%gq = 0
     if (disable_vdw) then
-      self%gw1 = 0
-      self%gw2 = 0
-      self%gw3 = 0
+      h%gw1 = 0
+      h%gw2 = 0
+      h%gw3 = 0
     endif
+  END FUNCTION hydrogen_line
+
+  !====================================================================================
+  ! Fill a model-atom hydrogen transition (bbtrans_type, n and m in self%i, self%j)
+  ! with the hydrogen_line parameters, and load the VCS tables if they are enabled.
+  !------------------------------------------------------------------------------------
+  SUBROUTINE prepare_hydrogen_damping (self)
+    class(bbtrans_type), intent(inout) :: self
+    type(hline_t) :: h
+    !----------------------------------------------------------------------------------
+    if (hydrogen_vcs_table) call ensure_vcs_loaded()
+    h = hydrogen_line(self%i, self%j, self%nu0)
+    self%ga  = h%ga
+    self%gq  = h%gq
+    self%gw1 = h%gw1
+    self%gw2 = h%gw2
+    self%gw3 = h%gw3
+    self%io  = h%io
+    self%dq  = h%dq(1:h%io)
+    self%wt  = h%wt(1:h%io)
+    self%da  = spread(0d0, 1, h%io)
   END SUBROUTINE prepare_hydrogen_damping
+
+  !====================================================================================
+  ! The hydrogen_line record of a transition prepared by prepare_hydrogen_damping.
+  !------------------------------------------------------------------------------------
+  FUNCTION hline_of (self) result(h)
+    class(bbtrans_type), intent(in) :: self
+    type(hline_t) :: h
+    !----------------------------------------------------------------------------------
+    h%n   = self%i
+    h%m   = self%j
+    h%nu0 = self%nu0
+    h%ga  = self%ga
+    h%gq  = self%gq
+    h%gw1 = self%gw1
+    h%gw2 = self%gw2
+    h%gw3 = self%gw3
+    h%io  = self%io
+    h%dq(1:h%io) = self%dq(1:h%io)
+    h%wt(1:h%io) = self%wt(1:h%io)
+  END FUNCTION hline_of
 
   !===============================================================================
   FUNCTION lyman_interp(arr, dx, x0, newx) result(out)
@@ -656,49 +700,47 @@ contains
   !  by Deane Peterson & Bob Kurucz.
   !  (adapted, corrected and comments added by PB)
   !===============================================================================
-  FUNCTION stark1(n,m,q,nu0,temp,ne,hwstk)
+  !
+  !  stark_prepare holds everything that does not depend on the detuning q, which is
+  !  the bulk of the work; stark_eval is the profile at one q.
+  !===============================================================================
+  SUBROUTINE stark_prepare(n, m, nu0, temp, ne, hwstk, s)
     integer, intent(in) :: n
     integer, intent(in) :: m
-    real(8), intent(in) :: q
     real(8), intent(in) :: nu0
     real(4), intent(in) :: temp
     real(4), intent(in) :: ne
     real(4), intent(in) :: hwstk
-    real(8)             :: stark1
-    real(8) :: f, p1, t4, xne16, pp, y1b, y1s, gcon1, gcon2, gcon, q1
-    real(8) :: wty1, y1scal, c1, c1coef, g1, beta, y2, gam, prqs, dbeta, fns, y1
-    real(8) :: cne, hw5, ex, xm2mn2
+    type(stark_cell_t), intent(out) :: s
+    real(8) :: t4, xne16, y1b, y1s, gcon, xm2mn2, wty1, y1scal, c1
     real(8) :: y1num, y1wht
     integer :: mmn
     real(4), dimension(2,2), parameter :: y1wtm = reshape([1.e18, 1.e17, 1.e16, 1.e14], [2,2])
     !---------------------------------------------------------------------------
-    if (hwstk == 0) then
-      stark1 = 0
-      return
-    endif
+    s%off = hwstk == 0
+    if (s%off) return
+    s%n = n
+    s%m = m
 
     ! hw5 = xknm * nu0 * fo / c (fundamental Stark shift scale)
-    hw5 = hwstk * 0.2d0
+    s%hw5 = hwstk * 0.2d0
 
     ! Normalized temperature and density
     t4 = temp * 1.d-4
     xne16 = ne ** 0.1666667d0
 
     ! Plasma parameters
-    pp = xne16 * 0.08989d0 / sqrt(dble(temp))  ! shielding parameter
-    cne = sqrt(5.96d-23 * ne)  ! characteristic electron detuning scale
+    s%pp = xne16 * 0.08989d0 / sqrt(dble(temp))  ! shielding parameter
+    s%cne = sqrt(5.96d-23 * ne)  ! characteristic electron detuning scale
 
     ! Y1 scaling factors
     y1b = 2.d0 / (1.d0 + 0.012d0 / temp * sqrt(ne / temp))
     y1s = t4 ** 0.3d0 / xne16
 
     ! Gamma correction factors
-    gcon1 = 0.2d0 + 0.09d0 * sqrt(t4) / (1.d0 + ne * 1.d-13)
-    gcon2 = 0.2d0 / (1.d0 + ne * 1.d-15)
-    gcon = 1.d0 - gcon1 - gcon2
-
-    ! Absolute relative detuning
-    q1 = abs(q)
+    s%gcon1 = 0.2d0 + 0.09d0 * sqrt(t4) / (1.d0 + ne * 1.d-13)
+    s%gcon2 = 0.2d0 / (1.d0 + ne * 1.d-15)
+    gcon = 1.d0 - s%gcon1 - s%gcon2
 
     ! Line-dependent variables
     mmn = m - n
@@ -725,30 +767,49 @@ contains
     wty1 = 1.d0 / (1.d0 + ne / y1wht)
     y1scal = y1num * y1s * wty1 + y1b * (1.d0 - wty1)
 
-    ex = h_k * nu0 / temp
-    c1coef = 0.5d0 * y1scal * ex * xm2mn2
-
-    y1 = c1coef * q1
-    y2 = (q1 / cne) ** 2
+    s%ex = h_k * nu0 / temp
+    s%c1coef = 0.5d0 * y1scal * s%ex * xm2mn2
 
     ! c1 and g1 (depend on hw5)
-    c1 = hw5 * c1coef
-    g1 = 6.77d0 * sqrt(c1)
+    c1 = s%hw5 * s%c1coef
+    s%g1 = 6.77d0 * sqrt(c1)
+
+    ! electron impact width in the small-detuning limit
+    s%gam0 = s%g1 * max(0.d0, 0.2114d0 - log(c1 * s%cne)) * gcon
+  END SUBROUTINE stark_prepare
+
+  !===============================================================================
+  FUNCTION stark_eval(s, q) result(stark)
+    type(stark_cell_t), intent(in) :: s
+    real(8), intent(in) :: q
+    real(8) :: stark
+    real(8) :: f, p1, q1, y1, y2, beta, gam, prqs, fns
+    !---------------------------------------------------------------------------
+    if (s%off) then
+      stark = 0
+      return
+    endif
+
+    ! Absolute relative detuning
+    q1 = abs(q)
+
+    y1 = s%c1coef * q1
+    y2 = (q1 / s%cne) ** 2
 
     ! Reduced detuning
-    beta = q1 / hw5
+    beta = q1 / s%hw5
 
     ! Compute gamma (electron impact width)
     if ((y2 <= 1.d-4) .and. (y1 <= 1.d-5)) then
-      gam = g1 * max(0.d0, 0.2114d0 - log(c1 * cne)) * gcon
+      gam = s%gam0
     else
-      gam = g1 * (0.5d0 * exp(-min(80.d0, y1)) + vcse1f(y1) - 0.5d0 * vcse1f(y2)) &
-        * (1.d0 - gcon1 / (1.d0 + (90.d0 * y1) ** 3) - gcon2 / (1.d0 + 2000.d0 * y1))
+      gam = s%g1 * (0.5d0 * exp(-min(80.d0, y1)) + vcse1f(y1) - 0.5d0 * vcse1f(y2)) &
+        * (1.d0 - s%gcon1 / (1.d0 + (90.d0 * y1) ** 3) - s%gcon2 / (1.d0 + 2000.d0 * y1))
       if (gam <= 1.d-20) gam = 0.d0
     end if
 
     ! Quasistatic ion profile
-    prqs = holtsmark(beta, pp, n, m)
+    prqs = holtsmark(beta, s%pp, s%n, s%m)
 
     ! Impact (Lorentzian) electron profile
     if (gam > 0.d0) then
@@ -762,11 +823,11 @@ contains
     fns = (p1 + 0.03d0 * sqrt(y1)) / (p1 + 1.d0)
 
     ! Combined profile
-    stark1 = (prqs * (1.d0 + fns) + f) / hw5
+    stark = (prqs * (1.d0 + fns) + f) / s%hw5
 
     ! Boltzmann factor for red wing (q < 0 means lower frequency)
-    if (q < 0.d0) stark1 = stark1 * exp(ex * q)
-  END FUNCTION stark1
+    if (q < 0.d0) stark = stark * exp(s%ex * q)
+  END FUNCTION stark_eval
 
 
   !===============================================================================
@@ -977,36 +1038,22 @@ contains
     real(8), intent(in) :: wave, waveh
     real(4), intent(in) :: t, xne, h1frc, he1frc, dopph
     real(4) :: phi
-    real(4) :: hwlor, hwstk, hfwid, idf
-    real(4) :: resont, vdw, vbar2h, t43, t3nhe, fo
+    real(4) :: t43, t3nhe, fo, vbar2h
     real(8) :: nu, q
-    type(bbtrans_type) :: line
+    type(hline_t) :: line
+    type(hcell_t) :: c
     !----------------------------------------------------------------------------------
-    line%i = n
-    line%j = m
-    line%nu0 = cc * 1.0e8 / waveh
-    call prepare_hydrogen_damping(line)
+    line = hydrogen_line(n, m, cc * 1.0d8 / waveh)
 
     nu = cc * 1.0e8 / wave
     q = (nu - line%nu0) / line%nu0
 
-    idf = 1/dopph
     t43 = (t/10000.)**0.3
     t3nhe = t43*he1frc
     fo = 1.25e-9*xne**0.66667 ! holtsmark normal field strength
     vbar2h = 4.2008e8 * t
-
-    resont = h1frc * line%gw1
-    if (line%gw2 /= 0) then
-      resont = resont * vbar2h**line%gw2
-    endif
-
-    hwstk = line%gq * fo
-    vdw = line%gw3 * t3nhe
-    hwlor = line%ga + resont + vdw
-
-    hfwid = max(1/idf, hwlor, hwstk) ! defines where we switch from Voigt to adding
-    phi = hvoigt(line, q, hwlor, t, xne, hfwid, hwstk, idf)
+    call hcell_prepare(line, t, xne, fo, vbar2h, h1frc, t3nhe, 1/dopph, c)
+    phi = hvoigt(line, c, q)
   END FUNCTION debug_hprofl
 
 END MODULE

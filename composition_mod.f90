@@ -7,15 +7,17 @@ MODULE composition_mod
   USE element_mod
   USE ion_mod, only: ion_type, particle_type, debye_shield
   USE level_mod, only: level_type, wcalc
-  USE bbtrans_mod, only:bbtrans_type, add_opacities, tolerance
+  USE bbtrans_mod, only:tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
   USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
-  USE hprofl_mod, only:prepare_hydrogen_damping, add_h_opacities
+  USE hprofl_mod, only:hline_t, hydrogen_line, add_h_opacities
+  USE hvcs_mod, only:hydrogen_vcs_table, ensure_vcs_loaded
   USE line_types_mod, only: linelist_type
   USE linelist_reader_mod, only: ll_file_t, ll_block_t, ll_open, ll_close, &
                                  ll_next_block, ll_block_range, ll_whole_block, &
                                  ll_read_slice, ll_read_ranges, ll_index_records
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
+                          append_h_line, bij_const, merge_ll_diag, &
                           voigt_peak, interval_t, merge_intervals, in_any_interval, &
                           ll_profile, ll_nvisit, ll_npass, ll_nvoigt, ll_nmarch
   USE spectrum_mod, only: spectrum_type, window_file
@@ -118,6 +120,7 @@ MODULE composition_mod
     procedure :: mask_linelist
     procedure :: mask_departure_species
     procedure :: add_linelist_opacities
+    procedure :: merge_line_diagnostics
     procedure :: print_ion_table
     procedure :: read_molec_file
     procedure :: parse_mol_id
@@ -835,7 +838,7 @@ contains
       no_only = index(only, ' '//trim(element%id)//' ') == 0 .and. only_elements /= ''
       if (in_drop .or. no_only) then
         element%ions%in_linelist = .false.
-        if (sum(element%ions%nline, 1) > 0) then
+        if (element_has_lines(element)) then
           if (console_on(ch_hop, 1)) write(console_unit,'(3a)') 'removing ', trim(element%id), ' from linelist'
         endif
       endif
@@ -846,7 +849,7 @@ contains
       no_only = index(only, ' '//trim(mol%id)//' ') == 0 .and. only_elements /= ''
       if (in_drop .or. no_only) then
         mol%in_linelist = .false.
-        if (mol%nline > 0) then
+        if (has_lines(mol)) then
           if (console_on(ch_hop, 1)) write(console_unit,'(3a)') 'removing ', trim(mol%id), ' from linelist'
         endif
       endif
@@ -911,7 +914,7 @@ contains
         endif
       end do
       if (hit) then
-        if (sum(element%ions%nline, 1) > 0 .and. console_on(ch_hop, 1) .and. first_time) &
+        if (element_has_lines(element) .and. console_on(ch_hop, 1) .and. first_time) &
           write(console_unit,'(3a)') 'sample_linelist: ', trim(element%id), ' has departures -> excluded from LTE table'
         element%ions%in_linelist = .false.
       endif
@@ -925,7 +928,7 @@ contains
         endif
       end do
       if (hit) then
-        if (mol%nline > 0 .and. console_on(ch_hop, 1) .and. first_time) &
+        if (has_lines(mol) .and. console_on(ch_hop, 1) .and. first_time) &
           write(console_unit,'(3a)') 'sample_linelist: ', trim(mol%id), ' has departures -> excluded from LTE table'
         mol%in_linelist = .false.
       endif
@@ -934,14 +937,34 @@ contains
   END SUBROUTINE mask_departure_species
 
   !===============================================================================
+  ! Whether a particle, or any ion stage of an element, holds line-list lines.
+  !-------------------------------------------------------------------------------
+  LOGICAL FUNCTION has_lines (p)
+    class(particle_type), intent(in) :: p
+    !-----------------------------------------------------------------------------
+    has_lines = .false.
+    if (allocated(p%ll)) has_lines = any(p%ll%nline > 0)
+  END FUNCTION has_lines
+
+  LOGICAL FUNCTION element_has_lines (element)
+    class(element_type), intent(in) :: element
+    integer :: j
+    !-----------------------------------------------------------------------------
+    element_has_lines = .false.
+    do j=lbound(element%ions,1), ubound(element%ions,1)
+      if (has_lines(element%ions(j))) element_has_lines = .true.
+    end do
+  END FUNCTION element_has_lines
+
+  !===============================================================================
   ! init_linelist -- structure-of-arrays reader for the bulk linelist.
   ! Walks the file's per-species blocks through linelist_reader_mod, which addresses
   ! and bisects a block's records without reading what lies between them, and builds
   ! each particle's SoA linelist (particle%ll) via linelist_mod from the byte ranges
-  ! the windows select. Hydrogen lines are special (Stark profiles) and kept in the
-  ! AoS particle%line via add_h_block, which handles both the embedded H I block
-  ! layout and the dedicated 'Hlinedata' column layout (selected by the hlinedata
-  ! flag); its block is read whole and masked there.
+  ! the windows select. Hydrogen lines (Stark profiles) are read by add_h_block into
+  ! the hydrogen extension of the H I store, which handles both the embedded H I
+  ! block layout and the dedicated 'Hlinedata' column layout (selected by the
+  ! hlinedata flag); its block is read whole and masked there.
   !-------------------------------------------------------------------------------
   SUBROUTINE init_linelist (self, linelist_file, dlam, lam, intervals)
     class(composition_type), target :: self
@@ -980,8 +1003,7 @@ contains
       call ensure_ll_allocated(self%molecules(i))
     end do
 
-    ! hydrogen lines keep the AoS / Stark-profile treatment (add_h_block); a
-    ! dedicated 'Hlinedata' file just uses the alternate H column layout there.
+    ! a dedicated 'Hlinedata' file uses the alternate H column layout (add_h_block)
     hlinedata = endswith(linelist_file, 'Hlinedata')
     call trace%begin ('composition_type%init_linelist', itimer=itimer)
     self%ll_initialised = .true.
@@ -1055,14 +1077,14 @@ contains
       endif
 
       if (particle%id == 'H I') then
-        ! hydrogen keeps the AoS / Stark-profile treatment (add_h_opacities), and
-        ! is read whole: its Stark wings reach far beyond any window margin
+        ! hydrogen keeps its Stark-profile kernel (add_h_opacities), and is read
+        ! whole: its Stark wings reach far beyond any window margin
         call ll_whole_block (blk, b0, b1)
         call read_slice (b0, b1)
-        nbefore = particle%nline
+        nbefore = particle%ll(0)%nline
         call add_h_block(particle, buf, lstart(1:nslice), lend(1:nslice), nslice, &
                          lam_mask, lam_min, lam_max, intervals, use_intervals)
-        nactive = nactive + (particle%nline - nbefore)
+        nactive = nactive + (particle%ll(0)%nline - nbefore)
         cycle
       endif
 
@@ -1167,15 +1189,16 @@ contains
       allocate(p%ll(0:niso))
     end subroutine ensure_ll_allocated
 
-    ! hydrogen block -> AoS particle%line(:) (Stark-profile / add_h_opacities path).
-    ! Two column layouts are accepted, selected by hlinedata:
+    ! hydrogen block -> particle%ll(0), with the principal quantum numbers that select
+    ! the Stark profile (append_h_line). Two column layouts are accepted, selected by
+    ! hlinedata:
     !   hlinedata=.true.  (dedicated 'Hlinedata' file):
     !       lam_air, i, j, lower_ev, upper_ev, loggf, label, ga_in
     !     -- principal quantum numbers i,j are read directly from the file.
     !   hlinedata=.false. (H I block embedded in a metal file):
     !       lam_air, lower_ev, loggf, gv, ga, gq, i, j
     !     -- i,j are derived from the level energies.
-    ! The ga/label columns are inert (prepare_hydrogen_damping overwrites ga).
+    ! The broadening columns are inert: hydrogen_line supplies the widths.
     subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &
                            intervals_arg, use_intervals_arg)
       class(particle_type), pointer :: particle
@@ -1186,43 +1209,16 @@ contains
       real(dp), intent(in) :: lam_min_arg, lam_max_arg
       type(interval_t), intent(in), optional :: intervals_arg(:)
       logical, intent(in), optional :: use_intervals_arg
-      class(bbtrans_type), pointer :: lin
-      type(bbtrans_type), allocatable :: tmp(:)
       real(dp) :: lam_air_h, lower_ev_h, upper_ev_h, loggf_h, gv_h, ga_h, gq_h, r_i, r_j
-      real(dp) :: lam0v, upper_ev, lower_g, gij, fval
+      real(dp) :: lam0v, nu0, upper_ev
       character(len=150) :: label
-      integer :: ii, ios, prev, nkeep, cnt, i_h, j_h
-      logical :: keep, use_intervals_local
+      integer :: ii, ios, i_h, j_h
+      logical :: use_intervals_local
       !-------------------------------------------------------------------------
       use_intervals_local = .false.
       if (present(use_intervals_arg)) use_intervals_local = use_intervals_arg
+      if (hydrogen_vcs_table) call ensure_vcs_loaded()
 
-      ! first pass: count masked-in lines so particle%line is sized exactly
-      nkeep = 0
-      do ii=1, n
-        read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h
-        lam0v = air2vac(lam_air_h)
-        if (.not. mask) then
-          keep = .true.
-        else if (use_intervals_local .and. present(intervals_arg)) then
-          keep = in_any_interval(lam0v, intervals_arg)
-        else
-          keep = (lam0v >= lam_min_arg .and. lam0v <= lam_max_arg)
-        end if
-        if (keep) nkeep = nkeep + 1
-      end do
-      if (nkeep == 0) return
-
-      prev = particle%nline
-      if (.not. allocated(particle%line)) then
-        allocate(particle%line(nkeep))
-      else
-        allocate(tmp(prev+nkeep))
-        tmp(1:prev) = particle%line
-        call move_alloc(tmp, particle%line)
-      endif
-
-      cnt = prev
       do ii=1, n
         gv_h = 0; ga_h = 0; gq_h = 0; r_i = 0; r_j = 0
         if (hlinedata) then
@@ -1240,39 +1236,24 @@ contains
             if (lam0v < lam_min_arg .or. lam0v > lam_max_arg) cycle
           end if
         endif
-        cnt = cnt + 1
-        lin => particle%line(cnt)
-        lin%lam_air = lam_air_h; lin%lower_ev = lower_ev_h; lin%loggf = loggf_h
-        lin%gv_in = gv_h; lin%ga_in = ga_h; lin%gq_in = gq_h
-        lin%lam0 = lam0v
-        lin%nu0  = HZ_TO_AA / lin%lam0
-        if (hlinedata) then
-          lin%i = i_h
-          lin%j = j_h
-        else
-          upper_ev = lin%lower_ev + H_E*lin%nu0
-          lin%i = nint(sqrt(RydV / (RydV-lin%lower_ev)))
-          lin%j = nint(sqrt(RydV / (RydV-upper_ev)))
+        nu0 = HZ_TO_AA / lam0v
+        if (.not. hlinedata) then
+          upper_ev = lower_ev_h + H_E*nu0
+          i_h = nint(sqrt(RydV / (RydV-lower_ev_h)))
+          j_h = nint(sqrt(RydV / (RydV-upper_ev)))
         endif
-        lower_g = 2 * lin%i**2
-        lin%upper_g = 2 * lin%j**2
-        gij  = lower_g / lin%upper_g
-        fval = 10**lin%loggf / lower_g
-        call lin%init_einstein_coefficients(fval, gij)
-        call prepare_hydrogen_damping(lin)
-        nkh = max(lin%j, nkh)
-        allocate(lin%used, source=.false.)
-        allocate(lin%strength, source=0.d0)
+        call append_h_line(particle%ll(0), log(lam0v), nu0, lower_ev_h, loggf_h, &
+                           gv_h, ga_h, gq_h, i_h, j_h)
+        nkh = max(j_h, nkh)
+        particle%in_linelist = .true.
       end do
-      particle%nline = prev + nkeep
-      particle%in_linelist = .true.
     end subroutine add_h_block
 
   END SUBROUTINE init_linelist
 
   !===============================================================================
-  ! add_linelist_opacities -- SoA opacity orchestrator. The hydrogen block uses
-  ! the AoS (Stark-profile) routine; metals and molecules use the linelist_mod kernel.
+  ! add_linelist_opacities -- line opacity orchestrator. The H I lines use the
+  ! Stark-profile kernel add_h_opacities; metals and molecules the linelist_mod kernel.
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures, &
                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
@@ -1282,7 +1263,7 @@ contains
     class(ion_type), pointer :: ion
     class(molec_type), pointer :: mol
     class(departure_pointer_t), pointer :: dep
-    class(bbtrans_type), pointer :: line
+    type(hline_t) :: hline
     class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
     ! only_departures=.true. skips every particle that has no matching departure
     ! set, i.e. processes only NLTE species -- the complement of the masked
@@ -1290,8 +1271,7 @@ contains
     logical, intent(in), optional :: only_departures
     ! line_scattering: precomputed scattering fractions 1-eps per stage group
     ! (last index 1=neutral incl. molecules, 2=ionized) and the accumulator the
-    ! (1-eps)-weighted LTE line opacity is added to; hydrogen (AoS block) stays
-    ! thermal
+    ! (1-eps)-weighted LTE line opacity is added to; hydrogen stays thermal
     ! chi_scat must enter zeroed.  The kernels accumulate it in working units
     ! (pre-stimulated-emission, like all_chi); with beta present it is converted
     ! to physical 1/cm on the way out, so callers never see the raw form.
@@ -1325,7 +1305,8 @@ contains
     real(8), dimension(:), pointer :: llam
     real(8), intent(in), dimension(:), optional, target :: llam_in
     real(4) :: log_tol_over_voigt_peak
-    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn, set_index
+    real(dp) :: lam0, nu0, Bij
+    integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn, set_index, n_lo, n_up
     logical :: departures_present, do_nlte, skip_lte
     integer, save :: itimer=0
     !-----------------------------------------------------------------------------
@@ -1396,28 +1377,41 @@ contains
       logref = -huge(1.)
     end where
 
-    ! --- hydrogen: identical to the AoS path (Stark profiles via add_h_opacities) ---
+    ! --- hydrogen: Stark profiles (add_h_opacities) on the H I line list ---
+    ! n_lo/n_up select the profile; in NLTE lev_i/lev_j are the matching departure-set
+    ! levels, whose coefficients scale the LTE populations of levels n_lo/n_up.
     element => self%elements(1)
     ion => element%ions(1)
     call get_departure_coefficients(ion, dep)
-    if (ion%in_linelist .and. ion%nline > 0 .and. &
+    if (ion%in_linelist .and. allocated(ion%ll) .and. &
         .not. (skip_lte .and. .not. associated(dep))) then
-      fo = self%fo(lo:hi,:,:)
-      vbar2 = self%vbar2h(lo:hi,:,:)
-      t3nhe = self%t3nhe(lo:hi,:,:)
-      inv_df = element%inverse_doppler_factor(temp, self%vmic(lo:hi,:,:))
+      associate (hll => ion%ll(0))
+      if (hll%nline > 0) then
+        fo = self%fo(lo:hi,:,:)
+        vbar2 = self%vbar2h(lo:hi,:,:)
+        t3nhe = self%t3nhe(lo:hi,:,:)
+        inv_df = element%inverse_doppler_factor(temp, self%vmic(lo:hi,:,:))
+      endif
 
-      do l=1, ion%nline
-        line => ion%line(l)
-        if (.not. line%active) cycle
-        call line%get_center(sp%lam, dlam, f0)
-        if (f0 == 0) cycle
-        if (associated(dep)) then
-          line%i = find_closest(dep%ev, 100*ion%j + line%lower_ev)
-          line%j = find_closest(dep%ev, 100*ion%j + line%lower_ev + H_E*line%nu0)
+      do l=1, hll%nline
+        if (.not. hll%active(l)) cycle
+        lam0 = exp(hll%llam0(l))
+        if (dlam == 0) then
+          f0 = findloc(llam, hll%llam0(l), 1)
+        else
+          f0 = find_closest(sp%lam, lam0)
+          if (abs(sp%lam(f0) - lam0) > dlam) f0 = 0
         endif
-        ni = ion%levels(line%i)%n(lo:hi,:,:)
-        nj = ion%levels(line%j)%n(lo:hi,:,:)
+        if (f0 == 0) cycle
+        nu0 = HZ_TO_AA / lam0
+        n_lo = hll%n_lo(l)
+        n_up = hll%n_up(l)
+        if (associated(dep)) then
+          hll%lev_i(l) = find_closest(dep%ev, 100*ion%j + dble(hll%lower_ev(l)))
+          hll%lev_j(l) = find_closest(dep%ev, 100*ion%j + dble(hll%lower_ev(l)) + H_E*nu0)
+        endif
+        ni = ion%levels(n_lo)%n(lo:hi,:,:)
+        nj = ion%levels(n_up)%n(lo:hi,:,:)
         call self%set_population(ion%id, set_index, set_n, set_scale)
         if (associated(set_n)) then
           where (ion%n(lo:hi,:,:) > 0d0)
@@ -1429,17 +1423,22 @@ contains
           nj = nj * real(set_scale,4)
         endif
         if (H_occupation_probability) then
-          ni = ni * ion%levels(line%j)%w(lo:hi,:,:)
-          nj = nj * ion%levels(line%j)%w(lo:hi,:,:)
+          ni = ni * ion%levels(n_up)%w(lo:hi,:,:)
+          nj = nj * ion%levels(n_up)%w(lo:hi,:,:)
         endif
-        do_nlte = associated(dep) .and. line%i>0 .and. line%j>0
+        do_nlte = associated(dep) .and. hll%lev_i(l)>0 .and. hll%lev_j(l)>0
         if (do_nlte) then
-          bi => dep%mem(:,:,:,line%i)
-          bj => dep%mem(:,:,:,line%j)
+          bi => dep%mem(:,:,:,hll%lev_i(l))
+          bj => dep%mem(:,:,:,hll%lev_j(l))
         endif
-        call add_h_opacities(line, f0, sp%nu, vpr, inv_df, temp, &
-          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte, lo, hi)
+        hline = hydrogen_line(n_lo, n_up, nu0)
+        ! f = gf / g_lower, with g_lower = 2 n_lo**2
+        Bij = bij_const * 10**dble(hll%loggf(l)) / (2*n_lo**2 * nu0)
+        call add_h_opacities(hline, Bij, f0, sp%nu, vpr, inv_df, temp, &
+          ni, nj, ne, tothi, vbar2, fo, t3nhe, bi, bj, chi_l, eta_l, all_chi, do_nlte, &
+          hll%used(l), hll%strength(l), lo, hi)
       end do
+      end associate
     endif
 
     ! --- metals and molecules: SoA kernel ---
@@ -1545,6 +1544,37 @@ contains
       endif
     end subroutine particle_add_opacities_soa
   END SUBROUTINE add_linelist_opacities
+
+  !===============================================================================
+  ! Accumulate the line-list diagnostics (used, strength, reach) of src, a copy of
+  ! self made after init_linelist, into self. The kernels write them per copy, which
+  ! keeps the hot loops free of shared writes; merging every copy into the composition
+  ! they were made from gives the maximum over all of them.
+  !-------------------------------------------------------------------------------
+  SUBROUTINE merge_line_diagnostics(self, src)
+    class(composition_type), target :: self
+    class(composition_type), intent(in) :: src
+    integer :: i, j, k
+    !-----------------------------------------------------------------------------
+    do i=1, self%nel
+      do j=lbound(self%elements(i)%ions,1), ubound(self%elements(i)%ions,1)
+        associate (dst_p => self%elements(i)%ions(j), src_p => src%elements(i)%ions(j))
+          if (.not. allocated(dst_p%ll) .or. .not. allocated(src_p%ll)) cycle
+          do k=lbound(dst_p%ll,1), ubound(dst_p%ll,1)
+            call merge_ll_diag(dst_p%ll(k), src_p%ll(k))
+          end do
+        end associate
+      end do
+    end do
+    do i=1, self%nmolec
+      associate (dst_p => self%molecules(i), src_p => src%molecules(i))
+        if (.not. allocated(dst_p%ll) .or. .not. allocated(src_p%ll)) cycle
+        do k=lbound(dst_p%ll,1), ubound(dst_p%ll,1)
+          call merge_ll_diag(dst_p%ll(k), src_p%ll(k))
+        end do
+      end associate
+    end do
+  END SUBROUTINE merge_line_diagnostics
 
   !===============================================================================
   SUBROUTINE reassign_pointer(self)

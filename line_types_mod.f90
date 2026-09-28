@@ -30,7 +30,7 @@ MODULE line_types_mod
     ! The isotope fraction is NOT folded in here; the caller applies it to the
     ! per-isotope population base (bulk path) or via append_line's gpref (model atoms).
     real(4),  allocatable :: gpref(:)
-    ! broadening (already scaled by over_4pi/nu0, exactly as the AoS prepare_* routines)
+    ! broadening (already scaled by over_4pi/nu0, as bbtrans_mod's prepare_* routines)
     real(4),  allocatable :: ga(:)       ! radiative damping
     real(4),  allocatable :: gw1(:)      ! van der Waals coefficient
     real(4),  allocatable :: gw2(:)      ! van der Waals exponent
@@ -68,6 +68,11 @@ MODULE line_types_mod
     real(4),  allocatable :: cwt(:)      ! component weight (wphi measure; 1 for plain lines)
     real(4),  allocatable :: dej(:)      ! upper_ev - lower_ev = H_E*nu0 [eV] (preconditioning)
     integer,  allocatable :: iso_out(:)  ! isotope number for the linelist_out.txt grouping
+    ! --- hydrogen extension (the H I linelist, see append_h_line) ---------------------
+    ! principal quantum numbers of the lower and upper level, which select the Stark
+    ! profile; lev_i/lev_j start equal to them and take the departure-set level indices
+    ! when the line is computed in NLTE
+    integer,  allocatable :: n_lo(:), n_up(:)
   end type linelist_type
 
 END MODULE line_types_mod
