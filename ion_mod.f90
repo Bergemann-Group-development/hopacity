@@ -25,7 +25,6 @@ MODULE ion_mod
     integer :: niso=1
     class(isotope_type), dimension(:), pointer :: isotope => null()
     type(level_type), allocatable :: levels(:)
-    type(level_type), allocatable :: nlte_levels(:)
     ! line-list lines, one structure-of-arrays store per isotope (index 0 = main)
     type(linelist_type), allocatable :: ll(:)
     real(dp), allocatable, dimension(:) :: irwin
@@ -67,8 +66,6 @@ MODULE ion_mod
     ! ne-dependent occupation-weighted partition); vetoes temp-only caching
     logical :: state_dependent_part = .false.
   contains
-    procedure :: molecules_with
-    procedure :: f_of_molecules_with
     procedure :: allocate => allocate_particle
     procedure :: deallocate => deallocate_particle
   end type
@@ -76,80 +73,6 @@ MODULE ion_mod
   logical, public :: debye_shield=.True.
 
 contains
-
-  !===============================================================================
-  FUNCTION f_of_molecules_with(self, other, count_double) result(fsum)
-    class(ion_type) :: self
-    type(ion_type), optional :: other
-    type(particle_type), pointer :: mol
-    type(particle_pointer_t), allocatable :: mol_list(:)
-    real(dp), dimension(:,:,:), allocatable :: fsum
-    logical, optional :: count_double
-    integer :: i
-    !---------------------------------------------------------------------------
-    allocate(fsum(self%m(1),self%m(2),self%m(3)), source=0.d0)
-
-    if (present(other)) then
-      call self%molecules_with(other, mol_list, count_double)
-    else
-      allocate(mol_list, source=self%molecules)
-    end if
-
-    do i=1, size(mol_list)
-      mol => mol_list(i)%p
-      fsum = fsum + mol%f
-    end do
-    deallocate(mol_list)
-  END FUNCTION
-
-  !===============================================================================
-  SUBROUTINE molecules_with (self, other, mol_list, count_double)
-    class(ion_type), target, intent(in) :: self
-    type(ion_type), intent(in) :: other
-    logical, intent(in), optional :: count_double
-    type(particle_pointer_t), intent(out), allocatable :: mol_list(:)
-    class(particle_type), pointer :: mol
-    logical :: cd
-    integer :: mi, mj, count
-    !---------------------------------------------------------------------------
-    if (present(count_double)) then
-      cd = count_double
-    else
-      cd = .false.
-    endif
-
-    count = 0
-
-    do mi=1, self%nmolec
-      mol => self%molecules(mi)%p
-
-      if (mi>1 .and. .not. cd) then
-        if(mol%id == self%molecules(mi-1)%p%id) cycle
-      endif
-
-      do mj=1, other%nmolec
-        if (mol%id == other%molecules(mj)%p%id) count = count + 1
-      end do
-    end do
-
-    allocate(mol_list(count))
-
-    count = 0
-    do mi=1, self%nmolec
-      mol => self%molecules(mi)%p
-
-      if (mi>1 .and. .not. cd) then
-        if(mol%id == self%molecules(mi-1)%p%id) cycle
-      endif
-
-      do mj=1, other%nmolec
-        if (mol%id == other%molecules(mj)%p%id) then
-          count = count + 1
-          mol_list(count)%p => mol
-        endif
-      end do
-    end do
-  END SUBROUTINE molecules_with
 
   !===============================================================================
   SUBROUTINE allocate_particle (self, m)

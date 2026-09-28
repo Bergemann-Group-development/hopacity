@@ -15,7 +15,7 @@ MODULE osmet_mod
     real(dp), dimension(:), allocatable :: p6, temp
     real(4), dimension(:,:,:), pointer, contiguous :: ostabl
     logical, dimension(:), pointer, contiguous :: active
-    integer :: lunit, np6, ntemp, nnu, maxrec
+    integer :: lunit, ntemp, nnu
     logical :: initialised=.false.
   contains
     procedure :: init

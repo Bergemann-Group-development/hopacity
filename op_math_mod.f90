@@ -2,10 +2,6 @@ MODULE op_math_mod
   USE prec_mod
   implicit none
 
-  interface poly1d
-    module procedure poly3, poly4, poly5, poly6
-  end interface poly1d
-
   interface find_closest
     module procedure find_closest4, find_closest8
   end interface find_closest
@@ -14,9 +10,6 @@ MODULE op_math_mod
     module procedure searchsorted4, searchsorted8
   end interface searchsorted
 
-  interface BinarySearch
-    module procedure BinarySearch4, BinarySearch8
-  end interface BinarySearch
 contains
 
   !====================================================================================
@@ -183,17 +176,6 @@ contains
     xx = [(x1 + i*dx, i=0, n-1)]
   END FUNCTION linspace
 
-  !===============================================================================
-  PURE FUNCTION normspace (n) result(xx)
-    integer, intent(in) :: n
-    real(4), dimension(n) :: xx
-    real(4) :: dx
-    integer :: i
-    !-----------------------------------------------------------------------------
-    dx = 1. / real(n)
-    xx = [(i*dx, i=0, n-1)]
-  END FUNCTION normspace
-
   !====================================================================================
   pure SUBROUTINE get_interval(arr, lower, upper, lo, up, limit)
     real(8), intent(in) :: arr(:), lower, upper
@@ -223,34 +205,6 @@ contains
   end SUBROUTINE get_interval
 
   !====================================================================================
-  elemental real(dp) FUNCTION poly3(x, a, b, c) result(poly)
-    real(dp), intent(in) :: x, a, b, c
-    !----------------------------------------------------------------------------
-    poly = a*x*x + b*x + c
-  end FUNCTION poly3
-
-  !====================================================================================
-  elemental real(dp) FUNCTION poly4(x, a, b, c, d) result(poly)
-    real(dp), intent(in) :: x, a, b, c, d
-    !----------------------------------------------------------------------------
-    poly = x*poly3(x, a, b, c) + d
-  end FUNCTION poly4
-
-  !====================================================================================
-  elemental real(dp) FUNCTION poly5(x, a, b, c, d, e) result(poly)
-    real(dp), intent(in) :: x, a, b, c, d, e
-    !----------------------------------------------------------------------------
-    poly = x*poly4(x, a, b, c, d) + e
-  end FUNCTION poly5
-
-  !====================================================================================
-  elemental real(dp) FUNCTION poly6(x, a, b, c, d, e, f) result(poly)
-    real(dp), intent(in) :: x, a, b, c, d, e, f
-    !----------------------------------------------------------------------------
-    poly = x*poly5(x, a, b, c, d, e) + f
-  end FUNCTION poly6
-
-  !====================================================================================
   SUBROUTINE poly3d(x, p, res)
     real(dp), intent(in), dimension(:,:,:) :: x
     real(dp), intent(in), dimension(:) :: p
@@ -262,21 +216,6 @@ contains
       res = res * x + p(i)
     end do
   END SUBROUTINE poly3d
-
-  !===============================================================================
-  elemental real(dp) FUNCTION solve_quadratic(p, q) result(x)
-    real(dp), intent(in) :: p, q
-    real(dp) :: cam, root
-    !----------------------------------------------------------------------------
-    if (p > 0) then
-      root = sqrt(abs(p*p - 4.d0*q))
-      x = - 2.d0*q / (p + root)
-    else
-      cam = - 0.5d0*p
-      root = sqrt(abs(cam*cam - q))
-      x = cam + root
-    endif
-  end FUNCTION solve_quadratic
 
   !===============================================================================
   !  finds solution of system of linear equations
@@ -473,118 +412,6 @@ contains
       b(i) = b(i)/a(i,i)
     end do
   END SUBROUTINE lineq_no_pivot
-
-  !===============================================================================
-  SUBROUTINE AINV2(A,M)
-    implicit none
-    integer :: M
-    real(8), dimension(M,M) :: A
-    integer, dimension(M) :: IND
-    real(8), dimension(M) :: C
-    real(8) :: AMAX,STO,W1,W
-    integer :: I, I4, MM, J, ISTO, K, J1, I1, J2, I2
-    !***** THIS SUBROUTINE EVALUATES THE INVERSE OF A
-    !***** SQUARE M*M MATRIX A
-    !***** THE DIMENSIONS OF THE ARRAYS MAY BE INTEGER VARIABLES WHEN USED*********
-    !***** ON THE IBM 7094,BUT THEY MUST BE INTEGER CONSTANTS ON THE IBM 1130******
-    !-----------------------------------------------------------------------------
-    AMAX=0.0
-
-    do I=1,M
-      IND(I)=I
-      if(abs(A(I,1))-AMAX > 0) then
-        AMAX=abs(A(I,1))
-        I4=I
-      endif
-    end do
-
-    MM=M-1
-
-    do J=1,MM
-      if(I4-J > 0) then
-        ISTO=IND(J)
-        IND(J)=IND(I4)
-        IND(I4)=ISTO
-        do K=1,M
-          STO=A(I4,K)
-          A(I4,K)=A(J,K)
-          A(J,K)=STO
-        end do
-      endif
-      AMAX=0.0
-      J1=J+1
-      do I=J1,M
-        A(I,J)=A(I,J)/A(J,J)
-        do K=J1,M
-          A(I,K)=A(I,K)-A(I,J)*A(J,K)
-          IF (K-J1 <= 0) then
-            IF(abs(A(I,K))-AMAX > 0) then
-              AMAX=abs(A(I,K))
-              I4=I
-            endif
-          endif
-        end do
-      end do
-    end do
-
-    do I1=1,MM
-      I=M+1-I1
-      I2=I-1
-      do J1=1,I2
-        J=I2+1-J1
-        J2=J+1
-        W1=-A(I,J)
-        IF(I2-J2 >= 0) then
-          do K=J2,I2
-            W1=W1-A(K,J)*C(K)
-          end do
-        endif
-        C(J)=W1
-      end do
-      do K=1,I2
-        A(I,K)=C(K)
-      end do
-    end do
-
-    do I1=1,M
-      I=M+1-I1
-      I2=I+1
-      W=A(I,I)
-      do J=1,M
-        if (I-J < 0) then
-          W1=0.0
-        elseif(I-J == 0) then
-          W1=1.0
-        else
-          W1=A(I,J)
-        endif
-        if (I1-1 > 0) then
-          do K=I2,M
-            W1=W1-A(I,K)*A(K,J)
-          end do
-        endif
-        C(J)=W1
-      end do
-      do J=1,M
-        A(I,J)=C(J)/W
-      end do
-    end do
-
-    do I=1,M
-      do while (IND(I)-I /=0)
-        J=IND(I)
-        do K=1,M
-          STO=A(K,I)
-          A(K,I)=A(K,J)
-          A(K,J)=STO
-        end do
-        ISTO=IND(J)
-        IND(J)=J
-        IND(I)=ISTO
-      end do
-    end do
-    return
-  END SUBROUTINE
 
   !===============================================================================
   ! Orthogonal PCA basis of 2D scatter data (x1,x2), e.g. (lnT, lnNe) samples.

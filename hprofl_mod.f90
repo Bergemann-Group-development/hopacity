@@ -3,7 +3,6 @@ MODULE hprofl_mod
   USE qlg, only: qlg_bot_coef_t, qlg_bot_coef, qlg_bot_eval   ! the one Voigt kernel; see linelist_mod's kernel note
   USE prec_mod, only: RYD, dp
   USE const_mod
-  USE interpol_mod, only: interp1d_sorted
   USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, ensure_vcs_loaded, &
                       vcs_profile_t, vcs_prepare, vcs_eval
   implicit none

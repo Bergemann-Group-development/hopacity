@@ -1,25 +1,13 @@
 MODULE handyfuncs_mod
   USE op_math_mod
-  USE interpol_mod, only: interp1d
   USE hop_env_mod, only: os
   USE console_mod
   implicit none
-
-  interface argsort
-    module procedure argsort_int, argsort_r4, argsort_r8
-  end interface argsort
 
   interface truncate_array
     module procedure truncate_string_array, truncate_float_array, &
       truncate_dble_array, truncate_int_array, truncate_bool_array
   end interface truncate_array
-
-  abstract interface
-    function generic_func(input) result(f)
-      real(8), intent(in) :: input
-      real(8) :: f
-    end function generic_func
-  end interface
 
   interface check_array
     module procedure check_1d_array_dp, check_2d_array_dp, check_3d_array_dp, check_4d_array_dp
@@ -267,59 +255,10 @@ contains
   END SUBROUTINE argsort_int
 
   !===============================================================================
-  SUBROUTINE argsort_r4(a, order)
-    real(4), intent(in) :: a(:)
-    integer, intent(out) :: order(:)
-    real(4), allocatable :: scr(:)
-    integer :: i, j, n
-    !-----------------------------------------------------------------------------
-    allocate(scr, source=a)
-    n = size(a, 1)
-    order = 1
-
-    do i = 2, n
-      j = i - 1
-      do while (j >= 1)
-        if (scr(j) <= a(i)) exit
-        scr(j + 1) = scr(j)
-        order(j+1) = order(j)
-        j = j - 1
-      end do
-      scr(j + 1) = a(i)
-      order(j+1) = i
-    end do
-  END SUBROUTINE argsort_r4
-
-  !===============================================================================
-  SUBROUTINE argsort_r8(a, order)
-    real(8), intent(in) :: a(:)
-    integer, intent(out) :: order(:)
-    real(8), allocatable :: scr(:)
-    integer :: i, j, n
-    !-----------------------------------------------------------------------------
-    allocate(scr, source=a)
-    n = size(a, 1)
-    order = 1
-
-    do i = 2, n
-      j = i - 1
-      do while (j >= 1)
-        if (scr(j) <= a(i)) exit
-        scr(j + 1) = scr(j)
-        order(j+1) = order(j)
-        j = j - 1
-      end do
-      scr(j + 1) = a(i)
-      order(j+1) = i
-    end do
-  END SUBROUTINE argsort_r8
-
-  !===============================================================================
-  ! In-place ascending sort (recursive quicksort, middle-element pivot).  Replaces
-  ! the ORDERPACK refsor that HOP used to pull in from SRC/refsor_mod.f90 via
-  ! mmath_mod; both call sites (spectrum_mod%sort, composition_mod) are one-time
-  ! setup sorts, not hot loops.  The middle-element pivot keeps the already-sorted
-  ! and concatenated-sorted-runs inputs they pass off the O(n^2) path.
+  ! In-place ascending sort (recursive quicksort, middle-element pivot).  Both call
+  ! sites (spectrum_mod%sort, composition_mod) are one-time setup sorts, not hot
+  ! loops.  The middle-element pivot keeps the already-sorted and
+  ! concatenated-sorted-runs inputs they pass off the O(n^2) path.
   RECURSIVE SUBROUTINE sort_asc(a)
     real(8), intent(inout) :: a(:)
     !-----------------------------------------------------------------------------
@@ -345,30 +284,6 @@ contains
       if (i < hi) call qs(i, hi)
     end subroutine qs
   END SUBROUTINE sort_asc
-
-  !===============================================================================
-  FUNCTION thread2place(thread, ncores, nthreads) result(place)
-    integer, intent(in) :: thread, ncores, nthreads
-    integer :: place
-    ! ----------------------------------------------------------------------------
-    place = nint(thread*ncores/real(nthreads))
-  END FUNCTION thread2place
-
-    !===============================================================================
-  SUBROUTINE crop1d8(arr, i, o)
-    real(8), intent(inout), allocatable :: arr(:)
-    real(8), allocatable :: tmp(:)
-    integer, intent(in) :: i, o
-    integer :: n
-    ! ----------------------------------------------------------------------------
-    n = o-i+1
-    allocate(tmp(n))
-    tmp = arr(i:o)
-    deallocate(arr)
-    allocate(arr(n))
-    arr = tmp
-    deallocate(tmp)
-  END SUBROUTINE crop1d8
 
   !====================================================================================
   PURE FUNCTION lowercase(string)
@@ -422,52 +337,6 @@ contains
     capitalize(1:1) = uppercase(capitalize(1:1))
   END FUNCTION capitalize
 
-  !====================================================================================
-  SUBROUTINE sort_array(array, indices)
-    real(8), intent(inout) :: array(:)
-    integer, intent(out) :: indices(size(array))
-    real(8) :: tmp
-    integer :: i, j, min_idx, idx
-    !---------------------------------------------------------------------------------
-    ! initialize indices to the identity permutation
-    indices = [(i, i=1, size(array))]
-
-    ! selection sort algorithm
-    do i = 1, size(array)-1
-      min_idx = i
-      do j = i+1, size(array)
-        if (array(j) < array(min_idx)) then
-          min_idx = j
-        end if
-      end do
-      if (min_idx /= i) then
-        ! swap elements in array and indices
-        tmp = array(i)
-        array(i) = array(min_idx)
-        array(min_idx) = tmp
-        idx = indices(i)
-        indices(i) = indices(min_idx)
-        indices(min_idx) = idx
-      end if
-    end do
-  END SUBROUTINE sort_array
-
-  !====================================================================================
-  SUBROUTINE refine_array(array, n, fac)
-    real(8), intent(inout), dimension(:), pointer, contiguous :: array
-    integer, intent(inout) :: n
-    integer, intent(in) :: fac
-    real(8), dimension(:), pointer, contiguous :: tmp
-    integer :: i, nnew
-    !---------------------------------------------------------------------------------
-    nnew = (n-1)*fac + 1
-    allocate(tmp(nnew))
-    tmp = interp1d([(dble(i), i=0, n-1)], array, [(dble(i)/fac, i=0, (n-1)*fac)], order=1, sorted=.true.)
-    deallocate(array)
-    array => tmp
-    n = nnew
-  END SUBROUTINE refine_array
-
   !===============================================================================
   SUBROUTINE remove_close_entries(array, threshold)
     real(8), intent(inout), allocatable :: array(:)
@@ -520,82 +389,6 @@ contains
     n = 1.00008336624212083d0 + 0.02408926869968d0 / (130.1065924522d0 - s2) &
       + 0.0001599740894897d0 / (38.92568793293d0 - s2)
   END FUNCTION airvac_corr
-
-  !===============================================================================
-  FUNCTION find_closest_from_center(arr, tar) result(closest_index)
-    real(8), intent(in) :: arr(:)
-    real(8), intent(in) :: tar
-    integer :: closest_index
-    integer :: n, i, center
-    real(8) :: min_diff, current_diff
-    !-----------------------------------------------------------------------------
-    ! Start from the center
-    n = size(arr)
-    center = (n + 1) / 2
-    closest_index = center
-    min_diff = abs(arr(center) - tar)
-
-    ! Move right from center
-    do i = center + 1, n
-      current_diff = abs(arr(i) - tar)
-      if (current_diff < min_diff) then
-        min_diff = current_diff
-        closest_index = i
-      else
-        exit  ! Stop if values start diverging
-      end if
-    end do
-
-    ! Move left from updated closest_index
-    do i = closest_index - 1, 1, -1
-      current_diff = abs(arr(i) - tar)
-      if (current_diff < min_diff) then
-        min_diff = current_diff
-        closest_index = i
-      else
-        exit
-      end if
-    end do
-  END FUNCTION find_closest_from_center
-
-  !===============================================================================
-  FUNCTION bisect(f_ptr, a, b, tol) result(c)
-    procedure(generic_func), pointer :: f_ptr
-    real(8), intent(in) :: a, b, tol
-    real(8) :: c
-    real(8) :: fa, fb, fc
-    real(8) :: left, right
-    !-----------------------------------------------------------------------------
-    left = a
-    right = b
-    fa = f_ptr(left)
-    fb = f_ptr(right)
-
-    if (fa * fb > 0.0) then
-      call console_warn (ch_hop, 'root not bracketed')
-      c = -1.0
-      return
-    elseif (fa == 0.0) then
-      c = left
-      return
-    elseif (fb == 0.0) then
-      c = right
-      return
-    end if
-
-    do
-      c = 0.5 * (left + right)
-      fc = f_ptr(c)
-      if (abs(fc) < tol .or. abs(right - left) < tol) exit
-      if (fa * fc < 0.0) then
-        right = c
-        fb = fc
-      else
-        left = c
-        fa = fc
-      end if
-    end do
-  END FUNCTION bisect
 
   !===============================================================================
   FUNCTION rindex(text, str) result(index)

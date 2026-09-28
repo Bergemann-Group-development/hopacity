@@ -348,8 +348,11 @@ contains
   END SUBROUTINE qlg_top_sweep
 
   !=====================================================================================
-  ! Build QLG-bot's two tables.  Call once before qlg_bot_sweep; idempotent, so a caller
-  ! that cannot tell whether the tabulated member is in use may call it unconditionally.
+  ! Build QLG-bot's two tables.  MUST be called once before any opacity or rate is
+  ! accumulated: qlg_bot_sweep and qlg_bot_phi are PURE and cannot check, so an omitted
+  ! call is not an error but a silently zero profile.  Idempotent, and a few
+  ! milliseconds.  Entry points that must make it: SRC/composition_patch_mod.f90 after
+  ! reading &linelist_params, and the standalone library's hop_init.
   ! Both tables are built in fp64 and rounded once, on the same grid u_i = (i/XSCL)^2.
   !-------------------------------------------------------------------------------------
   SUBROUTINE qlg_init
@@ -471,8 +474,8 @@ contains
   !##  these; call qlg_bot_sweep directly, as it does.
   !##
   !##  qlg_init MUST have been called first, as for qlg_bot_sweep itself: these read the
-  !##  same TGX/TH2X.  linelist_mod's voigt_kernel_init does it, from
-  !##  SRC/composition_patch_mod.f90 and from the standalone library's hop_init.
+  !##  same TGX/TH2X.  SRC/composition_patch_mod.f90 and the standalone library's
+  !##  hop_init call it.
   !##
   !#####################################################################################
   !#####################################################################################

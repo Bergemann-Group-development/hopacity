@@ -12,11 +12,6 @@ MODULE trans_mod
   ! *******************************************************************
   implicit none
 
-  type anisotropy_type
-    real(8),dimension(:,:,:),allocatable :: J00,J20
-    complex(8),dimension(:,:,:),allocatable :: J2p1,J2m1,J2p2,J2m2
-  end type anisotropy_type
-
   type, extends(bbtrans_type) :: transition_type
     integer :: ntrans ! transition identifier
 
@@ -32,7 +27,6 @@ MODULE trans_mod
     real(8), dimension(:), allocatable :: wnu ! frequency quadrature weight [Hz]
 
   contains
-    procedure :: overlaps
     procedure :: check_range
   end type transition_type
 
@@ -63,7 +57,6 @@ MODULE trans_mod
 
   contains
     procedure :: get_lam
-    procedure :: freql
 
   end type line_type
 
@@ -124,15 +117,6 @@ contains
     if (fe_out < fs_in)  skip = .true.
   END SUBROUTINE check_range
   !------------------------------------------------------------------------------------
-
-  !====================================================================================
-  logical pure function overlaps(self, other)
-    class(transition_type), intent(in) :: self, other
-    !--------------------------------------------------------------------------------
-    overlaps = .false.
-    if (self%iblue > other%iblue .and. self%iblue < other%ired) overlaps = .true.
-    if (other%iblue > self%iblue .and. other%iblue < self%ired) overlaps = .true.
-  end function overlaps
   !------------------------------------------------------------------------------------
 
   !====================================================================================
@@ -183,94 +167,6 @@ contains
       lam = self%lam0*(1.0 + q)
     endif
   END SUBROUTINE
-
-  !====================================================================================
-  SUBROUTINE freql(self, symmetric)
-    !***********************************************************************
-
-    !  gives  frequency quadrature points and corresponding weights.
-    !  one- or two-sided cases.  the points and weights are based on
-    !  the trapezoidal rule applied to a mapping function  that maps
-    !  equidistant  points in  x to  equidistant points in  q  in the
-    !  core (q .lt. q0), and equidistant points in log(q) in the wings
-    !  (q .gt. q0).
-
-    !  nq     : total number of quadrature points                (in)
-    !  qmax   : maximum value of frequency (doppler units)       (in)
-    !  ind    : =1 for one-sided and =2 for two-sided cases      (in)
-    !  q0     : transition from core to wing (doppler units)     (in)
-    !  q      : quadrature points                               (out)
-    !  wq     : quadrature weights                              (out)
-
-    !  coded by: ake nordlund (oct-1981).
-
-    !  revised by mats carlsson (jan-1984): new options
-    !  qmax.le.q0   q linear in frequency
-    !  qmax or q0.lt.0  q given and only weights are calculated
-
-    !:
-    !: freql  88-05-03  modifications: (mats carlsson)
-    !:        added options gave incorrect weights for ind=1
-    !:        this affected cooling rates for lines with frequency
-    !:        quadrature given with qmax=q0 or qmax.lt.0 or q0.lt.0
-    !:        the corrected weights are twice the old ones
-    !:
-    !***********************************************************************
-
-    class(line_type), intent(inout)  :: self
-    real(8),dimension(:),allocatable :: q,wq
-
-    real(8)  :: dq, x, x10, a, half, xmax, dx,qmax,q0, start
-    integer :: nnu, j
-    logical :: symmetric
-    !---------------------------------------------------------------------
-    q0=self%q0
-    qmax=self%qmax
-    nnu=self%nnu
-    allocate(q(nnu))
-    allocate(wq(nnu))
-
-    if (qmax.le.q0) then
-      ! linear spacing
-      dq = qmax / (nnu-1)
-      q(1) = 0
-
-      if (symmetric) then
-        dq = 2.*dq
-        q(1) = -qmax
-      endif
-
-      do j=2,nnu
-        q(j) = q(j-1) + dq
-      end do
-
-    else if(qmax.ge.0.0 .and. q0.ge.0.0) then
-      a=10.**(q0+.5)
-      half=0.5
-      xmax=log10(a*max(half,qmax-q0-half))
-
-      dx=xmax/(nnu-1)
-      start=0
-
-      if (symmetric) then
-        dx = 2.*dx
-        start = -xmax
-      endif
-
-      do j=1,nnu
-        x=start+(j-1)*dx
-        x10=10.**x
-        q(j)=x+(x10-1./x10)/a
-      end do
-    end if
-
-    allocate(self%q(nnu))
-    allocate(self%lam(nnu))
-    self%q = q*KM_TO_CM/cc
-    self%lam = self%lam0*(1.0 + self%q)
-    self%lam_min = self%lam(1)
-    self%lam_max = self%lam(nnu)
-  END SUBROUTINE freql
   !------------------------------------------------------------------------------------
 
 END MODULE trans_mod

@@ -102,7 +102,6 @@ MODULE composition_mod
     procedure :: molecule_by_id
     procedure :: element_by_id
     procedure :: particle_by_id
-    procedure :: trans_by_id
     procedure :: ion_by_id
     procedure :: boltzmann_factor
     procedure :: continuum_opacities
@@ -121,7 +120,6 @@ MODULE composition_mod
     procedure :: mask_departure_species
     procedure :: add_linelist_opacities
     procedure :: merge_line_diagnostics
-    procedure :: print_ion_table
     procedure :: read_molec_file
     procedure :: parse_mol_id
     procedure :: print_opacity_contributions
@@ -149,7 +147,6 @@ MODULE composition_mod
   logical, public :: mhd_eos=.true.
   logical, public :: helium_scattering=.true.
   real(dp), public :: debug_opac=0
-  integer, public :: switch=1
   real(dp), public :: ref_lam=5000.d0
   character(len=1024), public :: abundances
   logical, public :: relative_abundances=.false.
@@ -686,14 +683,6 @@ contains
           trans%ldisk(j) = .true.
         endif
       end do
-
-      !if (count(trans%ldisk)>0) then
-      !    write(text, '(A,I0,A)') '(A10, ":[",', count(trans%ldisk), '(F14.1,","),F14.1,"],")'
-      !    print text, "'"//trim(trans%key)//"'", pack(trans%lam, trans%ldisk), trans%maxl
-      !else
-      !    write(text, '(A,I0,A)') '(A10, ":[",F14.1,"],")'
-      !    print text, "'"//trim(trans%key)//"'", trans%maxl
-      !endif
 
       !read(absdat,999) ilogt,kvadt,minet,maxet,ntt,iteta
       read(absdat, '(A)') text_line
@@ -3170,26 +3159,6 @@ contains
     endif
   END SUBROUTINE particle_by_id
 
-  !===============================================================================
-  SUBROUTINE trans_by_id(self, id, trans)
-    class(composition_type), target :: self
-    character(len=*), intent(in) :: id
-    class(bftrans_type), pointer, intent(out) :: trans
-    integer :: i, idx
-    !---------------------------------------------------------------------------
-    trans => null()
-    do i=1, size(self%trans)
-      if (trim(self%trans(i)%key) == id) then
-        trans => self%trans(i)
-        call trace%end ()
-        return
-      endif
-    end do
-
-    call console_error ('transition key '//trim(id)//' not found')
-    error stop
-  END SUBROUTINE trans_by_id
-
   !=========================================================================
   SUBROUTINE compute_grams_per_hydrogen(self)
     class(composition_type), target :: self
@@ -3254,7 +3223,7 @@ contains
     real(dp), dimension(:), intent(in) :: lam
     integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: lam3
-    real(dp) :: hrest, umc, fakt, e_kT, dxi
+    real(dp) :: hrest, fakt, e_kT, dxi
     real(dp), parameter :: nniv2 = 15.5**2
     integer :: f, x,y,z, xlo, xhi
     integer :: p(4)=pp
@@ -3373,24 +3342,6 @@ contains
       end do
     end do
   END SUBROUTINE rayleigh_scattering
-
-  !=========================================================================
-  SUBROUTINE print_ion_table(self)
-    class(composition_type), target :: self
-    integer :: i, lunit
-    !---------------------------------------------------------------------
-    open(newunit=lunit, file='./ion_info.txt')
-    write(lunit, '(A8, es12.4)') 'temp=', self%temp(pp(1),pp(2),pp(3))
-    write(lunit, '(A8, es12.4)') 'pe=', self%pe(pp(1),pp(2),pp(3))
-    write(lunit, '(A8, es12.4)') 'ne=', self%ne(pp(1),pp(2),pp(3))
-    write(lunit, '(A8, es12.4)') 'rho=', self%rho(pp(1),pp(2),pp(3))
-    write(lunit, '(A8, es12.4)') 'dxi=', self%dxi(pp(1),pp(2),pp(3))
-
-    do i=1, self%nel
-      call self%elements(i)%print_info(lunit, pp)
-    end do
-    close(lunit)
-  END SUBROUTINE print_ion_table
 
   !===============================================================================
   SUBROUTINE read_molec_file (self, molec_file)
@@ -3578,23 +3529,6 @@ contains
     end do
     call sp_out%reset(lam=pack(tab_lam, needed))
   END SUBROUTINE get_table_sp
-
-  !===============================================================================
-  SUBROUTINE check_for_comment(lunit, comment, n_skipped)
-    integer :: lunit, iostat, n_skipped
-    character(len=1) :: comment, first_char
-    !---------------------------------------------------------------------------
-    iostat = 0
-    n_skipped = 0
-    do while (iostat==0)
-      read(lunit, *, iostat=iostat) first_char
-      if (first_char /= comment) then
-        backspace(lunit)
-        return
-      endif
-      n_skipped = n_skipped + 1
-    end do
-  END SUBROUTINE check_for_comment
 
   !===============================================================================
   SUBROUTINE print_opacity_contributions(self, nu)

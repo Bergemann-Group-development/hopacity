@@ -27,7 +27,6 @@ MODULE molecule_mod
   contains
     procedure :: read_molec_data
     procedure :: get_dis
-    procedure :: calc_f
     procedure :: calc_e
     procedure :: allocate => allocate_molec
     procedure :: deallocate => deallocate_molec
@@ -115,29 +114,6 @@ contains
       dis = -ln10*dis
     endif
   END SUBROUTINE get_dis
-
-  !===============================================================================
-  FUNCTION calc_f(self, fepe) result(f)
-    class(molec_type), intent(in) :: self
-    real(dp), dimension(:,:,:) :: fepe
-    real(dp), dimension(:,:,:), allocatable :: f
-    type(ion_type), pointer :: ion
-    integer :: j, x, y, z
-    !---------------------------------------------------------------------------
-    allocate(f, source=self%dis)
-    do j=1, self%nions
-      ion => self%ions(j)%p
-      where (ion%f > 0)
-        f = f + log(ion%f)
-      elsewhere
-        f = - huge(1.d0)
-      endwhere
-      ! fepe needed to convert from pressure to f, first fepe cancels out
-      if (j > 1) f = f - fepe
-    end do
-    f = min(f, 0.d0)
-    f = exp(f)
-  END FUNCTION calc_f
 
   !===============================================================================
   FUNCTION calc_e(self, teta, temp, dxi) result(e)

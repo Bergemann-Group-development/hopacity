@@ -37,7 +37,7 @@ MODULE linelist_mod
   ! The one Voigt kernel. qlg_bot_sweep is the window form, used by add_opacity_equi;
   ! qlg_bot_phi is the same profile at a single point, in the convention of the retired
   ! voigt_function2, for the two routines here whose abscissa is not a uniform ramp.
-  USE qlg, only: qlg_init, qlg_bot_sweep, qlg_bot_phi
+  USE qlg, only: qlg_bot_sweep, qlg_bot_phi
   implicit none
   private
 
@@ -45,7 +45,7 @@ MODULE linelist_mod
   public :: add_particle_opacity
   public :: append_line, append_h_line, write_ll_header, write_ll_record, bij_const
   public :: reserve_linelist, print_ll_particle, print_ll_atom, merge_ll_diag
-  public :: voigt_kernel_init, merge_intervals, in_any_interval
+  public :: merge_intervals, in_any_interval
 
   ! Interval type: represents a wavelength range [blue_vac, red_vac] in vacuum Angstrom
   type, public :: interval_t
@@ -54,7 +54,6 @@ MODULE linelist_mod
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
-  real(dp), parameter :: over_h4pi = 1.0_dp / h_4pi
   real(4),  parameter :: over_pi   = 0.3183098862
   real(4),  parameter :: sqrt_pi   = 1.7724538509
   real(4),  parameter :: ex_cutoff = -85.0     ! skip lines whose log(Rij) underflows
@@ -101,21 +100,6 @@ contains
   ! assumed pre-sorted ascending in wavelength. If do_mask, only records with lam_air
   ! in [lam_min, lam_max] are kept (contiguous slice, located by bisection).
   !-------------------------------------------------------------------------------------
-  !=====================================================================================
-  ! Build QLG-bot's two lookup tables. MUST be called once before any opacity or rate is
-  ! accumulated: qlg_bot_sweep and qlg_bot_phi are PURE and cannot check, so an omitted
-  ! call is not an error but a silently zero profile. Idempotent, and a few milliseconds.
-  !
-  ! Entry points that must make it: SRC/composition_patch_mod.f90 after reading
-  ! &linelist_params, and the standalone library's hop_init.
-  !
-  ! The name is kept from when it built the tables of whichever kernel voigt_kernel had
-  ! selected; it is now a one-line forward to qlg_init.
-  !-------------------------------------------------------------------------------------
-  SUBROUTINE voigt_kernel_init
-    call qlg_init
-  END SUBROUTINE voigt_kernel_init
-
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
                             vbar2e4, do_mask, lam_min, lam_max, intervals)
     type(linelist_type), intent(inout) :: ll

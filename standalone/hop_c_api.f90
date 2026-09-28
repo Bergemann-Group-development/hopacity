@@ -22,14 +22,15 @@ MODULE hop_c_api
   USE composition_mod
   USE spectrum_mod, only: spectrum_type, lam_tolerance
   USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_ga, disable_stark, &
-                          disable_vdw, ga_fallback
+                          disable_vdw
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
-  USE linelist_mod, only: ll_profile, voigt_kernel, voigt_kernel_init, &
+  USE linelist_mod, only: ll_profile, voigt_kernel, &
                           print_ll_particle, interval_t, merge_intervals
+  USE qlg,          only: qlg_init
   USE osmet_mod,    only: eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase, vac2air
   USE prec_mod,     only: dp
@@ -90,8 +91,8 @@ MODULE hop_c_api
     'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
-    'irwin_dis disable_ga disable_stark disable_vdw ga_fallback hydrogen_bpo ' // &
-    'hydrogen_vcs_table ll_profile voigt_kernel switch verbose'
+    'irwin_dis disable_ga disable_stark disable_vdw hydrogen_bpo ' // &
+    'hydrogen_vcs_table ll_profile voigt_kernel verbose'
 
 CONTAINS
 
@@ -464,7 +465,7 @@ CONTAINS
     ! QLG-bot's lookup tables. Must happen before any opacity or rate is accumulated:
     ! the kernel is PURE and cannot check, so a missed call is a silently zero profile
     ! rather than an error. Idempotent, a few ms, and independent of everything below.
-    call voigt_kernel_init
+    call qlg_init
 
     allocate(master)
     call console_set_level (init_verbose, ch_hop)
@@ -643,8 +644,6 @@ CONTAINS
       call parse_logical(val, lv, status); if (status == 0) disable_stark = lv
     case ('disable_vdw')
       call parse_logical(val, lv, status); if (status == 0) disable_vdw = lv
-    case ('ga_fallback')
-      call parse_logical(val, lv, status); if (status == 0) ga_fallback = lv
     case ('hydrogen_bpo')
       call parse_logical(val, lv, status); if (status == 0) hydrogen_BPO = lv
     case ('hydrogen_vcs_table')
@@ -656,8 +655,6 @@ CONTAINS
       ! parsed and stored, but nothing reads it: QLG-bot is the only kernel compiled in.
       ! Kept so that callers still setting it keep working. See linelist_mod's kernel note.
       call parse_int(val, iv, status); if (status == 0) voigt_kernel = iv
-    case ('switch')
-      call parse_int(val, iv, status); if (status == 0) switch = iv
     case ('verbose')
       call parse_int(val, iv, status)
       if (status == 0) then

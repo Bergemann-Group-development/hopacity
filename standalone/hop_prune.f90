@@ -39,9 +39,9 @@ PROGRAM hop_prune
   USE spectrum_mod, only: spectrum_type, daa, aa_red, aa_blue, nnu, give_lam, in_log, R, &
                           lam_file, window_file, in_air
   USE composition_mod, only: abundances, relative_abundances, exclude_elements, &
-                             only_elements, opac_table_vmic, mhd_eos, switch, &
+                             only_elements, opac_table_vmic, mhd_eos, &
                              line_scattering, helium_scattering, ref_lam, debug_opac
-  USE bbtrans_mod, only: tolerance, disable_ga, disable_stark, disable_vdw, ga_fallback
+  USE bbtrans_mod, only: tolerance, disable_ga, disable_stark, disable_vdw
   USE bftrans_mod, only: H_occupation_probability
   USE ion_mod, only: debye_shield
   USE molecule_mod, only: irwin_dis
@@ -80,9 +80,9 @@ PROGRAM hop_prune
   ! --- &opac_table_params: only opac_table_vmic influences the selection ------------
   character(len=256) :: opac_table='', absmet_file=''
   logical :: pca_opac=.true.
-  real(8) :: dtemp=250., ldne=0.25, ldrho=0.25, ldtemp=0.05
+  real(8) :: ldne=0.25, ldrho=0.25, ldtemp=0.05
   namelist /opac_table_params/ opac_table, opac_table_vmic, pca_opac, &
-    dtemp, ldne, ldrho, ldtemp, absmet_file
+    ldne, ldrho, ldtemp, absmet_file
 
   ! --- &linelist_params ---------------------------------------------------------------
   real(8) :: dlam=100.
@@ -279,10 +279,10 @@ CONTAINS
     integer, intent(in), optional :: echo_unit
     integer :: verbose
     namelist /composition_params/ verbose, absdat_file, abund_file, &
-      isotope_file, molec_file, H_occupation_probability, switch, mhd_eos, debye_shield, &
+      isotope_file, molec_file, H_occupation_probability, mhd_eos, debye_shield, &
       tmolim, irwin_dis, save_species, ref_lam, debug_opac, abundances, relative_abundances, &
       alpha_enhancement, r_process_enhancement, disable_ga, disable_stark, disable_vdw, &
-      helium_scattering, hydrogen_BPO, hydrogen_vcs_table, vcs_data_dir, ga_fallback, eosmet
+      helium_scattering, hydrogen_BPO, hydrogen_vcs_table, vcs_data_dir, eosmet
     !---------------------------------------------------------------------------
     verbose = comp_verbose
     if (present(echo_unit)) then

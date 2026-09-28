@@ -1,18 +1,16 @@
 MODULE interpol_mod
   !  Single home for all 1-D cubic-Hermite / monotone-PCHIP interpolation in the
-  !  code. Previously the cubic basis (p = 3t^2 - 2t^3) and the Fritsch-Carlson
-  !  harmonic-mean node-slope rule were re-implemented in mmath_mod, op_math_mod,
-  !  optab_mod and hvcs_mod; they now live here exactly once.
+  !  code: the cubic basis (p = 3t^2 - 2t^3) and the Fritsch-Carlson node-slope
+  !  rule live here exactly once.
   !
   !  Design follows a gradient/eval split: the node-slope (gradient) computation
   !  is factored into pchip_slopes, called once per driver invocation, while the
   !  per-point evaluation stays inline in the drivers. Both halves are same-file,
-  !  so they inline together under -Ofast / -O3 and the FLOP count of the hot
-  !  loops (rt_patch / ray_patch ghost zones) is unchanged from the old code.
+  !  so they inline together under -Ofast / -O3 in the hot loops (rt_patch /
+  !  ray_patch ghost zones).
   !
   !  The interior slope is the documented reciprocal harmonic mean of Ibgui et
-  !  al. 2013 (A&A, "IRIS"), matching the old mmath_mod::har_mean_deriv and
-  !  op_math_mod::pchip_mono8. Boundary slopes use quadratic extrapolation from
+  !  al. 2013 (A&A, "IRIS"). Boundary slopes use quadratic extrapolation from
   !  the neighbouring node slope. This is the ONE canonical rule for the whole
   !  codebase.
   USE prec_mod                       ! dp; single precision written as real(4)
@@ -23,7 +21,7 @@ MODULE interpol_mod
 
   public :: pchip_mono, pchip_mono4, pchip_mono8, pchip_mono4_reg_period, pchip_slopes
   public :: hermite_interpolation, hermite_derivative, hermite_coefs, hermite_value
-  public :: interp1d, interp1d_sorted, interp1d_reg_period
+  public :: interp1d_sorted, interp1d_reg_period
   public :: linterpolate_3d, linterpolate_3d_rotated
 
   interface pchip_mono
@@ -548,106 +546,6 @@ contains
     end do
 
   END SUBROUTINE hermite_interpolation_1d4
-
-  !===============================================================================
-  FUNCTION interp1d(xx,yy,newx, order, sorted) result(newy)
-    real(dp), dimension(:), intent(in) :: xx, yy, newx
-    real(dp), dimension(:), allocatable :: newy
-    integer, value :: order
-    logical, value :: sorted
-    integer :: i, j, nx, ny
-    procedure(interp1d_linear), pointer :: interp
-    character(len=256) :: msg
-    !----------------------------------------------------------------------------
-    nx = size(xx)
-    ny = size(yy)
-
-    if (nx /= ny) then
-      write(msg,'(a,i0,a,i0)') 'interp1d: x has length ', nx, ' but y has length ', ny
-      call console_error (msg)
-      error stop
-    endif
-
-    interp => interp1d_linear
-
-    if (order == 2) then
-      if (nx < 3) then
-        call console_error ('interp1d: too few points for quadratic interpolation')
-        error stop
-      else
-        interp => interp1d_quadratic
-      endif
-    elseif (order > 2) then
-      call console_error ('interp1d: only linear and quadratic are supported')
-      error stop
-    endif
-
-    allocate(newy, mold=newx)
-
-    if (sorted) then
-      j = 1
-      i = 1
-
-      do while (i <= size(newy))
-        if (j >= nx) then
-          newy(i) = yy(ny)
-
-        elseif (xx(j+1) < newx(i)) then
-          j = j+1
-          cycle
-
-        elseif (xx(j) < newx(i)) then
-          newy(i) = interp(j,xx,yy,newx(i))
-        else
-          newy(i) = yy(j)
-        endif
-
-        i = i+1
-      end do
-    else
-      do i=1, size(newy)
-        ! xx and yy are still sorted
-        j = searchsorted(xx, newx(i))
-        newy(i) = interp(j,xx,yy,newx(i))
-      end do
-    endif
-  end FUNCTION interp1d
-
-  !===============================================================================
-  pure FUNCTION interp1d_linear(j,xx,yy,newx) result(newy)
-    real(dp), dimension(:), intent(in) :: xx, yy
-    real(dp), intent(in) :: newx
-    integer, intent(in) :: j
-    real(dp) :: m, newy
-    !----------------------------------------------------------------------------
-    m = (yy(j+1) - yy(j)) / (xx(j+1) - xx(j))
-    newy = m * (newx - xx(j)) + yy(j)
-  end FUNCTION interp1d_linear
-
-  !===============================================================================
-  pure FUNCTION interp1d_quadratic(j,xx,yy,newx) result(newy)
-    real(dp), dimension(:), intent(in) :: xx, yy
-    real(dp), intent(in) :: newx
-    integer, intent(in) :: j
-    real(dp) :: newy, w(3)
-    integer :: j1, j2, j3
-    !-----------------------------------------------------------------------------
-    if (size(xx) - j > 1) then
-      j1 = j
-      j2 = j+1
-      j3 = j+2
-    else
-      j1 = j-1
-      j2 = j
-      j3 = j+1
-    endif
-
-    w(1) = (newx-xx(j2)) * (newx-xx(j3)) / ((xx(j1)-xx(j2)) * (xx(j1)-xx(j3)))
-    w(2) = (newx-xx(j1)) * (newx-xx(j3)) / ((xx(j2)-xx(j1)) * (xx(j2)-xx(j3)))
-    w(3) = (newx-xx(j1)) * (newx-xx(j2)) / ((xx(j3)-xx(j1)) * (xx(j3)-xx(j2)))
-
-    newy = sum(yy(j1:j3)*w(1:3))
-  end FUNCTION interp1d_quadratic
 
   !===============================================================================
   SUBROUTINE interp1d_sorted (xx, yy, newx, newy, fill)
