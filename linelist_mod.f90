@@ -447,7 +447,7 @@ contains
   !                                 unless ll is windowed, then ascending per window)
   !   inv_df    : (m1,m2,m3)       inverse Doppler width c/v_th (this ll's isotope)
   !   vbar2     : (m1,m2,m3)       mean square velocity (this ll's isotope)
-  !   lnbase    : (m1,m2,m3, np)    log(n) - log_part + dxij*e_kT + log(idf) per
+  !   lnbase    : (m1,m2,m3, np)    log(n) - log_part + log(idf) per
   !                                 population group (idf = this ll's isotope Doppler
   !                                 factor; bulk linelist: np=1; model atoms:
   !                                 one group per ion stage, selected by ll%ipart)
@@ -1026,7 +1026,6 @@ contains
   !   ptc          : the ion or molecule (polymorphic); its ll(0:niso) are the per-isotope
   !                  SoA line lists (index 0 = main isotope)
   !   temp, vmic   : (m1,m2,m3) temperature and microturbulence (Doppler width inputs)
-  !   dxi          : (m1,m2,m3) continuum lowering per ion stage
   !   e_kT,ne,tothi,stark_pe,vproj : (m1,m2,m3) per-cell kernel inputs
   !   chi, eta     : (nf,m1,m2,m3) accumulated line opacity/emissivity
   !   cont, logref : (nf,m1,m2,m3) continuum + log-space tolerance reference
@@ -1034,13 +1033,12 @@ contains
   !   dep_ev       : level energies of the departure set (used only when do_nlte)
   !   dep_mem      : (m1,m2,m3,nlevel) departure coefficients (dummy (.,.,.,1) when LTE)
   !-------------------------------------------------------------------------------------
-  SUBROUTINE add_particle_opacity(ptc, temp, vmic, dxi, llam, chi, eta, cont, logref, &
+  SUBROUTINE add_particle_opacity(ptc, temp, vmic, llam, chi, eta, cont, logref, &
                                   vproj, e_kT, ne, tothi, stark_pe, dep_ev, dep_mem, &
                                   do_nlte, equidistant, one_m_eps, chi_scat, i0, i1, &
                                   population, population_scale, llam_lines)
     class(particle_type), intent(inout) :: ptc
     real(4),  dimension(:,:,:),   intent(in)    :: temp, vmic, vproj, e_kT, ne, tothi, stark_pe
-    real(dp), dimension(:,:,:),   intent(in)    :: dxi
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
     real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
@@ -1102,8 +1100,7 @@ contains
           if (present(population_scale)) &
             lnbase(:,:,:,1) = lnbase(:,:,:,1) + real(log(population_scale),4)
         endif
-        lnbase(:,:,:,1) = lnbase(:,:,:,1) - ptc%part(lo:hi,:,:) &
-                        + real(dxi) * (ptc%j-1) * e_kT + log(idf3) &
+        lnbase(:,:,:,1) = lnbase(:,:,:,1) - ptc%part(lo:hi,:,:) + log(idf3) &
                         + real(log(iso_frac), 4)
 
         if (do_nlte) then

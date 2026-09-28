@@ -1292,7 +1292,6 @@ contains
     real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
     real(4), dimension(:,:,:), allocatable :: vmic_c
-    real(dp), dimension(:,:,:), allocatable :: dxi_c
     real(4), dimension(:,:,:,:), allocatable, target :: chi_l, eta_l
     real(4), dimension(:,:,:,:), allocatable :: dummy_dep, logref
     real(4), dimension(:,:,:), pointer, contiguous :: vpr
@@ -1341,7 +1340,6 @@ contains
     tothi = real(self%tothi(lo:hi,:,:))
     stark_pe = real(self%stark_pe(lo:hi,:,:))
     allocate(vmic_c, source=self%vmic(lo:hi,:,:))
-    allocate(dxi_c,  source=self%dxi(lo:hi,:,:))
 
     if (present(llam_in)) then
       llam => llam_in
@@ -1522,20 +1520,20 @@ contains
       call self%set_population(ptc%id, set_index, set_n, set_scale)
       if (associated(dep)) then
         ! NLTE species: departure-coefficient source, no scattering split
-        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
           .true., sp%equidistant, i0=lo, i1=hi, &
           population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
-        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, &
           one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
           i0=lo, i1=hi, population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       else
-        call add_particle_opacity(ptc, temp, vmic_c, dxi_c, llam, chi_l, eta_l, &
+        call add_particle_opacity(ptc, temp, vmic_c, llam, chi_l, eta_l, &
           all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
           .false., sp%equidistant, i0=lo, i1=hi, &
           population=set_n, population_scale=set_scale, llam_lines=llam_lines)
