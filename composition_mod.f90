@@ -2228,7 +2228,17 @@ contains
     call self%compute_shield()
 
     !HI%nk = 15
-    if (allocated(HI%levels)) deallocate(HI%levels)
+    ! the levels of Hoccupation_partition (f, w) are freed with HI%levels, so
+    ! they leave the memory registry here as well
+    if (allocated(HI%levels)) then
+      do i=1, size(HI%levels)
+        lvl => HI%levels(i)
+        if (allocated(lvl%f)) call os%mem_register(storage_size(lvl%f), -size(lvl%f), 'lvl%f')
+        if (allocated(lvl%w)) call os%mem_register(storage_size(lvl%w), -size(lvl%w), 'lvl%w')
+        if (allocated(lvl%n)) call os%mem_register(storage_size(lvl%n), -size(lvl%n), 'lvl%n')
+      end do
+      deallocate(HI%levels)
+    endif
     allocate(HI%levels(HI%nk))
     allocate(part, mold=self%temp)
 
