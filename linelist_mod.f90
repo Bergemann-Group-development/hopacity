@@ -124,6 +124,7 @@ contains
         ! disjoint (merge_intervals), so the blocks are too. Each block is widened by one
         ! record on either side and membership is still decided by in_any_interval in
         ! vacuum, so the air-space bisection only bounds the work and never the selection.
+        ! The block sizes bound nkeep from above; the parse loop does the exact selection.
         nblk = size(intervals)
         allocate(blk_lo(nblk), blk_hi(nblk))
         nkeep = 0
@@ -139,10 +140,7 @@ contains
           if (ib > 1) lo = max(lo, blk_hi(ib-1) + 1)   ! never visit a record twice
           blk_lo(ib) = lo
           blk_hi(ib) = hi
-          do i = lo, hi
-            lam_vac = air2vac(parse_lam(buf(lstart(i):lend(i))))
-            if (in_any_interval(lam_vac, intervals)) nkeep = nkeep + 1
-          end do
+          nkeep = nkeep + max(0, hi - lo + 1)
         end do
       else
         ! single-window selection: use contiguous bisection
@@ -1695,15 +1693,24 @@ contains
     real(dp), intent(in) :: lam_vac
     type(interval_t), intent(in) :: intervals(:)
     logical :: in_interval
-    integer :: i
+    integer :: lo, hi, mid
     !-----------------------------------------------------------------------------------
+    ! the intervals are sorted and disjoint (merge_intervals), so only the last one
+    ! starting at or below lam_vac can contain it
     in_interval = .false.
-    do i = 1, size(intervals)
-      if (lam_vac >= intervals(i)%blue_vac .and. lam_vac <= intervals(i)%red_vac) then
-        in_interval = .true.
-        return
+    hi = size(intervals)
+    if (hi < 1) return
+    if (.not. lam_vac >= intervals(1)%blue_vac) return
+    lo = 1
+    do while (lo < hi)
+      mid = (lo + hi + 1) / 2
+      if (intervals(mid)%blue_vac <= lam_vac) then
+        lo = mid
+      else
+        hi = mid - 1
       end if
     end do
+    in_interval = lam_vac <= intervals(lo)%red_vac
   END FUNCTION in_any_interval
 
 

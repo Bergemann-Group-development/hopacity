@@ -108,11 +108,24 @@ contains
     real(4) :: ab1, cd1, ab2, cd2, abcd1, abcd2
     real(4) :: dx, dy, dz, os
     integer :: ix, iy, iz, i, j, k, f, nx, ny, nz, nf
+    integer, allocatable :: izf(:)
+    real(4), allocatable :: dzf(:)
     !---------------------------------------------------------------------------
     nf = size(chi,1)
     nx = size(chi,2)
     ny = size(chi,3)
     nz = size(chi,4)
+
+    ! the wavelength bracket is the same for every cell
+    allocate(izf(nf), dzf(nf))
+    do f=1, nf
+      izf(f) = searchsorted(self%lam, lam(f))
+      dzf(f) = 0
+      if (izf(f) >= 0) then
+        iz = izf(f)
+        dzf(f) = (lam(f) - self%lam(iz)) / (self%lam(iz+1) - self%lam(iz))
+      endif
+    end do
 
     do k=1, nz
       do j=1, ny
@@ -131,10 +144,9 @@ contains
           dy = (t - self%temp(iy)) / (self%temp(iy+1) - self%temp(iy))
 
           do f=1, nf
-            iz = searchsorted(self%lam, lam(f))
+            iz = izf(f)
             if (iz < 0) cycle
-
-            dz = (lam(f) - self%lam(iz)) / (self%lam(iz+1) - self%lam(iz))
+            dz = dzf(f)
 
             a1 = self%ostabl(ix,   iy,   iz)
             b1 = self%ostabl(ix+1, iy,   iz)
