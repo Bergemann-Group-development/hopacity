@@ -31,7 +31,7 @@ MODULE hop_c_api
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE op_math_mod,  only: interval_t, merge_intervals
   USE qlg,          only: qlg_init
-  USE osmet_mod,    only: eosmet, compute_epsilon_stage
+  USE osmet_mod,    only: osmet, eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase, vac2air
   USE prec_mod,     only: dp
   USE const_mod,    only: h_k
@@ -918,7 +918,7 @@ CONTAINS
     end if
     nf = size(chi4, 1)
     dl = dlam
-    do_absmet = .false.
+    do_absmet = (include_absmet /= 0) .and. osmet%initialised
     do_llist = (include_llist /= 0) .and. comp%ll_initialised
     do_split = (line_scat /= 0)
     sorted = .true.

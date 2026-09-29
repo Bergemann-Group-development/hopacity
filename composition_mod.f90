@@ -1216,6 +1216,11 @@ contains
           read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h, lower_ev_h, loggf_h, &
                                           gv_h, ga_h, gq_h, r_i, r_j
         endif
+        ! ios < 0 is a record that ends before the optional trailing columns
+        if (ios > 0) then
+          call console_error ('cannot read hydrogen line: '//buf(lstart(ii):lend(ii)))
+          error stop
+        endif
         lam0v = air2vac(lam_air_h)
         if (mask) then
           if (use_intervals_local .and. present(intervals_arg)) then
@@ -3120,6 +3125,7 @@ contains
     !---------------------------------------------------------------------------
     element => null()
     particle => null()
+    is_mol = .false.
     read(id, *) id1
     iele = findloc(self%elements%id, capitalize(id1), 1)
     imol = findloc(self%molecules%id, id1, 1)
