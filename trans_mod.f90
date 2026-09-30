@@ -24,7 +24,11 @@ MODULE trans_mod
     real(8), dimension(:), pointer, contiguous :: nu => null()  ! frequencies [Hz]
     real(8), dimension(:), pointer, contiguous :: lam => null() ! wavelength [AA]
     real(8), dimension(:), pointer, contiguous :: lam_input => null()
-    real(8), dimension(:), allocatable :: wnu ! frequency quadrature weight [Hz]
+    ! The frequency arrays of a transition are pointers, so the copy each rt_patch
+    ! keeps of a transition shares them with the atom instead of duplicating them
+    ! for every window, direction and depth slab.  The patch indexes them with the
+    ! global frequency index of its own range.
+    real(8), dimension(:), pointer, contiguous :: wnu => null() ! frequency quadrature weight [Hz]
 
   contains
     procedure :: check_range
@@ -37,8 +41,8 @@ MODULE trans_mod
     ! 'hlinop' for hydrogen
 
     logical :: hydrogen
-    real(4),dimension(:), allocatable :: q  ! frequencies [Doppler units]
-    real(8),dimension(:), allocatable :: wq ! frequency quadrature weight [Doppler units]
+    real(4), dimension(:), pointer, contiguous :: q => null()  ! frequencies [Doppler units]
+    real(8), dimension(:), pointer, contiguous :: wq => null() ! frequency quadrature weight [Doppler units]
 
     real(4),dimension(:,:,:,:), pointer :: phi => null() ! actual line profile data
     real(4),dimension(:,:,:), pointer, contiguous :: wphi => null() ! normalization such that
