@@ -69,6 +69,7 @@ MODULE qlg
   public :: qlg_ref_f64
   public :: qlg_bot_phi, qlg_bot_profile          ! local addition, see the bottom of this file
   public :: qlg_bot_coef, qlg_bot_eval             ! local addition, as is qlg_bot_coef_t
+  public :: qlg_bot_window, qlg_bot_coef_sweep     ! local addition
 
   ! QLG-bot's per-line setup for one damping a (local addition, see qlg_bot_coef)
   type, public :: qlg_bot_coef_t
@@ -451,15 +452,17 @@ contains
   !##  future re-copy from the paper's source should re-apply it rather than lose it.
   !##
   !##  WHY.  The module's four members are window sweeps, and OpenMULTI3D's hot path --
-  !##  linelist_mod's add_opacity_equi -- calls qlg_bot_sweep that way, which is where
-  !##  QLG-bot's advantage lies.  But the code has three colder Voigt paths that evaluate
-  !##  one point at a time on abscissae that are not uniform ramps:
+  !##  linelist_mod's add_opacity_equi -- sweeps QLG-bot that way, which is where its
+  !##  advantage lies.  qlg_bot_window returns a line's per-line setup together with
+  !##  its half-width at the tolerance reference, and qlg_bot_coef_sweep is qlg_bot_sweep's
+  !##  point loop on that setup, so the setup is done once per line.  The code also has three colder Voigt paths that
+  !##  evaluate one point at a time on abscissae that are not uniform ramps:
   !##
   !##    hprofl_mod        hydrogen fine-structure components, per component per point
   !##                      (through the split qlg_bot_coef / qlg_bot_eval form below)
   !##    rt_patch_mod      the NLTE rate integrals, over line%q
-  !##    linelist_mod      add_opacity, the non-uniform-grid twin of add_opacity_equi,
-  !##                      and the NLTE rate accumulation
+  !##    linelist_mod      add_opacity, the non-uniform-grid twin of add_opacity_equi
+  !##                      (qlg_bot_window, then qlg_bot_eval per point)
   !##
   !##  qlg_bot_phi takes the Doppler-unit offset v; qlg_bot_profile takes the relative
   !##  detuning q with 1/df and applies the nu/nu0 Jacobian.
@@ -470,8 +473,7 @@ contains
   !##  file's header, on fexp2).  A caller that evaluates many points at one damping on a
   !##  non-uniform abscissa, as the hydrogen profiles do per cell, splits the call instead:
   !##  qlg_bot_coef(a) once, then qlg_bot_eval(c, v) per point.  The setup there repeats
-  !##  qlg_bot_sweep's, which stays verbatim above.  Do not "optimise" the hot path into
-  !##  these; call qlg_bot_sweep directly, as it does.
+  !##  qlg_bot_sweep's, which stays verbatim above.
   !##
   !##  qlg_init MUST have been called first, as for qlg_bot_sweep itself: these read the
   !##  same TGX/TH2X.  SRC/composition_patch_mod.f90 and the standalone library's
@@ -537,6 +539,76 @@ contains
     p = c%bL + L*p
     h = (G*(c%gG) + L*p) * ISQPI
   END FUNCTION qlg_bot_eval
+
+  !=====================================================================================
+  ! QLG-bot's per-line setup c for damping a, and the half-width hw of the window outside
+  ! which the line stays below a tolerance reference ref. q > 1 is the line's peak bound
+  ! over ref, R/(sqrt(pi) ref) for an opacity R per Doppler width, and lnq = log(q), which
+  ! callers have from their log-space pre-test. hw is returned in the caller's abscissa
+  ! units, through scale = the Doppler width in those units: 1/idf for log(lambda), or
+  ! (1/idf)/dllam for grid steps on a uniform log(lambda) grid.
+  !
+  ! The extent is that of the profile's two analytic limits, which QLG-bot's G and L
+  ! generators reduce to: in units of 1/q, K <= exp(-v^2) + A/(a^2 + v^2) with
+  ! A = a q/sqrt(pi). Each term alone falls to 1/q at
+  !     v_G^2 = ln q,    v_L^2 = A - a^2.
+  ! The a^2 keeps a line whose damping exceeds its extent from being given a window of
+  ! order a that it never fills above ref (a ~ 1e7 would give thousands of Angstrom). It
+  ! is a^2 - 1/2 below, and nothing for a^2 < 1/2, which is still no narrower than QLG's
+  ! own Lorentz crossing A - 1/ih^2, as its half-width 1/ih >= a. Where one term crosses,
+  ! the other still adds to K and moves the crossing of the sum out; each crossing is
+  ! widened by a bounded multiple of A, min(A, 1.5) for the Gaussian and min(A, 5) for
+  ! the Lorentz term.
+  !
+  ! The window takes a, q and lnq only, not the setup's half-width, so that it runs
+  ! alongside the setup's division. Every line that passes the kernels' tolerance
+  ! pre-tests is sized here ahead of its sweep, and the latency of a window that waits
+  ! for the division shows in the line-opacity time: sizing it in the setup's own
+  ! variable u = (|v| ih)^2, from u_G = log2(gG q) and u_L = bL q - 1, made that time
+  ! 25 % longer for the same accuracy.
+  !
+  ! Against exact Voigt profiles (Re w, a = 1e-4..1e7, q = 1..1e14, fp32) the window
+  ! never ends inside the true tolerance crossing; it is the true one at the median,
+  ! 14 % wider at the 99th percentile and at most 1.8 times wider (a ~ 0.3-3).
+  !-------------------------------------------------------------------------------------
+  PURE SUBROUTINE qlg_bot_window (a, q, lnq, scale, c, hw)
+    real(4), intent(in)  :: a, q, lnq, scale
+    type(qlg_bot_coef_t), intent(out) :: c
+    real(4), intent(out) :: hw
+    real(4) :: AL
+    !-----------------------------------------------------------------
+    c  = qlg_bot_coef(a)
+    AL = a*q*ISQPI
+    hw = sqrt(max(lnq + min(AL, 1.5), AL - max(a*a - 0.5, 0.0) + min(AL, 5.0), 0.0)) * scale
+  END SUBROUTINE qlg_bot_window
+
+  !=====================================================================================
+  ! qlg_bot_sweep with its per-line setup supplied as c (from qlg_bot_window or
+  ! qlg_bot_coef): the same point loop on the same Doppler-unit ramp v0 + (f-1)*dv.
+  !-------------------------------------------------------------------------------------
+  PURE SUBROUTINE qlg_bot_coef_sweep (c, v0, dv, n, K)
+    type(qlg_bot_coef_t), intent(in) :: c
+    real(4), intent(in)  :: v0, dv
+    integer, intent(in)  :: n
+    real(4), intent(out) :: K(n)
+    integer :: f, ig
+    real(4) :: v, xs, u, L, G, W, p
+    !-----------------------------------------------------------------
+    do f = 1, n
+      v  = v0 + real(f-1, 4)*dv
+      xs = abs(v) * c%ih
+      u  = xs * xs
+      L  = 1.0 / (1.0 + u)
+
+      ig = nint(min(xs*XSCL, RNX))       ! one snapped index, both tables
+      G  = TGX(ig)
+      W  = TH2X(ig)
+
+      p = (c%cL2 + c%cZH*W)
+      p = c%bL                         + L*p
+      K(f) = G*(c%gG) + L*p
+    end do
+  END SUBROUTINE qlg_bot_coef_sweep
 
   !=====================================================================================
   ! The convention of the retired voigt_profile: the same profile, but on the relative

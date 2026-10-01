@@ -34,10 +34,11 @@ MODULE linelist_mod
                          prepare_radiative, prepare_stark, prepare_vanderwaals
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
-  ! The one Voigt kernel. qlg_bot_sweep is the window form, used by add_opacity_equi;
-  ! qlg_bot_phi is the same profile at a single point, in the convention of the retired
-  ! voigt_function2, for the two routines here whose abscissa is not a uniform ramp.
-  USE qlg, only: qlg_bot_sweep, qlg_bot_phi
+  ! The one Voigt kernel. qlg_bot_window returns a line's per-line setup with its window
+  ! half-width; add_opacity_equi then sweeps that window with qlg_bot_coef_sweep, and
+  ! add_opacity, whose abscissa is not a uniform ramp, evaluates the setup point by point
+  ! with qlg_bot_eval.
+  USE qlg, only: qlg_bot_coef_t, qlg_bot_window, qlg_bot_coef_sweep, qlg_bot_eval
   implicit none
   private
 
@@ -49,7 +50,6 @@ MODULE linelist_mod
 
   ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
-  real(4),  parameter :: over_pi   = 0.3183098862
   real(4),  parameter :: sqrt_pi   = 1.7724538509
   real(4),  parameter :: ex_cutoff = -85.0     ! skip lines whose log(Rij) underflows
   ! 1/sqrt(pi): the peak of the profile in qlg_bot_phi's convention, at a = v = 0. The
@@ -69,10 +69,10 @@ MODULE linelist_mod
   ! reference, and the QLG tiers and ablations -- lives on the `voigt-kernel-zoo` branch,
   ! together with the voigt_kernel dispatch chain that selected them.
   !
-  ! add_opacity_equi calls qlg_bot_sweep on the whole line window at once, which is where
-  ! QLG-bot's advantage lies: the per-line setup is amortised over the window and the
-  ! point loop vectorises. add_opacity walks a non-uniform abscissa and calls the
-  ! one-point qlg_bot_phi instead.
+  ! add_opacity_equi sweeps the whole line window at once, which is where QLG-bot's
+  ! advantage lies: the per-line setup is amortised over the window and the point loop
+  ! vectorises. add_opacity walks a non-uniform abscissa and evaluates the same setup one
+  ! point at a time. Both take the setup and the window from qlg_bot_window.
   !
   ! voigt_kernel IS READ AND IGNORED. It stays only so that the ~900 namelists and the
   ! standalone library's hop_set_option that still set it keep loading; there is nothing
@@ -458,7 +458,8 @@ contains
     real(8)  :: llc, dl, hb(2)
     integer  :: fe
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, edge, lref_o
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, lref_o, rdf, hw
+    type(qlg_bot_coef_t) :: qc
     real(4)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart, outside
@@ -498,6 +499,7 @@ contains
           io       = i - mem_offset      ! chunk-local index; cont/chi_scat/dep_mem stay at i
           f0_prev  = -1                  ! running-floor cache is per cell
           idf      = inv_df(io,j,k)
+          rdf      = 1.0 / idf                            ! Doppler width in log(lambda)
           unsold_c = vbar2(io,j,k)**0.3 * tothi(io,j,k)
           lvb2     = log(vbar2(io,j,k))                   ! vb2**gw2 as exp(gw2*log(vb2))
           ekt      = e_kT(io,j,k)
@@ -609,9 +611,9 @@ contains
             a = a * idf
 
             if (outside) then
-              vm2 = max(arg - lref_o, a*Rij*over_pi/ref)
-              dl  = sqrt(vm2) / idf
-              ll%reach(l) = max(ll%reach(l), real(dl, 4))
+              call qlg_bot_window(a, voigt_peak*Rij/ref, arg - lref_o, rdf, qc, hw)
+              dl  = hw
+              ll%reach(l) = max(ll%reach(l), hw)
               dl  = min(dl, real(ll%reach_in(l), 8))
               if (llc + dl < llam(1) - hb(1) .or. llc - dl > llam(nf) + hb(2)) cycle
               ll%used(l) = .true.
@@ -621,16 +623,15 @@ contains
               ll%used(l) = .true.
               ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
 
-              ! analytic profile extent where phi*Rij drops to ref: Gaussian core
-              ! v^2 = ln(peak/ref) = arg - logref, Lorentz wing v^2 = a*Rij/(pi*ref);
-              ! a straight (data-independent) loop over [fa,fb], centre included,
-              ! pipelines much better than a walk whose exit condition depends on
-              ! the previous Voigt value. The unclipped half-width is the line's reach.
-              vm2  = max(arg - lref_c, a*Rij*over_pi/ref)
-              dl   = sqrt(vm2) / idf
-              ll%reach(l) = max(ll%reach(l), real(dl, 4))
-              edge = idf * real(max(llam(we) - llc, llc - llam(ws)))
-              if (vm2 >= edge*edge) then
+              ! analytic profile extent where phi*Rij drops to ref (qlg_bot_window,
+              ! in log(lambda)); a straight (data-independent) loop over [fa,fb],
+              ! centre included, pipelines much better than a walk whose exit
+              ! condition depends on the previous Voigt value. The unclipped
+              ! half-width is the line's reach.
+              call qlg_bot_window(a, voigt_peak*Rij/ref, arg - lref_c, rdf, qc, hw)
+              dl   = hw
+              ll%reach(l) = max(ll%reach(l), hw)
+              if (dl >= max(llam(we) - llc, llc - llam(ws))) then
                 fa = ws         ! line fills the window; skip the extent bisections
                 fb = we
               else
@@ -644,7 +645,7 @@ contains
               ! LTE line (bi=bj=1) with the scattering fraction accumulated
               do f = fa, fb
                 vs   = idf * real(llam(f) - llc)
-                phi  = qlg_bot_phi(a, vs)
+                phi  = qlg_bot_eval(qc, vs)
                 lte  = phi * Rij
                 chi(f,io,j,k) = chi(f,io,j,k) + lte
                 eta(f,io,j,k) = eta(f,io,j,k) + lte
@@ -653,7 +654,7 @@ contains
             else
               do f = fa, fb
                 vs   = idf * real(llam(f) - llc)
-                phi  = qlg_bot_phi(a, vs)
+                phi  = qlg_bot_eval(qc, vs)
                 lte  = phi * Rij
                 chi(f,io,j,k) = chi(f,io,j,k) + lte*bi
                 eta(f,io,j,k) = eta(f,io,j,k) + lte*bj
@@ -681,9 +682,8 @@ contains
   ! caller dispatches on spectrum%equidistant). Same physics as add_opacity, but the
   ! nearest grid index and both wing limits are pure arithmetic -- no forward march and
   ! no bisection are needed, because the grid spacing dllam is constant. The Voigt window
-  ! limits come from inverting the far-wing approximation (Gaussian core vs. Lorentz wing,
-  ! v = sqrt(vm2)/idf in log(lambda)) and converting that half-width straight to an index
-  ! offset via 1/dllam. Windowed (per-line ll%iws/iwe) mode is not supported here.
+  ! half-width comes with the line's QLG setup (qlg_bot_window) directly in grid steps.
+  ! Windowed (per-line ll%iws/iwe) mode is not supported here.
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, &
                               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
@@ -716,7 +716,8 @@ contains
     real(8)  :: llc, llam1, dllam, inv_dllam, hb(2), dl
     integer  :: fe
     real(4)  :: idf, unsold_c, ekt, ne_c, tothi_c, starkpe, vproj_c
-    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, vm2, lref_o
+    real(4)  :: a, ex, Rij, bi, bj, ref, vs, phi, lte, lvb2, lref_o
+    type(qlg_bot_coef_t) :: qc
     real(4)  :: arg
     real(4)  :: base_s(size(lnbase,4))
     logical  :: nlte, has_ipart, outside
@@ -767,9 +768,9 @@ contains
           ! CELL-INVARIANT PARTS OF THE PER-LINE WINDOW SETUP, hoisted out of the line
           ! loop. dv is only a multiply the compiler is free to lift anyway, but nfac
           ! replaces a DIVISION by idf that it is not: gfortran will not turn x/idf into
-          ! x*(1/idf) without -ffast-math, so `sqrt(vm2)/idf*inv_dllam` was a
-          ! reciprocal-latency chain on every line that survived the tolerance filters.
-          ! Every kernel pays it, so this moves the floor rather than the ranking.
+          ! x*(1/idf) without -ffast-math. As the scale qlg_bot_window applies to the
+          ! half-width, it keeps a division by idf off every line that survives the
+          ! tolerance filters.
           nfac     = real(inv_dllam) / idf
           dv       = idf * real(dllam)
           unsold_c = vbar2(io,j,k)**0.3 * tothi(io,j,k)
@@ -864,16 +865,14 @@ contains
             end if
             a = a * idf
 
-            ! WINDOW EXTENT. Analytic, where phi*Rij drops to ref, in v-units: Gaussian
-            ! core v^2 = arg - logref, Lorentz far wing v^2 = a*Rij/(pi*ref). On a
-            ! uniform log(lambda) grid the half-width in llam is sqrt(vm2)/idf, so the
-            ! index half-width is that over dllam -- no bisection required. nfac is
-            ! inv_dllam/idf, hoisted to the cell loop above.
+            ! WINDOW EXTENT. Analytic, where phi*Rij drops to ref, returned with the line's
+            ! QLG setup (qlg_bot_window) directly in grid steps: nfac is
+            ! inv_dllam/idf, hoisted to the cell loop above, so no bisection is needed.
             !
             ! THE ROUNDING IS nint, NOT int()+1, AND nw = 1 IS REACHABLE. f0 is the
             ! NEAREST bin to the centre (nint, above), so the centre sits at some offset
             ! d in [-0.5,0.5] bins from f0 and bin f0+n is |n+d| bins out. A symmetric
-            ! window covers every bin within W = sqrt(vm2)*nfac iff noff >= W + |d|, and
+            ! window covers every bin within W = rnoff iff noff >= W + |d|, and
             ! nint(W) = floor(W + 0.5) is the smallest integer that satisfies that for
             ! every d -- tight and still conservative. The old floor(W)+1 exceeded it by
             ! a bin per side whenever frac(W) < 0.5, and could never go below nw = 3: a
@@ -893,8 +892,8 @@ contains
             if (outside) then
               ! the window is the extent at the chunk-end reference, capped by the reach
               ! and rounded to the nearest grid index like f0
-              vm2 = max(arg - lref_o, a*Rij*over_pi/ref)
-              dl  = sqrt(vm2) / idf
+              call qlg_bot_window(a, voigt_peak*Rij/ref, arg - lref_o, nfac, qc, rnoff)
+              dl  = rnoff * dllam
               ll%reach(l) = max(ll%reach(l), real(dl, 4))
               dl  = min(dl, real(ll%reach_in(l), 8))
               fa  = max(1,  nint((llc - dl - llam1) * inv_dllam) + 1)
@@ -904,8 +903,7 @@ contains
             else
               ll%used(l) = .true.
               ll%strength(l) = max(ll%strength(l), voigt_peak*Rij / cont(f0,i,j,k))
-              vm2  = max(arg - lref_c, a*Rij*over_pi/ref)
-              rnoff = sqrt(vm2) * nfac
+              call qlg_bot_window(a, voigt_peak*Rij/ref, arg - lref_c, nfac, qc, rnoff)
               ! the unclipped half-width in log(lambda) is the line's reach
               ll%reach(l) = max(ll%reach(l), rnoff * real(dllam, 4))
               if (rnoff >= real(nf, 4)) then
@@ -927,8 +925,8 @@ contains
             ! and hoisted with nfac.
             nw = fb - fa + 1
             v0 = idf * real(llam(fa) - llc)
-            call qlg_bot_sweep (a, v0, dv, nw, Kbuf)
-            ! qlg_bot_sweep returns K = H(a,v) in the K(0,0) = 1 normalisation, so
+            call qlg_bot_coef_sweep (qc, v0, dv, nw, Kbuf)
+            ! qlg_bot_coef_sweep returns K = H(a,v) in the K(0,0) = 1 normalisation, so
             ! voigt_peak = 1/sqrt(pi) converts it to the per-Doppler-width profile the
             ! accumulation below wants -- the historical Rij/sqrt(pi).
             Rn = Rij * voigt_peak
