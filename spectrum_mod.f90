@@ -36,17 +36,17 @@ MODULE spectrum_mod
     real(8), public :: lam_tolerance = 0.001
     logical :: give_lam=.false., in_air=.true.
     logical :: in_log=.false.
-    real(8) :: daa=0, aa_red=0, aa_blue=0, R=0
+    real(8) :: daa=0, aa_red=0, aa_blue=0, R_sampling=0
     integer :: nnu=0
     character(len=256) :: lam_file='', window_file=''
     ! window_file (A1/A2): Path to file with multi-window specification. One window per
     ! non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
-    ! Requires R > 0 for constant-R grid construction. Windows are validated, sorted,
+    ! Requires R_sampling > 0 for constant-R grid construction. Windows are validated, sorted,
     ! merged (overlapping/touching), then each generates a constant-R segment. Segment
     ! metadata is stored in spectrum_type%segment_* arrays (A2).
-    ! Mutually exclusive with lam_file and give_lam; incompatible with R=0.
+    ! Mutually exclusive with lam_file and give_lam; incompatible with R_sampling=0.
     !
-    ! A bare aa_red/aa_blue (no daa/nnu/R/lam_file) requests the atom-native output grid
+    ! A bare aa_red/aa_blue (no daa/nnu/R_sampling/lam_file) requests the atom-native output grid
     ! cropped to this vacuum window instead of a fresh uniform grid -- see init / crop.
     logical, public :: crop_output=.false.
     real(8), public :: crop_blue=0, crop_red=0
@@ -54,7 +54,8 @@ MODULE spectrum_mod
   contains
     !===============================================================================
     ! Read and validate window_file, build segmented constant-R grid.
-    ! Input: window_file path, in_air flag, R (sampling resolution)
+    ! Input: window_file path, in_air flag, R_sampling (resolving power lambda/dlambda of the grid spacing, not an
+    ! instrumental broadening)
     ! Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
     !===============================================================================
     SUBROUTINE build_segmented_grid(wfile, in_air_flag, R_val, lam, nnu_out, self)
@@ -154,7 +155,7 @@ MODULE spectrum_mod
         red_vac = windows(i, 2)
 
         ! Build constant-R grid for this window.
-        ! Red-edge rule: start at blue edge and multiply by (1 + 1/R) until first sample
+        ! Red-edge rule: start at blue edge and multiply by (1 + 1/R_sampling) until first sample
         ! at or beyond red edge. This ensures consistent spacing and matches the existing
         ! single-window constant-R behavior (spectrum_mod.f90:115-121).
         fac = 1d0 + 1d0/R_val
@@ -250,7 +251,7 @@ MODULE spectrum_mod
       real(8) :: fac, blue, red
       integer :: iostat, i, lunit
       logical :: grid_in_vac
-      namelist /spectrum_params/ daa, aa_red, aa_blue, nnu, give_lam, in_log, R, &
+      namelist /spectrum_params/ daa, aa_red, aa_blue, nnu, give_lam, in_log, R_sampling, &
       lam_file, window_file, in_air
       namelist /sp_wavelengths/ lam
       !-----------------------------------------------------------------------------
@@ -264,10 +265,10 @@ MODULE spectrum_mod
       call io%namelist_warning ('spectrum_params', iostat)
       write (io%namelist, spectrum_params)
 
-      ! No explicit sampling grid (daa/nnu/R/lam_file/window_file). If a bare window is given, request
+      ! No explicit sampling grid (daa/nnu/R_sampling/lam_file/window_file). If a bare window is given, request
       ! cropping the atom-native output grid (built later from the model atom's transitions)
       ! to [aa_blue, aa_red]; otherwise the output grid spans the atom's full range.
-      if (daa==0 .and. nnu==0 .and. R==0 .and. lam_file=='' .and. window_file=='') then
+      if (daa==0 .and. nnu==0 .and. R_sampling==0 .and. lam_file=='' .and. window_file=='') then
         crop_output = aa_red /= 0 .and. aa_blue /= 0
         if (crop_output) then
           crop_blue = aa_blue
@@ -282,8 +283,8 @@ MODULE spectrum_mod
 
       ! Validate that window_file is not used with incompatible options
       if (window_file /= '') then
-        if (R <= 0) then
-          error stop 'window_file requires R > 0 for constant-R grid construction'
+        if (R_sampling <= 0) then
+          error stop 'window_file requires R_sampling > 0 for constant-R grid construction'
         endif
         if (lam_file /= '') then
           error stop 'window_file and lam_file are mutually exclusive'
@@ -306,7 +307,7 @@ MODULE spectrum_mod
         call io%namelist_warning ('spectrum_params', iostat)
         write (io%namelist, sp_wavelengths)
       elseif (window_file /= '') then
-        call build_segmented_grid(window_file, in_air, R, lam, nnu, self)
+        call build_segmented_grid(window_file, in_air, R_sampling, lam, nnu, self)
         grid_in_vac = .true.
       elseif (lam_file /= '') then
         nnu = 0
@@ -322,7 +323,7 @@ MODULE spectrum_mod
         read(lunit,*) lam
         close(lunit)
       elseif (aa_red /= 0 .and. aa_blue /= 0) then
-        if (R /= 0) then
+        if (R_sampling /= 0) then
           ! constant-R grid: build it geometric (equidistant in log lambda) directly in
           ! vacuum, so the spacing stays uniform and the arithmetic opacity kernel
           ! (add_opacity_equi) applies. If aa_blue/aa_red are given in air, convert the
@@ -334,7 +335,7 @@ MODULE spectrum_mod
             red  = air2vac(aa_red)
             grid_in_vac = .true.
           endif
-          fac = 1d0 + 1d0/R
+          fac = 1d0 + 1d0/R_sampling
           nnu = ceiling(log(red/blue) / log(fac)) + 1
           allocate(lam(nnu))
           lam(1) = blue
@@ -523,7 +524,7 @@ MODULE spectrum_mod
 
     !===============================================================================
     ! Restrict an atom-native output grid to the [crop_blue, crop_red] vacuum window
-    ! requested via a bare aa_red/aa_blue (no daa/nnu/R). A no-op unless crop_output is
+    ! requested via a bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is
     ! set, so the internal (bb/bf/all) solve grids -- which need full coverage -- are
     ! left untouched; only the emitted output spectrum is trimmed. Call after the grid
     ! is assembled/sorted but before the per-transition [iblue,ired] windows are set,

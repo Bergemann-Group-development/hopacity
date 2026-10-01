@@ -79,7 +79,7 @@ holds.
 from tumult.hop import wavelength_grid
 
 def main():
-    lam = wavelength_grid(3000.0, 3100.0, R=1000)   # &spectrum_params; air -> vacuum
+    lam = wavelength_grid(3000.0, 3100.0, R_sampling=1000)   # &spectrum_params; air -> vacuum
 
     with HopEOS(feh=0.0) as hop:
         hop.load_state(temp, rho)
@@ -197,7 +197,7 @@ pruning and the runs it feeds, plus a small `&prune_params` group:
 &atmos_params        atmos_format='marcs' atmos_file='model.mod' vmic=1.0 use_abnd=.true. /
 &composition_params  abundances='Fe=+1.0' relative_abundances=.true. /
 &linelist_params     linelist_file='master.txt' dlam=5.0 /
-&spectrum_params     window_file='windows.txt' R=300000.0 /
+&spectrum_params     window_file='windows.txt' R_sampling=300000.0 /
 &prune_params        output_file='pruned.txt' sample_count=8 /
 ```
 
@@ -212,7 +212,7 @@ pruning and the runs it feeds, plus a small `&prune_params` group:
   grow with its abundance, so that selection covers the weaker rungs for them.
 - Transitions are read only inside the windows widened by `dlam`, and the opacity over the
   run's constant-`R` grid marks the ones that clear HOP's negligibility test on the
-  sampled states. `dlam` and `R` therefore have to match the runs.
+  sampled states. `dlam` and `R_sampling` therefore have to match the runs.
 - Each record ends with the transition's strength and its *reach*: the half-width in
   Angstrom out to which its extinction exceeds the tolerance times the continuum on the
   sampled states. A run reading a list in which every transition of a species carries a

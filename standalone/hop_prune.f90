@@ -36,7 +36,7 @@ PROGRAM hop_prune
                        hop_opacity, hop_write_linelist, hop_linelist_count, hop_last_error
   USE hop_env_mod, only: io
   USE atmos_reader_mod, only: atmos_data_t, read_atmos_file, atmos_format_from_name
-  USE spectrum_mod, only: spectrum_type, daa, aa_red, aa_blue, nnu, give_lam, in_log, R, &
+  USE spectrum_mod, only: spectrum_type, daa, aa_red, aa_blue, nnu, give_lam, in_log, R_sampling, &
                           lam_file, window_file, in_air
   USE composition_mod, only: abundances, relative_abundances, exclude_elements, &
                              only_elements, opac_table_vmic, mhd_eos, &
@@ -167,7 +167,7 @@ PROGRAM hop_prune
 
   ! --- the wavelength grid and its windows, as the run builds them --------------------
   call sp%init()
-  if (sp%nnu < 1) call die('spectrum_params: no wavelength grid; give R with ' // &
+  if (sp%nnu < 1) call die('spectrum_params: no wavelength grid; give R_sampling with ' // &
                            'window_file or aa_blue/aa_red')
   if (sp%n_segments > 0) then
     nwin = sp%n_segments
@@ -340,7 +340,7 @@ CONTAINS
     logical :: use_rho_used, use_ne_used, use_abnd_used
     ! spectrum_type%init reads this group from io%input and echoes it to io%namelist,
     ! which is a scratch unit here, so it is echoed again from the same module variables
-    namelist /spectrum_params/ daa, aa_red, aa_blue, nnu, give_lam, in_log, R, &
+    namelist /spectrum_params/ daa, aa_red, aa_blue, nnu, give_lam, in_log, R_sampling, &
       lam_file, window_file, in_air
     namelist /prune_result/ atmos_format_used, nz_model, nsampled, sampled_depths, &
       use_rho_used, use_ne_used, use_abnd_used, vmic_used, feh_used, blue_vac, red_vac, &
