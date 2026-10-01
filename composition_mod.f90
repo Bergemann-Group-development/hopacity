@@ -1181,10 +1181,10 @@ contains
     ! the Stark profile (append_h_line). Two column layouts are accepted, selected by
     ! hlinedata:
     !   hlinedata=.true.  (dedicated 'Hlinedata' file):
-    !       lam_air, i, j, lower_ev, upper_ev, loggf, label, ga_in
+    !       lam_air, i, j, lower_ev, upper_ev, loggf, label, grad_in
     !     -- principal quantum numbers i,j are read directly from the file.
     !   hlinedata=.false. (H I block embedded in a metal file):
-    !       lam_air, lower_ev, loggf, gv, ga, gq, i, j
+    !       lam_air, lower_ev, loggf, gvdw, grad, gstk, i, j
     !     -- i,j are derived from the level energies.
     ! The broadening columns are inert: hydrogen_line supplies the widths.
     subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &

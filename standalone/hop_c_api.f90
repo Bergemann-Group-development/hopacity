@@ -21,7 +21,7 @@ MODULE hop_c_api
   USE console_mod
   USE composition_mod
   USE spectrum_mod, only: spectrum_type, lam_tolerance
-  USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_ga, disable_stark, &
+  USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_rad, disable_stk, &
                           disable_vdw
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
@@ -91,7 +91,7 @@ MODULE hop_c_api
     'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
-    'irwin_dis disable_ga disable_stark disable_vdw hydrogen_bpo ' // &
+    'irwin_dis disable_rad disable_stk disable_vdw hydrogen_bpo ' // &
     'hydrogen_vcs_table ll_profile voigt_kernel verbose'
 
 CONTAINS
@@ -613,10 +613,10 @@ CONTAINS
       call parse_logical(val, lv, status); if (status == 0) debye_shield = lv
     case ('irwin_dis')
       call parse_logical(val, lv, status); if (status == 0) irwin_dis = lv
-    case ('disable_ga')
-      call parse_logical(val, lv, status); if (status == 0) disable_ga = lv
-    case ('disable_stark')
-      call parse_logical(val, lv, status); if (status == 0) disable_stark = lv
+    case ('disable_rad')
+      call parse_logical(val, lv, status); if (status == 0) disable_rad = lv
+    case ('disable_stk')
+      call parse_logical(val, lv, status); if (status == 0) disable_stk = lv
     case ('disable_vdw')
       call parse_logical(val, lv, status); if (status == 0) disable_vdw = lv
     case ('hydrogen_bpo')

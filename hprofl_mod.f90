@@ -1,5 +1,5 @@
 MODULE hprofl_mod
-  USE bbtrans_mod, only: bbtrans_type, disable_ga, disable_stark, disable_vdw
+  USE bbtrans_mod, only: bbtrans_type, disable_rad, disable_stk, disable_vdw
   USE qlg, only: qlg_bot_coef_t, qlg_bot_coef, qlg_bot_eval   ! the one Voigt kernel; see linelist_mod's kernel note
   USE prec_mod, only: RYD, dp
   USE const_mod
@@ -143,7 +143,7 @@ MODULE hprofl_mod
   type, public :: hline_t
     integer  :: n=0, m=0          ! lower and upper principal quantum numbers
     real(dp) :: nu0=0             ! rest frequency [Hz]
-    real(dp) :: ga=0, gq=0, gw1=0, gw2=0, gw3=0
+    real(dp) :: grad=0, gstk=0, gw1=0, gw2=0, gw3=0
     integer  :: io=0
     real(dp) :: dq(14)=0, wt(14)=0
   end type hline_t
@@ -290,9 +290,9 @@ contains
     c%tothi = tothi
     c%resont = tothi * h%gw1
     if (h%gw2 /= 0) c%resont = c%resont * vbar2h**h%gw2
-    c%hwstk = h%gq * fo
+    c%hwstk = h%gstk * fo
     c%vdw = h%gw3 * t3nhe
-    c%hwlor = h%ga + c%resont + c%vdw
+    c%hwlor = h%grad + c%resont + c%vdw
     c%hfwid = max(1/idf, c%hwlor, c%hwstk) ! defines where we switch from Voigt to adding
 
     ! Optional tabulated VCS (Lemke 1997) profile: whole-profile replacement,
@@ -396,7 +396,7 @@ contains
         !  This is cut at 1400 AA in the red.
         !  Note that this is Rayleigh scattering and therefore the rayleigh scattering
         !  in composition_mod has to be cut below 1400 AA to avoid double counting.
-        a = h%ga*(q+1d0)**2
+        a = h%grad*(q+1d0)**2
       endif
       if (q > q4000) then
         !  Self broadening of Lyman alpha:
@@ -516,7 +516,7 @@ contains
     else
       xknm = 5.5E-5*ignm * mn2/(1. + .13/real(mmn))
     end if
-    h%gq = 5.*xknm*h%nu0/(cc*1e8)
+    h%gstk = 5.*xknm*h%nu0/(cc*1e8)
 
     !  Natural damping taken from tables
     !  dnu/ nu_0 = 1/2 * 1/nu_0 * 1/2 pi * Gamma
@@ -525,7 +525,7 @@ contains
     else
       radamp = asum(n)+asum(m)
     end if
-    h%ga = radamp * over_4pi / h%nu0
+    h%grad = radamp * over_4pi / h%nu0
 
     !  Resonance broadening following Ali & Griem (1966, Phys Rev 144, 366).
     !  RESONT is dnu/nu per unit H density. Only the lower state is included
@@ -583,8 +583,8 @@ contains
     h%dq(1:ifins) = finest(1:ifins) / h%nu0
     h%wt(1:ifins) = finswt(1:ifins)
 
-    if (disable_ga) h%ga = 0
-    if (disable_stark) h%gq = 0
+    if (disable_rad) h%grad = 0
+    if (disable_stk) h%gstk = 0
     if (disable_vdw) then
       h%gw1 = 0
       h%gw2 = 0
@@ -602,8 +602,8 @@ contains
     !----------------------------------------------------------------------------------
     if (hydrogen_vcs_table) call ensure_vcs_loaded()
     h = hydrogen_line(self%i, self%j, self%nu0)
-    self%ga  = h%ga
-    self%gq  = h%gq
+    self%grad  = h%grad
+    self%gstk  = h%gstk
     self%gw1 = h%gw1
     self%gw2 = h%gw2
     self%gw3 = h%gw3

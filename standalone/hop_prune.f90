@@ -41,7 +41,7 @@ PROGRAM hop_prune
   USE composition_mod, only: abundances, relative_abundances, exclude_elements, &
                              only_elements, opac_table_vmic, mhd_eos, &
                              line_scattering, helium_scattering, ref_lam, debug_opac
-  USE bbtrans_mod, only: tolerance, disable_ga, disable_stark, disable_vdw
+  USE bbtrans_mod, only: tolerance, disable_rad, disable_stk, disable_vdw
   USE bftrans_mod, only: H_occupation_probability
   USE ion_mod, only: debye_shield
   USE molecule_mod, only: irwin_dis
@@ -281,7 +281,7 @@ CONTAINS
     namelist /composition_params/ verbose, absdat_file, abund_file, &
       isotope_file, molec_file, H_occupation_probability, mhd_eos, debye_shield, &
       tmolim, irwin_dis, save_species, ref_lam, debug_opac, abundances, relative_abundances, &
-      alpha_enhancement, r_process_enhancement, disable_ga, disable_stark, disable_vdw, &
+      alpha_enhancement, r_process_enhancement, disable_rad, disable_stk, disable_vdw, &
       helium_scattering, hydrogen_BPO, hydrogen_vcs_table, vcs_data_dir, eosmet
     !---------------------------------------------------------------------------
     verbose = comp_verbose

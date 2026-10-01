@@ -105,8 +105,8 @@ contains
     logical,             intent(in)    :: is_mol, do_mask
     real(dp),            intent(in)    :: lam_min, lam_max
     type(interval_t), intent(in), optional :: intervals(:)
-    real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, ga_in, gq_in, r_i, r_j
-    real(dp) :: nu0, ga_t, gw1_t, gw2_t, gq_t
+    real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, grad_in, gstk_in, r_i, r_j
+    real(dp) :: nu0, grad_t, gw1_t, gw2_t, gstk_t
     real(dp) :: fields(10)
     integer  :: lo, hi, nkeep, i, k, iostat, nvalue
     integer  :: ib, nblk
@@ -176,7 +176,7 @@ contains
     do i = blk_lo(ib), blk_hi(ib)
       call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
       lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
-      gv_in = fields(4); ga_in = fields(5); gq_in = fields(6)
+      gv_in = fields(4); grad_in = fields(5); gstk_in = fields(6)
       r_i = fields(7); r_j = fields(8)
       lam_vac = air2vac(lam_air)
       if (present(intervals)) then
@@ -199,15 +199,15 @@ contains
       ll%reach_in(k) = merge(real(fields(10) / lam_vac, 4), -1.0, nvalue >= 10)
       ll%loggf(k)    = loggf
       ll%gv_in(k)    = gv_in
-      ll%ga_in(k)    = ga_in
-      ll%gq_in(k)    = gq_in
+      ll%grad_in(k)    = grad_in
+      ll%gstk_in(k)    = gstk_in
 
-      call prepare_radiative   (ga_t,  ga_in, nu0, loggf)
-      call prepare_stark       (gq_t,  gq_in, nu0, lower_ev, ion_j, xion)
+      call prepare_radiative   (grad_t,  grad_in, nu0, loggf)
+      call prepare_stark       (gstk_t,  gstk_in, nu0, lower_ev, ion_j, xion)
       call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
                                 lower_ev, ion_j, xion, vbar2e4, is_mol)
-      ll%ga(k)  = ga_t
-      ll%gq(k)  = gq_t
+      ll%grad(k)  = grad_t
+      ll%gstk(k)  = gstk_t
       ll%gw1(k) = gw1_t
       ll%gw2(k) = gw2_t
     end do
@@ -220,13 +220,13 @@ contains
   ! model-atom bound-bound transitions (atom_mod%build_ll) into a linelist_type.
   ! Broadening parameters carry the same over_4pi/nu0 scaling as the prepare_* routines.
   !-------------------------------------------------------------------------------------
-  SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, ga, gw1, gw2, gq, unsold, &
+  SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, grad, gw1, gw2, gstk, unsold, &
                          lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
-                         loggf, gv_in, ga_in, gq_in)
+                         loggf, gv_in, grad_in, gstk_in)
     type(linelist_type), intent(inout) :: ll
     real(8), intent(in) :: llam0, gpref
-    real(8), intent(in) :: nu0, lower_ev, ga, gw1, gw2, gq, wA, cwt, dej
-    real(8), intent(in) :: loggf, gv_in, ga_in, gq_in
+    real(8), intent(in) :: nu0, lower_ev, grad, gw1, gw2, gstk, wA, cwt, dej
+    real(8), intent(in) :: loggf, gv_in, grad_in, gstk_in
     logical, intent(in) :: unsold
     integer, intent(in) :: lev_i, lev_j, itrans, ipart, iso_out
     integer :: k
@@ -239,10 +239,10 @@ contains
     ll%nu0(k)      = nu0
     ll%lower_ev(k) = lower_ev
     ll%gpref(k)    = gpref
-    ll%ga(k)       = ga
+    ll%grad(k)       = grad
     ll%gw1(k)      = gw1
     ll%gw2(k)      = gw2
-    ll%gq(k)       = gq
+    ll%gstk(k)       = gstk
     ll%unsold(k)   = unsold
     ll%lev_i(k)    = lev_i
     ll%lev_j(k)    = lev_j
@@ -253,8 +253,8 @@ contains
     ll%reach_in(k) = -1
     ll%loggf(k)    = loggf
     ll%gv_in(k)    = gv_in
-    ll%ga_in(k)    = ga_in
-    ll%gq_in(k)    = gq_in
+    ll%grad_in(k)    = grad_in
+    ll%gstk_in(k)    = gstk_in
     ll%itrans(k)   = itrans
     ll%ipart(k)    = ipart
     ll%wA(k)       = wA
@@ -270,12 +270,12 @@ contains
   ! Append one H I line-list line with principal quantum numbers n_lo -> n_up. Only the
   ! identification is stored: add_h_opacities rebuilds the Stark, resonance and van der
   ! Waals widths from (n_lo, n_up, nu0) with hydrogen_line and Bij from loggf, so
-  ! gpref/ga/gw1/gw2/gq stay 0. lev_i/lev_j start as n_lo/n_up.
+  ! gpref/grad/gw1/gw2/gstk stay 0. lev_i/lev_j start as n_lo/n_up.
   !-------------------------------------------------------------------------------------
-  SUBROUTINE append_h_line(ll, llam0, nu0, lower_ev, loggf, gv_in, ga_in, gq_in, &
+  SUBROUTINE append_h_line(ll, llam0, nu0, lower_ev, loggf, gv_in, grad_in, gstk_in, &
                            n_lo, n_up)
     type(linelist_type), intent(inout) :: ll
-    real(8), intent(in) :: llam0, nu0, lower_ev, loggf, gv_in, ga_in, gq_in
+    real(8), intent(in) :: llam0, nu0, lower_ev, loggf, gv_in, grad_in, gstk_in
     integer, intent(in) :: n_lo, n_up
     integer :: k
     !-----------------------------------------------------------------------------------
@@ -288,10 +288,10 @@ contains
     ll%nu0(k)      = nu0
     ll%lower_ev(k) = lower_ev
     ll%gpref(k)    = 0
-    ll%ga(k)       = 0
+    ll%grad(k)       = 0
     ll%gw1(k)      = 0
     ll%gw2(k)      = 0
-    ll%gq(k)       = 0
+    ll%gstk(k)       = 0
     ll%unsold(k)   = .false.
     ll%lev_i(k)    = n_lo
     ll%lev_j(k)    = n_up
@@ -304,8 +304,8 @@ contains
     ll%reach_in(k) = -1
     ll%loggf(k)    = loggf
     ll%gv_in(k)    = gv_in
-    ll%ga_in(k)    = ga_in
-    ll%gq_in(k)    = gq_in
+    ll%grad_in(k)    = grad_in
+    ll%gstk_in(k)    = gstk_in
   END SUBROUTINE append_h_line
 
   !=====================================================================================
@@ -350,12 +350,12 @@ contains
     call permute4(ll%gpref,    idx)
     call permute4(ll%loggf,    idx)
     call permute4(ll%gv_in,    idx)
-    call permute4(ll%ga_in,    idx)
-    call permute4(ll%gq_in,    idx)
-    call permute4(ll%ga,       idx)
+    call permute4(ll%grad_in,    idx)
+    call permute4(ll%gstk_in,    idx)
+    call permute4(ll%grad,       idx)
     call permute4(ll%gw1,      idx)
     call permute4(ll%gw2,      idx)
-    call permute4(ll%gq,       idx)
+    call permute4(ll%gstk,       idx)
     call permute4(ll%strength, idx)
     call permute4(ll%reach,    idx)
     call permute4(ll%reach_in, idx)
@@ -595,16 +595,16 @@ contains
             end if
 
             ! damping parameter (physical, then scaled by idf)
-            a = ll%ga(l)
+            a = ll%grad(l)
             if (ll%unsold(l)) then
               a = a + ll%gw1(l) * unsold_c
             else
               a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
-            if (ll%gq(l) >= 0.0) then
-              a = a + ll%gq(l) * ne_c
+            if (ll%gstk(l) >= 0.0) then
+              a = a + ll%gstk(l) * ne_c
             else
-              a = a - ll%gq(l) * starkpe
+              a = a - ll%gstk(l) * starkpe
             end if
             a = a * idf
 
@@ -851,16 +851,16 @@ contains
             end if
 
             ! damping parameter (physical, then scaled by idf)
-            a = ll%ga(l)
+            a = ll%grad(l)
             if (ll%unsold(l)) then
               a = a + ll%gw1(l) * unsold_c
             else
               a = a + ll%gw1(l) * exp(ll%gw2(l) * lvb2) * tothi_c
             end if
-            if (ll%gq(l) >= 0.0) then
-              a = a + ll%gq(l) * ne_c
+            if (ll%gstk(l) >= 0.0) then
+              a = a + ll%gstk(l) * ne_c
             else
-              a = a - ll%gq(l) * starkpe
+              a = a - ll%gstk(l) * starkpe
             end if
             a = a * idf
 
@@ -1159,7 +1159,7 @@ contains
   !=====================================================================================
   ! linelist_out.txt writers -- one block per (species, isotope), in the same format
   ! the linelist reader (init_linelist) and tumult's LineList.from_tumult_format
-  ! parse:  "'Fe I'" / "'iso' nlines" / records "lam_air evi loggf gv ga gq i j
+  ! parse:  "'Fe I'" / "'iso' nlines" / records "lam_air evi loggf gvdw grad gstk i j
   ! strength reach". strength is a diagnostic both readers ignore. reach [Angstrom] is
   ! the half-width of the line's evaluation window, where its opacity falls to the
   ! tolerance times the continuum, maximised over the states the list was written from
@@ -1175,12 +1175,12 @@ contains
   END SUBROUTINE write_ll_header
 
   !-------------------------------------------------------------------------------------
-  SUBROUTINE write_ll_record(unit, lam_air, evi, loggf, gv, ga, gq, i, j, strength, reach)
+  SUBROUTINE write_ll_record(unit, lam_air, evi, loggf, gvdw, grad, gstk, i, j, strength, reach)
     integer, intent(in) :: unit, i, j
-    real(8), intent(in) :: lam_air, evi, loggf, gv, ga, gq, strength, reach
+    real(8), intent(in) :: lam_air, evi, loggf, gvdw, grad, gstk, strength, reach
     !-----------------------------------------------------------------------------------
     write(unit, "(F12.4, F10.4, F9.3, F14.6, 2(ES12.3), 2(I6), ES12.3, ES13.5)") &
-      lam_air, evi, loggf, gv, ga, gq, i, j, strength, reach
+      lam_air, evi, loggf, gvdw, grad, gstk, i, j, strength, reach
   END SUBROUTINE write_ll_record
 
   !=====================================================================================
@@ -1229,7 +1229,7 @@ contains
           if (.not. (sll%active(l) .and. sll%used(l))) cycle
           call write_ll_record(unit, vac2air(exp(sll%llam0(l))), &
             dble(sll%lower_ev(l)), dble(sll%loggf(l)), dble(sll%gv_in(l)), &
-            dble(sll%ga_in(l)), dble(sll%gq_in(l)), sll%lev_i(l), sll%lev_j(l), &
+            dble(sll%grad_in(l)), dble(sll%gstk_in(l)), sll%lev_i(l), sll%lev_j(l), &
             dble(sll%strength(l)), dble(sll%reach(l)) * exp(sll%llam0(l)))
         end associate
       end do
@@ -1285,7 +1285,7 @@ contains
               .and. ll%iso_out(l) == isoval)) cycle
           call write_ll_record(unit, vac2air(exp(ll%llam0(l))), &
             dble(ll%lower_ev(l)), dble(ll%loggf(l)), dble(ll%gv_in(l)), &
-            dble(ll%ga_in(l)), dble(ll%gq_in(l)), ll%lev_i(l), ll%lev_j(l), &
+            dble(ll%grad_in(l)), dble(ll%gstk_in(l)), ll%lev_i(l), ll%lev_j(l), &
             dble(ll%strength(l)), dble(ll%reach(l)) * exp(ll%llam0(l)))
         end do
       end do
@@ -1471,12 +1471,12 @@ contains
     call grow4(ll%gpref,    ll%nline, need)
     call grow4(ll%loggf,    ll%nline, need)
     call grow4(ll%gv_in,    ll%nline, need)
-    call grow4(ll%ga_in,    ll%nline, need)
-    call grow4(ll%gq_in,    ll%nline, need)
-    call grow4(ll%ga,       ll%nline, need)
+    call grow4(ll%grad_in,    ll%nline, need)
+    call grow4(ll%gstk_in,    ll%nline, need)
+    call grow4(ll%grad,       ll%nline, need)
     call grow4(ll%gw1,      ll%nline, need)
     call grow4(ll%gw2,      ll%nline, need)
-    call grow4(ll%gq,       ll%nline, need)
+    call grow4(ll%gstk,       ll%nline, need)
     call grow4(ll%strength, ll%nline, need)
     call grow4(ll%reach,    ll%nline, need)
     call grow4(ll%reach_in, ll%nline, need)

@@ -31,10 +31,10 @@ MODULE line_types_mod
     ! per-isotope population base (bulk path) or via append_line's gpref (model atoms).
     real(4),  allocatable :: gpref(:)
     ! broadening (already scaled by over_4pi/nu0, as bbtrans_mod's prepare_* routines)
-    real(4),  allocatable :: ga(:)       ! radiative damping
+    real(4),  allocatable :: grad(:)       ! radiative damping
     real(4),  allocatable :: gw1(:)      ! van der Waals coefficient
     real(4),  allocatable :: gw2(:)      ! van der Waals exponent
-    real(4),  allocatable :: gq(:)       ! Stark constant (sign encodes recipe)
+    real(4),  allocatable :: gstk(:)       ! Stark constant (sign encodes recipe)
     logical,  allocatable :: unsold(:)   ! .true. -> Unsold vdW, .false. -> Barklem
     ! bookkeeping
     integer,  allocatable :: lev_i(:)    ! NLTE lower level index (filled at opacity time)
@@ -53,7 +53,7 @@ MODULE line_types_mod
     logical :: has_reach = .false.
     real(8) :: reach_in_max = 0
     ! raw inputs kept only for the linelist_out.txt diagnostic dump
-    real(4),  allocatable :: loggf(:), gv_in(:), ga_in(:), gq_in(:)
+    real(4),  allocatable :: loggf(:), gv_in(:), grad_in(:), gstk_in(:)
     ! --- optional extensions, used by model-atom linelists (atom_trans_t%ll) ---------
     ! ipart selects the 4th dim of the caller's lnbase array (population base per ion
     ! stage); unallocated means all lines use lnbase(:,:,:,1) (the bulk-linelist case).
