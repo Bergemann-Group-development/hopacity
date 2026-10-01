@@ -146,7 +146,12 @@ contains
       gq = - 10**gq_in * scale                  ! sign marks recipe
     elseif (gq_in == 0) then
       upper_ev = lower_ev + H_E * nu0
-      if (lower_ev < cnt_ev) then
+      ! The estimate is hydrogenic in the upper level's distance below the ionisation
+      ! limit cnt_ev. It has no meaning for an upper level at or above the limit
+      ! (autoionising, converging on an excited parent term, or listed against a
+      ! rounded limit), where n*^4 would be taken from |cnt_ev - upper_ev| and grows
+      ! without bound towards it, so such a line gets no Cowley estimate.
+      if (upper_ev < cnt_ev) then
         ! Cowley (1971) eqs. 5 and 6 at 1e4 K, which he recommends using at all T;
         ! c1 is n*^4 of the upper level (his eq. 4)
         c1 = (j**2 * RydV / (cnt_ev - upper_ev))**2
@@ -200,7 +205,10 @@ contains
         gw1 = 10**gv / (vbar2e4)**0.3  ! recipe 'W' Turbospectrum
       elseif (gv /= 0.0) then
         upper_ev = lower_ev + H_E * nu0
-        if (lower_ev < cnt_ev) then    ! Unsold approximation
+        ! Unsold approximation, hydrogenic in the levels' distances below the
+        ! ionisation limit cnt_ev. As for the Cowley Stark estimate (prepare_stark), a
+        ! line whose upper level is at or above the limit gets none.
+        if (upper_ev < cnt_ev) then
           c1 = 1./(cnt_ev - upper_ev)**2 - 1./(cnt_ev - lower_ev)**2
           if (c1 > 0) then
             c625 = (lower_ion**2 * c1)**0.4  ! c6^(2/5) impact approximation
