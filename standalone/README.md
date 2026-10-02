@@ -109,7 +109,7 @@ hump turning over into free-free beyond ~1.6 um. The example above (572 waveleng
 ### Parallelism
 
 The wavelength axis is split into `nchunks` pieces exactly as dispatch splits it over its
-`n_nu` rt_patches, and the pieces run in `nprocs` processes. Each worker holds its own
+`n_windows` rt_patches, and the pieces run in `nprocs` processes. Each worker holds its own
 instance and — with a line list — reads only the lines its own chunk needs. Cost scales
 with `nlam x ntemp x nrho`, so raise `nprocs` before you widen the window.
 
