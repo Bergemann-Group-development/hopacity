@@ -122,15 +122,18 @@ contains
   SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl)
     class(level_type), target :: self
     real(4), intent(inout), dimension(:,:,:,:) :: chi
-    real(dp), intent(in), dimension(:) :: lam, ab
+    real(dp), intent(in), dimension(:) :: lam
+    real(4), intent(in), dimension(:) :: ab
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
     real(dp), intent(in), dimension(:,:,:), optional, target :: wocc, nlvl
     real(dp), dimension(:,:,:), pointer :: wp, np
-    real(dp), dimension(:), allocatable :: x1, x2, kk, lfac, cutfac
-    real(dp) :: ns, ns2, rih, neutr, k1, k2, x, charg, res, nh43, nhe43
-    real(dp) :: redcut, nu, w, n, frac, wstar
+    real(dp), dimension(:), allocatable :: kd
+    real(4), dimension(:), allocatable :: x1, x2, kk, g
+    integer, dimension(:), allocatable :: f0, f1
+    real(dp) :: ns, redcut, nu, cutfac, x1d, x2d, kkd, xd
+    real(4) :: w, omw, n, x, xk, k1, nh43, nhe43, ne1, frac, a, E, omE, C, omC, d
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
-    integer :: f,i,j,k, m(3), nf
+    integer :: f,i,j,k,l, m(3), nf, n0, n1
     !---------------------------------------------------------------------------
     if (present(wocc)) then
       wp => wocc
@@ -147,26 +150,39 @@ contains
     if (size(chi,2) /= m(1) .or. size(wp,1) /= m(1) .or. size(np,1) /= m(1) .or. &
         size(nh,1) /= m(1) .or. size(nhe,1) /= m(1) .or. size(shield,1) /= m(1)) &
       error stop 'wcalc2: chi/nh/nhe/shield/w/n span different cells than ne'
-    allocate(x1, x2, kk, lfac, cutfac, mold=lam)
-    kk = 0.
 
     ! wavelength of alpha line
     redcut = hc_e / ((self%i**(-2.d0) - (self%i+1)**(-2.d0))*RYD) * 1d8
 
+    ! Wavelengths within the cutoff split into f0, beyond the series limit, and
+    ! f1, below it, where the photon reaches the dissolved upper levels of
+    ! effective quantum number ns and their occupation probability wstar enters
+    allocate(g(nf), f0(nf), f1(nf), x1(nf), x2(nf), kk(nf), kd(nf))
+    n0 = 0
+    n1 = 0
     do f=1, nf
       if (lam(f) > redcut) then
-        cutfac(f) = exp((redcut - lam(f))*1.d-2)
+        cutfac = exp((redcut - lam(f))*1.d-2)
       else
-        cutfac(f) = 1.0
+        cutfac = 1.0
       endif
-      if (cutfac(f) > 1d-1) then
-        lfac(f) = 2.0898E-26 / (2*self%i**5) * cutfac(f)
+      if (cutfac > 1d-1) then
+        g(f) = real(2.0898E-26 / (2*self%i**5) * cutfac * ab(f), 4)
 
         nu = cc/lam(f)*1e8
         ns = 1. - (self%xion + h_e*nu)/RYD
         if(ns > 0) then
           ns = 1.d0/sqrt(ns)
-          call calc_x_and_k(ns, x1(f), x2(f), kk(f))
+          call calc_x_and_k(ns, x1d, x2d, kkd)
+          n1 = n1 + 1
+          f1(n1) = f
+          x1(n1) = real(x1d, 4)
+          x2(n1) = real(x2d, 4)
+          kk(n1) = real(kkd, 4)
+          kd(n1) = kkd
+        else
+          n0 = n0 + 1
+          f0(n0) = f
         endif
       endif
     end do
@@ -174,38 +190,54 @@ contains
     do k=1, m(3)
       do j=1, m(2)
         do i=1, m(1)
-          w = wp(i,j,k)
-          x = shield(i,j,k)
-          n = np(i,j,k)
-          nh43  = pi43 * nh(i,j,k)
-          nhe43 = pi43 * nhe(i,j,k)
-          do f=1, nf
-            if (cutfac(f) > 1d-1) then
-              if(kk(f) /= 0.d0) then
-                ! neutral perturbers
-                neutr = nh43*x1(f) + nhe43*x2(f)
-                wstar = exp(-neutr)
+          w = real(wp(i,j,k), 4)
+          omw = real(1.d0 - wp(i,j,k), 4)
+          xd = shield(i,j,k)
+          x = real(xd, 4)
+          n = real(np(i,j,k), 4)
+          ne1 = real(ne(i,j,k), 4)
+          nh43  = real(pi43 * nh(i,j,k), 4)
+          nhe43 = real(pi43 * nhe(i,j,k), 4)
 
-                ! charged perturbers
-                k1 = kk(f)
-                if (k1*x < 1e4) then
-                  k2 = k1*k1
-                  frac = 0.1402d0*x*k2 / (ne(i,j,k) * (1. + 0.1285*x*k1))
-                  charg = frac / (1.d0 + frac)
-                  wstar = wstar * charg
-                endif
+          ! n does not contain the occupation probability, therefore the
+          ! (1 - wstar/wi) from the original hbop code becomes (wi - wstar)
+          ! which is more efficient as we avoid division for a frequency dependent quantity
+          do l=1, n0
+            f = f0(l)
+            chi(f,i,j,k) = chi(f,i,j,k) + w * n * g(f)
+          end do
+          do l=1, n1
+            f = f1(l)
+            ! neutral perturbers, E = exp(-a), and 1 - E from its series where
+            ! the difference would cancel
+            a = nh43*x1(l) + nhe43*x2(l)
+            E = exp(-a)
+            omE = 1. - E
+            if (a < 0.1) omE = a*(1. - a*(0.5 - a*(1./6. - a*(1./24. - a*(1./120.)))))
 
-                res = w - wstar
-              else
-                res = w
-              endif
-
-              ! n does not contain the occupation probability, therefore the
-              ! (1 - wstar/wi) from the original hbop code becomes (wi - wstar)
-              ! which is more efficient as we avoid division for a frequency dependent quantity
-              res = res * lfac(f) * n
-              chi(f,i,j,k) = chi(f,i,j,k) + res*ab(f)
+            ! charged perturbers, C = frac/(1+frac); k1 reaches ~2e22, so k1**2
+            ! is formed as xk*k1 with xk = x*k1 < 1e4 to stay in the real(4) range.
+            ! C is discontinuous at xk = 1e4, so that test is made on the double
+            ! precision product, where a real(4) rounding could flip it
+            k1 = kk(l)
+            xk = x*k1
+            C = 1.
+            omC = 0.
+            if (xd*kd(l) < 1d4) then
+              frac = 0.1402*xk*k1 / (ne1 * (1. + 0.1285*xk))
+              C = frac / (1. + frac)
+              omC = 1. / (1. + frac)
             endif
+
+            ! wstar = E*C.  Where w is close to 1, so is wstar near the cutoff,
+            ! and w - wstar is formed as (1 - wstar) - (1 - w) with
+            ! 1 - wstar = (1-E) + E*(1-C)
+            if (w > 0.5) then
+              d = (omE + E*omC) - omw
+            else
+              d = w - E*C
+            endif
+            chi(f,i,j,k) = chi(f,i,j,k) + d * n * g(f)
           end do
         end do
       end do

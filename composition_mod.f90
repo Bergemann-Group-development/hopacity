@@ -233,6 +233,7 @@ contains
     character(len=10) :: s10
     integer :: g0, nqfix, nqtemp, ifish, ncor
     real(dp) :: acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c, scale
+    real(dp), dimension(:,:), allocatable :: xkap
     integer :: nkomp,nextl,nutzl,nextt,nutzt,null
     integer :: ilogl, kvadl, minex, maxex, nnu, iscal
     integer :: ilogt, kvadt, minet, maxet, ntt, iteta, istim
@@ -730,22 +731,18 @@ contains
         trans%maxt = trans%temp(ntt)
       endif
 
-      allocate(trans%xkap(nnu, ntt))
+      allocate(xkap(nnu, ntt))
 
       do j=1, ntt
-        read(absdat, '(6E10.3)') (trans%xkap(k,j),k=1,nnu)
+        read(absdat, '(6E10.3)') (xkap(k,j),k=1,nnu)
       end do
 
       if (iscal > 0) then
-        trans%xkap = trans%xkap * scale
+        xkap = xkap * scale
       endif
 
-      if (trans%ilogl .or. trans%ilogt) then
-        allocate(trans%log_xkap, mold=trans%xkap)
-        trans%log_xkap = trans%xkap
-        where (trans%log_xkap <= 0) trans%log_xkap = 1d-37
-        trans%log_xkap = log(trans%log_xkap)
-      endif
+      call trans%set_table(xkap)
+      deallocate(xkap)
     end do
 
     close(absdat)

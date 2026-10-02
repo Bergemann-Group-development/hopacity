@@ -19,8 +19,9 @@ MODULE bftrans_mod
     logical :: ilogl, kvadl, minex, maxex, loglam=.false.
     logical :: ilogt, kvadt, minet, maxet, iteta, pedep, istim
     real(dp), dimension(:), allocatable :: lam, temp, teta, tt, lnlam
-    real(dp), dimension(:,:), allocatable :: xkap
-    real(dp), dimension(:,:), allocatable :: log_xkap
+    real(4), dimension(:,:), allocatable :: xkap   ! scaled table, see set_table
+    real(dp) :: xkap_scale=1
+    logical :: log_table=.false.
     logical, dimension(:), allocatable :: ldisk!, tdisk
     logical :: peach=.false., regular=.false., molecular=.false.
     logical :: lam3=.false.
@@ -33,6 +34,7 @@ MODULE bftrans_mod
     procedure :: absorption_factor
     procedure :: add_absorption
     procedure :: load_lam_interp_weights
+    procedure :: set_table
     procedure :: deactivate
   end type
 
@@ -48,6 +50,30 @@ contains
   END SUBROUTINE deactivate
 
   !===============================================================================
+  ! Store the absorption table xkap(nnu, ntt) in real(4), in the form in which
+  ! interp_xkap interpolates it first: logarithmic for a logarithmic temperature
+  ! interpolation, or for a table without temperature dependence that is
+  ! interpolated logarithmically in wavelength.  The table is divided by its
+  ! maximum, xkap_scale, which keeps cross sections far below the real(4) range
+  ! (collision-induced absorption, ~1e-45) representable; interp_xkap multiplies
+  ! xkap_scale into the double-precision absorption factor instead.  Logarithms
+  ! of non-positive entries are taken of 1e-37.
+  !===============================================================================
+  SUBROUTINE set_table(self, xkap)
+    class(bftrans_type), intent(inout) :: self
+    real(dp), dimension(:,:), intent(in) :: xkap
+    !---------------------------------------------------------------------------
+    self%log_table = merge(self%ilogt, self%ilogl, self%ntt > 1)
+    self%xkap_scale = maxval(xkap)
+    if (self%xkap_scale <= 0) self%xkap_scale = 1
+    if (self%log_table) then
+      self%xkap = real(log(merge(xkap, 1d-37, xkap > 0)) - log(self%xkap_scale), 4)
+    else
+      self%xkap = real(xkap / self%xkap_scale, 4)
+    endif
+  END SUBROUTINE set_table
+
+  !===============================================================================
   SUBROUTINE load_lam_interp_weights(self, lam, active, fs, fe, iw, quad, lagrange)
     class(bftrans_type), target :: self
     real(dp), dimension(:), intent(in) :: lam
@@ -55,7 +81,7 @@ contains
     integer, intent(out) :: fs, fe
     integer, dimension(:), intent(inout) :: iw
     logical, dimension(:), intent(inout) :: quad
-    real(dp), dimension(:,:), intent(inout) :: lagrange
+    real(4), dimension(:,:), intent(inout) :: lagrange
     real(dp), dimension(:), pointer, contiguous :: xx
     real(dp) :: x
     integer :: nf, f
@@ -182,21 +208,20 @@ contains
     integer, intent(in) :: fs, fe
     integer, dimension(:), intent(in) :: iw
     logical, dimension(:), intent(in) :: quad
-    real(dp), dimension(:,:), intent(in) :: lagrange
+    real(4), dimension(:,:), intent(in) :: lagrange
     real(dp), intent(in), dimension(:,:,:), optional :: ne, nhe, shield
     integer, intent(in), optional :: i0, i1
     real(dp), dimension(:,:,:), pointer :: newt
-    real(dp), dimension(:), allocatable :: ab, lam3
-    real(dp), dimension(:,:), pointer, contiguous :: pvt_xkap
-    real(dp), dimension(:,:), pointer :: xkap
+    real(4), dimension(:,:), pointer, contiguous :: tab
+    real(4), dimension(:), allocatable :: ab, lam3
+    real(4), dimension(self%nnu) :: yy
+    real(4) :: w(3), dt, y1, y2, y3, fakt1
     real(dp), dimension(3,self%ntt-1) :: dtdt
     real(dp), dimension(self%ntt-1) :: dtdt1
-    real(dp) :: ab1, fakt1, t, diff(3), w(3), t3(3), dt, a, b, y1,y2,y3
-    real(dp), dimension(self%nnu) :: yy
-    real(dp), dimension(self%ntt) :: tt
-    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j0, j1, xlo, xhi, mem_offset
-    logical :: skip, do_log, do_exp, in_bounds, quadratic
-    integer, save :: itimer1=0, itimer2=0, itimer3=0, itimer4=0, itimer5=0
+    real(dp) :: t, diff(3), t3(3)
+    integer :: i, f, nx, ny, nz, x, y, z, it, j0, j1, xlo, xhi, mem_offset
+    logical :: do_log, do_exp, in_bounds, quadratic
+    integer, save :: itimer1=0, itimer2=0, itimer3=0
     !---------------------------------------------------------------------------
     nx = size(temp, 1)
     xlo = 1; xhi = nx
@@ -212,19 +237,15 @@ contains
     nz = size(temp, 3)
     allocate(ab(fs:fe))
     allocate(lam3(fs:fe))
-    lam3(fs:fe) = lam(fs:fe)**3
+    lam3(fs:fe) = real(lam(fs:fe)**3, 4)
+    tab => self%xkap
 
     if (self%ntt > 1) then
       call trace%begin('interp_xkap_1', itimer=itimer1)
-      do_exp = .false.
-      do_log = .false.
-      if (self%ilogt) then
-        pvt_xkap => self%log_xkap
-        do_exp = .not. self%ilogl
-      else
-        pvt_xkap => self%xkap
-        do_log = self%ilogl
-      endif
+      ! the table is interpolated in temperature in its stored form, then
+      ! converted to the form of the wavelength interpolation
+      do_exp = self%log_table .and. .not. self%ilogl
+      do_log = self%ilogl .and. .not. self%log_table
 
       if (self%iteta) then
         newt => teta
@@ -279,56 +300,35 @@ contains
 
               if (quadratic) then
                 ! quadratic interpolation
-                if (it+2 <= self%ntt) then
-                  i = it
-                  xkap => pvt_xkap(:,it:it+2)
-                else
-                  i = it-1
-                  xkap => pvt_xkap(:,it-1:it+1)
-                endif
+                i = merge(it, it-1, it+2 <= self%ntt)
                 diff = t - self%tt(i:i+2)
-                w(1) = diff(2) * diff(3) * dtdt(1,it)
-                w(2) = diff(1) * diff(3) * dtdt(2,it)
-                w(3) = diff(1) * diff(2) * dtdt(3,it)
-                yy(j0:j1) = 0
-                yy(j0:j1) = yy(j0:j1) + xkap(j0:j1,1) * w(1)
-                yy(j0:j1) = yy(j0:j1) + xkap(j0:j1,2) * w(2)
-                yy(j0:j1) = yy(j0:j1) + xkap(j0:j1,3) * w(3)
+                w(1) = real(diff(2) * diff(3) * dtdt(1,it), 4)
+                w(2) = real(diff(1) * diff(3) * dtdt(2,it), 4)
+                w(3) = real(diff(1) * diff(2) * dtdt(3,it), 4)
+                do f=j0, j1
+                  yy(f) = tab(f,i)*w(1) + tab(f,i+1)*w(2) + tab(f,i+2)*w(3)
+                end do
               else
                 ! linear interpolation
-                dt = (t - self%tt(it)) * dtdt1(it)
+                dt = real((t - self%tt(it)) * dtdt1(it), 4)
+                do f=j0, j1
+                  yy(f) = (tab(f,it+1) - tab(f,it))*dt + tab(f,it)
+                end do
+                ! extrapolation never exceeds the edge of the table
                 if (t < self%tt(1)) then
-                  do f=j0, j1
-                    a = pvt_xkap(f,1)
-                    b = pvt_xkap(f,2)
-                    yy(f) = (b - a)*dt + a
-                    yy(f) = min(yy(f), pvt_xkap(f,1))
-                  end do
+                  yy(j0:j1) = min(yy(j0:j1), tab(j0:j1,1))
                 elseif (t >= self%tt(self%ntt)) then
-                  do f=j0, j1
-                    a = pvt_xkap(f,self%ntt-1)
-                    b = pvt_xkap(f,self%ntt)
-                    yy(f) = (b - a)*dt + a
-                    yy(f) = min(yy(f), pvt_xkap(f,self%ntt))
-                  end do
-                else
-                  do f=j0, j1
-                    a = pvt_xkap(f,it)
-                    b = pvt_xkap(f,it+1)
-                    yy(f) = (b - a)*dt + a
-                  end do
+                  yy(j0:j1) = min(yy(j0:j1), tab(j0:j1,self%ntt))
                 endif
               endif
 
               if (do_exp) then
                 yy(j0:j1) = exp(yy(j0:j1))
               elseif(do_log) then
-                yy(j0:j1) = max(yy(j0:j1), tiny(1.d0))
-                yy(j0:j1) = log(yy(j0:j1))
+                yy(j0:j1) = log(max(yy(j0:j1), tiny(1.0)))
               endif
 
               i = 0
-              ab = 0
               do f=fs,fe
                 if (iw(f) > 0) then
                   if (i /= iw(f)) then
@@ -337,19 +337,19 @@ contains
                     y2 = yy(i+1)
                     y3 = yy(min(i+2, self%nnu))
                   endif
-                  if (i /= 0) then
-                    ab(f) = sum([y1, y2, y3]*lagrange(:,f))
-                    if (self%ilogl) ab(f) = exp(ab(f))
-                  endif
+                  ab(f) = y1*lagrange(1,f) + y2*lagrange(2,f) + y3*lagrange(3,f)
+                else
+                  ab(f) = merge(-huge(1.0), 0.0, self%ilogl)
                 endif
               end do
+              if (self%ilogl) ab = exp(ab)
 
               if (self%lam3) then
-                ab(fs:fe) = ab(fs:fe) * lam3(fs:fe)
+                ab = ab * lam3
               endif
 
-              fakt1 = fakt(x,y,z)
-              chi(fs:fe,x-mem_offset,y,z) = chi(fs:fe,x-mem_offset,y,z) + fakt1*ab(fs:fe)
+              fakt1 = scaled_factor(fakt(x,y,z))
+              chi(fs:fe,x-mem_offset,y,z) = chi(fs:fe,x-mem_offset,y,z) + fakt1*ab
             endif
           end do
         end do
@@ -358,12 +358,7 @@ contains
     else
       call trace%begin('interp_xkap_2', itimer=itimer2)
 
-      if(self%ilogl) then
-        yy = self%log_xkap(:,1)
-      else
-        yy = self%xkap(:,1)
-      endif
-
+      yy = tab(:,1)
       do f=fs,fe
         i = iw(f)
         if (i<=0) then
@@ -379,14 +374,14 @@ contains
       end do
 
       if (self%lam3) then
-        ab(fs:fe) = ab(fs:fe) * lam3(fs:fe)
+        ab = ab * lam3
       endif
 
       if (H_occupation_probability .and. trim(self%key) == 'H BF') then
         lvl => self%ion%levels(self%k)
         call trace%begin('wcalc2', itimer=itimer3)
         call wcalc2(lvl, chi(fs:fe, xlo-mem_offset:xhi-mem_offset, :, :), &
-                    lam(fs:fe), ab(fs:fe), self%ion%n(xlo:xhi,:,:), &
+                    lam(fs:fe), ab*real(self%xkap_scale, 4), self%ion%n(xlo:xhi,:,:), &
                     nhe(xlo:xhi,:,:), ne(xlo:xhi,:,:), shield(xlo:xhi,:,:), &
                     wocc=lvl%w(xlo:xhi,:,:), nlvl=lvl%n(xlo:xhi,:,:))
         call trace%end(itimer3)
@@ -394,8 +389,9 @@ contains
         do z=1, nz
           do y=1, ny
             do x=xlo, xhi
+              fakt1 = scaled_factor(fakt(x,y,z))
               do f=fs,fe
-                chi(f,x-mem_offset,y,z) = chi(f,x-mem_offset,y,z) + ab(f)*fakt(x,y,z)
+                chi(f,x-mem_offset,y,z) = chi(f,x-mem_offset,y,z) + ab(f)*fakt1
               end do
             end do
           end do
@@ -403,6 +399,13 @@ contains
       endif
       call trace%end(itimer2)
     endif
+  contains
+    ! The absorption factor times xkap_scale, which the scaled table leaves out,
+    ! capped at the real(4) maximum so that the conversion cannot overflow
+    pure real(4) function scaled_factor(fk)
+      real(dp), intent(in) :: fk
+      scaled_factor = real(min(fk*self%xkap_scale, real(huge(1.0), dp)), 4)
+    end function scaled_factor
   END SUBROUTINE interp_xkap
 
   !===============================================================================
@@ -477,7 +480,7 @@ contains
     integer :: fs, fe, lo, hi
     integer, dimension(:), allocatable :: iw
     logical, dimension(:), allocatable :: quad
-    real(dp), dimension(:,:), allocatable :: lagrange
+    real(4), dimension(:,:), allocatable :: lagrange
     integer :: itimer=0
     !---------------------------------------------------------------------------
     if (.not. self%active) return
@@ -485,7 +488,7 @@ contains
     nf = size(lam)
     allocate(quad(nf))
     allocate(iw(nf), source=-1)
-    allocate(lagrange(3,nf), source=0.d0)
+    allocate(lagrange(3,nf), source=0.0)
     lo = 1; hi = size(temp, 1)
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
