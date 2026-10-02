@@ -194,7 +194,7 @@ contains
     real(dp) :: ab1, fakt1, t, diff(3), w(3), t3(3), dt, a, b, y1,y2,y3
     real(dp), dimension(self%nnu) :: yy
     real(dp), dimension(self%ntt) :: tt
-    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j1, j2, j3, xlo, xhi, mem_offset
+    integer :: i, f, nx, ny, nz, x, y, z, it, it2, j0, j1, xlo, xhi, mem_offset
     logical :: skip, do_log, do_exp, in_bounds, quadratic
     integer, save :: itimer1=0, itimer2=0, itimer3=0, itimer4=0, itimer5=0
     !---------------------------------------------------------------------------
@@ -249,6 +249,11 @@ contains
         dtdt1(it) = 1. / (self%tt(it+1) - self%tt(it))
       end do
 
+      ! The wavelength step below reads only the table rows j0:j1 of yy, so the
+      ! per-cell temperature interpolation and log/exp are confined to them
+      j0 = minval(iw(fs:fe), mask=iw(fs:fe) > 0)
+      j1 = min(maxval(iw(fs:fe)) + 2, self%nnu)
+
       do z=1, nz
         do y=1, ny
           do x=xlo, xhi
@@ -285,29 +290,29 @@ contains
                 w(1) = diff(2) * diff(3) * dtdt(1,it)
                 w(2) = diff(1) * diff(3) * dtdt(2,it)
                 w(3) = diff(1) * diff(2) * dtdt(3,it)
-                yy(:) = 0
-                yy(:) = yy(:) + xkap(:,1) * w(1)
-                yy(:) = yy(:) + xkap(:,2) * w(2)
-                yy(:) = yy(:) + xkap(:,3) * w(3)
+                yy(j0:j1) = 0
+                yy(j0:j1) = yy(j0:j1) + xkap(j0:j1,1) * w(1)
+                yy(j0:j1) = yy(j0:j1) + xkap(j0:j1,2) * w(2)
+                yy(j0:j1) = yy(j0:j1) + xkap(j0:j1,3) * w(3)
               else
                 ! linear interpolation
                 dt = (t - self%tt(it)) * dtdt1(it)
                 if (t < self%tt(1)) then
-                  do f=1, self%nnu
+                  do f=j0, j1
                     a = pvt_xkap(f,1)
                     b = pvt_xkap(f,2)
                     yy(f) = (b - a)*dt + a
                     yy(f) = min(yy(f), pvt_xkap(f,1))
                   end do
                 elseif (t >= self%tt(self%ntt)) then
-                  do f=1, self%nnu
+                  do f=j0, j1
                     a = pvt_xkap(f,self%ntt-1)
                     b = pvt_xkap(f,self%ntt)
                     yy(f) = (b - a)*dt + a
                     yy(f) = min(yy(f), pvt_xkap(f,self%ntt))
                   end do
                 else
-                  do f=1, self%nnu
+                  do f=j0, j1
                     a = pvt_xkap(f,it)
                     b = pvt_xkap(f,it+1)
                     yy(f) = (b - a)*dt + a
@@ -316,10 +321,10 @@ contains
               endif
 
               if (do_exp) then
-                yy = exp(yy)
+                yy(j0:j1) = exp(yy(j0:j1))
               elseif(do_log) then
-                yy = max(yy, tiny(1.d0))
-                yy = log(yy)
+                yy(j0:j1) = max(yy(j0:j1), tiny(1.d0))
+                yy(j0:j1) = log(yy(j0:j1))
               endif
 
               i = 0
