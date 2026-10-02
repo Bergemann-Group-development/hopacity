@@ -4,7 +4,7 @@ MODULE hprofl_mod
   USE prec_mod, only: RYD, dp
   USE const_mod
   USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, ensure_vcs_loaded, &
-                      vcs_profile_t, vcs_prepare, vcs_eval
+                      vcs_profile_t, vcs_prepare, vcs_eval, vcs_tail
   implicit none
 
   real(4), dimension(4,3), parameter ::  xknmtb = reshape([&
@@ -139,13 +139,15 @@ MODULE hprofl_mod
 
   ! Profile parameters of one hydrogen line (see hydrogen_line). The widths carry the
   ! over_4pi/nu0 scaling of the bbtrans_type broadening constants; dq(1:io), wt(1:io)
-  ! are the fine-structure offsets [nu/nu0] and weights.
+  ! are the fine-structure offsets [nu/nu0] and weights, dqbar their weighted mean and
+  ! dqmax the largest |dq|.
   type, public :: hline_t
     integer  :: n=0, m=0          ! lower and upper principal quantum numbers
     real(dp) :: nu0=0             ! rest frequency [Hz]
     real(dp) :: grad=0, gstk=0, gw1=0, gw2=0, gw3=0
     integer  :: io=0
     real(dp) :: dq(14)=0, wt(14)=0
+    real(dp) :: dqbar=0, dqmax=0
   end type hline_t
 
   ! The q-independent part of stark_eval for one line in one cell (stark_prepare)
@@ -194,11 +196,16 @@ contains
     integer, intent(in), optional :: i0, i1
     real(4) :: lchi, leta, phi, idf, cchi, ceta, v, ref, strength, nup, nlo
     real(4) :: inv_nu0, Rij
-    real(8) :: q
+    real(8) :: q, qt, vp
     real(4), parameter :: tol=1e-7
     integer :: i,j,k,f, nf, m(3), lo, hi, io, mem_offset
-    logical used
+    logical used, tail
     type(hcell_t) :: hc                  ! the line in the current cell
+    !  ln|d| and 1/d for d = (nu-nu0)/nu0 - dqbar, the tail detuning at rest. They are
+    !  the same in every cell, so they are filled once per line, lazily over the
+    !  contiguous range f_lo:f_hi that the frequency loops have reached.
+    real(8), allocatable :: lnd(:), invd(:)
+    integer :: f_lo, f_hi
     !----------------------------------------------------------------------------------
     m = shape(vproj)
     nf = size(nu)
@@ -209,6 +216,9 @@ contains
     if (present(i0)) lo = i0
     if (present(i1)) hi = i1
     mem_offset = lo - 1
+    tail = vcs_supported(h%n, h%m)
+    if (tail) allocate(lnd(nf), invd(nf))
+    f_lo = f0;  f_hi = f0 - 1
     if (hi - lo + 1 /= m(1)) &
       error stop 'hprofl add_h_opacities: per-cell arrays are not sized to the cell range'
     if (size(chi, 2) /= m(1)) &
@@ -237,13 +247,16 @@ contains
 
           call hcell_prepare(h, temp(io,j,k), ne(io,j,k), fo(io,j,k), vbar2h(io,j,k), &
                              tothi(io,j,k), t3nhe(io,j,k), idf, hc)
+          qt = huge(qt)
+          if (tail .and. hc%use_vcs) qt = hc%vcs%q_tail + h%dqmax
+          vp = vproj(io,j,k)
           ref = tol * cont(f0,i,j,k)
 
           f = f0
           lchi = ref
           do while (lchi >= ref .and. f <= nf) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
-            phi = hprofile(h, hc, q)
+            phi = profile_at(f, q)
             lchi = phi * cchi
             leta = phi * ceta
             chi(f,io,j,k) = chi(f,io,j,k) + lchi
@@ -259,7 +272,7 @@ contains
           lchi = ref
           do while (lchi >= ref .and. f >= 1) ! if line opacity below tolerance exit
             q = (nu(f) - v) * inv_nu0
-            phi = hprofile(h, hc, q)
+            phi = profile_at(f, q)
             lchi = phi * cchi
             leta = phi * ceta
             chi(f,io,j,k) = chi(f,io,j,k) + lchi
@@ -273,6 +286,51 @@ contains
       line_used = .true.
       line_strength = max(line_strength, strength)
     endif
+
+  contains
+
+    !  The profile at frequency index f, detuning q. Past qt every fine-structure
+    !  component is on the VCS power-law tail (see vcs_fine), evaluated at
+    !  ln|q - dqbar| = ln|d| + ln(1 - vp/d). |vp/d| < 1e-2 there, so the series to
+    !  second order leaves an error below 1e-6 in ln|q|.
+    FUNCTION profile_at (f, q) result(phi)
+      integer, intent(in) :: f
+      real(8), intent(in) :: q
+      real(4) :: phi
+      real(8) :: r
+      !--------------------------------------------------------------------------------
+      if (abs(q) > qt) then
+        if (f > f_hi .or. f < f_lo) call extend(f)
+        r = vp*invd(f)
+        phi = real(vcs_tail(hc%vcs, lnd(f) - r*(1.d0 + 0.5d0*r)), 4)
+      else
+        phi = hprofile(h, hc, q)
+      endif
+    END FUNCTION profile_at
+
+    SUBROUTINE extend (f)
+      integer, intent(in) :: f
+      integer :: g
+      !--------------------------------------------------------------------------------
+      do g=f_hi+1, f
+        call fill(g)
+      end do
+      do g=f, f_lo-1
+        call fill(g)
+      end do
+      f_lo = min(f, f_lo)
+      f_hi = max(f, f_hi)
+    END SUBROUTINE extend
+
+    SUBROUTINE fill (g)
+      integer, intent(in) :: g
+      real(8) :: d
+      !--------------------------------------------------------------------------------
+      d = (nu(g) - h%nu0)/h%nu0 - h%dqbar
+      d = sign(max(abs(d), tiny(d)), d)
+      lnd(g) = log(abs(d))
+      invd(g) = 1.d0/d
+    END SUBROUTINE fill
   END SUBROUTINE add_h_opacities
 
   !===============================================================================
@@ -362,6 +420,12 @@ contains
   !  component dq(i) and weighted by wt(i). The weights sum to one, so the
   !  normalisation is preserved; lines with a single component reduce to
   !  vcs_eval at q. Mirrors SIU's HYDL_AG_CON_FS, with HOP's component pattern.
+  !
+  !  Once every component lies beyond the table's outer edge, the profile is the
+  !  power law A*|q|**s, and the weighted sum equals one evaluation at the mean
+  !  shift dqbar up to a relative s(s-1)/2 * var(dq)/q**2, below 1e-5 there. Most
+  !  evaluations of the strong lines fall in this regime; add_h_opacities
+  !  evaluates it directly, sharing ln|q| between cells.
   !====================================================================================
   FUNCTION vcs_fine (h, c, q) result(phi)
     type(hline_t), intent(in) :: h
@@ -370,6 +434,10 @@ contains
     real(4) :: phi
     integer :: i
     !----------------------------------------------------------------------------------
+    if (abs(q) - h%dqmax > c%q_tail) then
+      phi = real(vcs_tail(c, log(abs(q - h%dqbar))), 4)
+      return
+    endif
     phi = 0.0
     do i=1, h%io
       phi = phi + h%wt(i)*real(vcs_eval(c, q - h%dq(i)), 4)
@@ -582,6 +650,8 @@ contains
     h%io = ifins
     h%dq(1:ifins) = finest(1:ifins) / h%nu0
     h%wt(1:ifins) = finswt(1:ifins)
+    h%dqbar = sum(h%wt(1:ifins)*h%dq(1:ifins))
+    h%dqmax = maxval(abs(h%dq(1:ifins)))
 
     if (disable_rad) h%grad = 0
     if (disable_stk) h%gstk = 0

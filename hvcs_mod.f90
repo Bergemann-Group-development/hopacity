@@ -49,6 +49,7 @@ MODULE hvcs_mod
   real(4), save :: dw_lin(NNHW,NSER)  = 0.0  ! 10**nw_vcs
   real(4), save :: nw_invdx(NSER)     = 0.0  ! 1/ddw
   real(8), save :: dw_first(NSER)     = 0.d0 ! 10**nw_vcs(1,s), the table's inner edge
+  real(8), save :: dw_last(NSER)      = 0.d0 ! 10**nw_vcs(NNHW,s), its outer edge
   integer, save :: nlow(NNHMAX,NSER)  = 0
   integer, save :: nup (NNHMAX,NSER)  = 0
   integer, save :: nhhnr(NNHMAX,NSER) = 0
@@ -73,13 +74,15 @@ MODULE hvcs_mod
     real(4) :: lp(NNHW) = 0.0     ! log10 profile on the delta-lambda grid
     real(8) :: lognorm  = 0.d0    ! log10 of its area in delta-lambda
     real(8) :: lam0     = 0.d0    ! line centre wavelength [AA]
+    real(8) :: q_tail   = 0.d0    ! |q| of the outer table edge; beyond it a power law
+    real(8) :: ta = 0.d0, ts = 0.d0   ! ... phi = exp(ta + ts*ln|q|), see vcs_tail
     integer :: n = -1, m = -1     ! stamp: line ...
     real(8) :: nu0 = -1.d0        ! ...
     real(4) :: t = -1.0, e = -1.0, h = -1.0   ! ... and cell it was built for
     logical :: ok = .false.
   end type
 
-  public :: ensure_vcs_loaded, vcs_supported, vcs_prepare, vcs_eval
+  public :: ensure_vcs_loaded, vcs_supported, vcs_prepare, vcs_eval, vcs_tail
 
 contains
 
@@ -147,6 +150,7 @@ contains
     !  the reciprocal node spacing (bracketing, see qpol_w).
     do i=1,NNHW ; dw_lin(i,s) = 10.0**nw_vcs(i,s) ; enddo
     dw_first(s) = 10.d0**nw_vcs(1,s)
+    dw_last(s)  = 10.d0**nw_vcs(NNHW,s)
     nw_invdx(s) = 1.0/ddw
   END SUBROUTINE read_vcs_grid
 
@@ -193,6 +197,8 @@ contains
     call vcs_cell_profile(n, m, temp, ne, nh, c%lp, lognorm, c%ok)
     c%lognorm = dble(lognorm)
     c%lam0 = AA_PER_S / nu0          ! line centre wavelength [AA]
+    c%q_tail = dw_last(1) / c%lam0   ! vcs_eval uses the Balmer axis for all series
+    if (c%ok) call tail_coef(c)
     c%n = n ; c%m = m ; c%nu0 = nu0
     c%t = temp ; c%e = ne ; c%h = nh
   END SUBROUTINE vcs_prepare
@@ -226,6 +232,34 @@ contains
     !  |dlambda/dq| = lam0 converts to phi_q [unit area in q], matching hvoigt.
     phi = exp(LN10*(p - c%lognorm)) * c%lam0
   END FUNCTION vcs_eval
+
+  !====================================================================
+  !  The power law that vcs_eval continues past the outer table edge (qpol's
+  !  linear log-log extrapolation through the last two nodes), with the area
+  !  normalisation and the Jacobian lam0 folded in: ln(phi_q) = ta + ts*ln|q|.
+  SUBROUTINE tail_coef(c)
+    type(vcs_profile_t), intent(inout) :: c
+    real(8) :: slope, a
+    !------------------------------------------------------------------
+    a = nw_vcs(NNHW-1,1)
+    slope = dble(c%lp(NNHW) - c%lp(NNHW-1)) / dble(nw_vcs(NNHW,1) - nw_vcs(NNHW-1,1))
+    c%ts = slope
+    c%ta = LN10*(dble(c%lp(NNHW-1)) - slope*a - c%lognorm) + (1.d0 + slope)*log(c%lam0)
+  END SUBROUTINE tail_coef
+
+  !====================================================================
+  !  vcs_eval beyond the outer table edge (|q| > q_tail), from ln|q|. Callers
+  !  that sweep many cells at the same frequencies can share ln|q| between them.
+  PURE REAL(8) FUNCTION vcs_tail(c, lnq) result(phi)
+    type(vcs_profile_t), intent(in) :: c
+    real(8), intent(in) :: lnq
+    !------------------------------------------------------------------
+    if (c%ok) then
+      phi = exp(c%ta + c%ts*lnq)
+    else
+      phi = 0.d0
+    endif
+  END FUNCTION vcs_tail
 
   !====================================================================
   !  Interpolate the stored grid over (log NH, log T, log Ne) for one cell,
