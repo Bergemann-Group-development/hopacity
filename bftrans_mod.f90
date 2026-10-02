@@ -66,6 +66,8 @@ contains
     self%log_table = merge(self%ilogt, self%ilogl, self%ntt > 1)
     self%xkap_scale = maxval(xkap)
     if (self%xkap_scale <= 0) self%xkap_scale = 1
+    if (allocated(self%xkap)) deallocate(self%xkap)
+    allocate(self%xkap(size(xkap, 1), size(xkap, 2)))   ! Intel builds use norealloc_lhs
     if (self%log_table) then
       self%xkap = real(log(merge(xkap, 1d-37, xkap > 0)) - log(self%xkap_scale), 4)
     else
