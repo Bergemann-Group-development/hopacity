@@ -22,6 +22,11 @@ MODULE molecule_mod
     ! constant anyway (it appears once in Q_mol and once in prod Q_atom), so
     ! this only keeps the two sides on the same footing; it is never physics.
     real(dp) :: g_nuclear = 1
+    ! The molecule's ionisation energy in eV is its %xion, the limit the line-list
+    ! damping estimates are hydrogenic in (prepare_stark, prepare_vanderwaals). It is
+    ! the optional 6th header field; a molecule without it keeps xion = 0, so its lines
+    ! get no Cowley Stark estimate. The dissociation energy is no such limit: it ends
+    ! the nuclear-motion levels, not the Rydberg series of the electron.
     real(dp), dimension(:), allocatable :: de ! dissociation_energies
     real(dp), dimension(:,:,:), allocatable :: dis
   contains
@@ -59,7 +64,13 @@ contains
     if (allocated(self%irwin)) deallocate(self%irwin)
     self%g_nuclear = 1
     self%irwin_tmin = 1000
-    read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear, self%irwin_tmin
+    self%xion = 0
+    read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear, self%irwin_tmin, &
+                              self%xion
+    if (ios /= 0) then
+      self%xion = 0
+      read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear, self%irwin_tmin
+    endif
     if (ios /= 0) then
       self%irwin_tmin = 1000
       read(line, *, iostat=ios) self%id, defix, n_irwin, self%g_nuclear
