@@ -35,7 +35,7 @@ ifeq ($(COMPILER),gfortran)
 else ifneq ($(filter ifort ifx,$(COMPILER)),)
   FC      = $(COMPILER)
   DEBUG  ?= -traceback
-  FFLAGS  = -fpp -DHOP_STANDALONE -assume byterecl -diag-disable remark \
+  FFLAGS  = -fpp -DHOP_STANDALONE -assume byterecl,protect_parens -diag-disable remark \
             -diag-disable=16219,10448 -qopenmp $(OPT) $(HW) $(DEBUG) -fPIC \
             -I$(BUILD) -module $(BUILD)
   LDFLAGS = $(OPT) $(DEBUG) -qopenmp
