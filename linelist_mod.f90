@@ -168,9 +168,11 @@ contains
 
     ! a single-window or unmasked selection is the one contiguous block [lo:hi]
     if (.not. allocated(blk_lo)) then
+      ! explicit allocation: the Intel build uses -assume norealloc_lhs
       nblk = 1
-      blk_lo = [lo]
-      blk_hi = [hi]
+      allocate(blk_lo(1), blk_hi(1))
+      blk_lo(1) = lo
+      blk_hi(1) = hi
     end if
 
     call trace%begin ('ll_build_parse', itimer=it_parse)
