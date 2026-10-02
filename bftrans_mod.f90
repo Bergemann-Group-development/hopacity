@@ -323,7 +323,7 @@ contains
               endif
 
               if (do_exp) then
-                yy(j0:j1) = exp(yy(j0:j1))
+                call exp4_array(yy(j0:j1))
               elseif(do_log) then
                 yy(j0:j1) = log(max(yy(j0:j1), tiny(1.0)))
               endif
@@ -342,7 +342,7 @@ contains
                   ab(f) = merge(-huge(1.0), 0.0, self%ilogl)
                 endif
               end do
-              if (self%ilogl) ab = exp(ab)
+              if (self%ilogl) call exp4_array(ab)
 
               if (self%lam3) then
                 ab = ab * lam3
@@ -407,6 +407,8 @@ contains
       scaled_factor = real(min(fk*self%xkap_scale, real(huge(1.0), dp)), 4)
     end function scaled_factor
   END SUBROUTINE interp_xkap
+
+  include 'exp_neg.inc'
 
   !===============================================================================
   SUBROUTINE absorption_factor(self, e_kT, teta, pe, dxi, fakt, i0, i1)

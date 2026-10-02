@@ -16,6 +16,7 @@ MODULE level_mod
   end type
 
   public :: wcalc
+  private :: exp_neg, exp_neg0, exp4, exp4_array   ! from exp_neg.inc, local to each includer
 
 contains
 
@@ -208,12 +209,10 @@ contains
           end do
           do l=1, n1
             f = f1(l)
-            ! neutral perturbers, E = exp(-a), and 1 - E from its series where
-            ! the difference would cancel
+            ! neutral perturbers, E = exp(-a), with 1 - E formed without
+            ! cancellation
             a = nh43*x1(l) + nhe43*x2(l)
-            E = exp(-a)
-            omE = 1. - E
-            if (a < 0.1) omE = a*(1. - a*(0.5 - a*(1./6. - a*(1./24. - a*(1./120.)))))
+            call exp_neg0(a, E, omE)
 
             ! charged perturbers, C = frac/(1+frac); k1 reaches ~2e22, so k1**2
             ! is formed as xk*k1 with xk = x*k1 < 1e4 to stay in the real(4) range.
@@ -243,5 +242,7 @@ contains
       end do
     end do
   END SUBROUTINE wcalc2
+
+  include 'exp_neg.inc'
 
 END MODULE level_mod

@@ -80,6 +80,9 @@ $(LIB): $(OBJS)
 	@if [ "x$(E)" == "x@" ] ; then echo " [ LD ]" $(notdir $@) ; fi
 	$(E)$(FC) -shared $(LDFLAGS) -o $@ $(OBJS)
 
+# Fortran INCLUDE files are not in the chain above; name their includers
+$(BUILD)/level_mod.o $(BUILD)/bftrans_mod.o: ../exp_neg.inc
+
 # hop_prune.x: the library objects plus the reader and the program, in that order
 $(BUILD)/atmos_reader_mod.o: $(lastword $(OBJS))
 $(BUILD)/hop_prune.o: $(BUILD)/atmos_reader_mod.o
