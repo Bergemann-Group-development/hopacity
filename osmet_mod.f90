@@ -34,6 +34,7 @@ contains
     class(osmet_type) :: self
     character(len=*), intent(in) :: absmet_file
     integer :: lunit, iostat, maxp6, maxtem
+    logical :: native_ok
     real(4) :: orig_ostabl(mp6, mtem)
     real(4), allocatable :: p6(:), temp(:)
     real(4), allocatable :: all_ostabl(:,:,:)
@@ -45,12 +46,21 @@ contains
     call trace%begin('osmet_type%init', itimer=itimer)
     if (console_on(ch_hop, 1)) write(console_unit,'(A, A)') 'Reading absmet file: ', trim(absmet_file)
     call os%check_file(absmet_file)
+    ! The tables come in either byte order (the solar absmet is little-endian, the
+    ! metal-poor m-*.bin files big-endian).  Read in the native order wrongly, the
+    ! first record marker is a huge length and the read fails with an error or an
+    ! end of file, depending on the compiler; either way, reopen big-endian.
     open(file=absmet_file, newunit=lunit, form='unformatted')
+    native_ok = .true.
     read(lunit, iostat=iostat) !textatom
+    native_ok = native_ok .and. iostat == 0
     read(lunit, iostat=iostat) !textatom
+    native_ok = native_ok .and. iostat == 0
     read(lunit, iostat=iostat) !ispec
+    native_ok = native_ok .and. iostat == 0
     read(lunit, iostat=iostat) !xiturb
-    if (iostat == -1) then
+    native_ok = native_ok .and. iostat == 0
+    if (.not. native_ok) then
       close(lunit)
       open(file=absmet_file, newunit=lunit, form='unformatted', convert='big_endian')
       read(lunit, iostat=iostat) !textatom
