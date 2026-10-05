@@ -308,7 +308,7 @@ contains
            'Mo', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'I',  &
            'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Sm', 'Eu', 'Gd', 'Tb', &
            'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W',  'Re', 'Os', &
-           'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'T', 'U')
+           'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'Th', 'U')
           element%abund = element%abund + r_process_enhancement
         end select
       endif
