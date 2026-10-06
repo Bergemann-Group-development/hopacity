@@ -510,7 +510,7 @@ contains
     real(dp), intent(in) :: dlam
     type(interval_t), intent(out), allocatable :: merged_intervals(:)
     integer, intent(out) :: n_merged
-    type(interval_t), allocatable :: expanded(:)
+    type(interval_t), allocatable :: expanded(:), trimmed(:)
     integer :: i, j
     real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
     !-----------------------------------------------------------------------------------
@@ -549,9 +549,15 @@ contains
       end if
     end do
 
-    ! trim to actual size
+    ! trim to actual size.  The array is reallocated explicitly: a whole-array assignment
+    ! reallocates only under the standard semantics, and the builds that compile with
+    ! -assume norealloc_lhs would leave the size at n_windows, with the unset tail
+    ! intervals that follow n_merged read as extra (garbage) windows by every caller
+    ! that takes size(merged_intervals).
     if (n_merged < n_windows) then
-      merged_intervals = merged_intervals(1:n_merged)
+      allocate(trimmed(n_merged))
+      trimmed = merged_intervals(1:n_merged)
+      call move_alloc(trimmed, merged_intervals)
     end if
 
   END SUBROUTINE merge_intervals
