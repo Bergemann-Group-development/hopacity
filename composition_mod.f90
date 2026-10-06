@@ -15,7 +15,7 @@ MODULE composition_mod
   USE line_types_mod, only: linelist_type
   USE linelist_reader_mod, only: ll_file_t, ll_block_t, ll_open, ll_close, &
                                  ll_next_block, ll_block_range, ll_whole_block, &
-                                 ll_read_slice, ll_read_ranges, ll_index_records
+                                 ll_read_slice, ll_read_ranges, ll_index_records, ll_has_records
   USE linelist_mod, only: build_linelist, finalize_linelist, add_particle_opacity, &
                           append_h_line, bij_const, merge_ll_diag, &
                           voigt_peak, in_any_interval, print_ll_particle, &
@@ -971,6 +971,7 @@ contains
     integer(8) :: b0, b1, b_after
     integer(8), allocatable :: r0(:), r1(:)
     logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals, have_block
+    logical :: expect_lines
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
     character(len=256) :: msg
     !-----------------------------------------------------------------------------
@@ -1022,6 +1023,7 @@ contains
     ntotal = 0
     nactive = 0
     nkh = 0
+    expect_lines = .false.
     do
       call ll_next_block (llf, blk, have_block)
       if (.not. have_block) exit
@@ -1060,6 +1062,20 @@ contains
         endif
         cycle
       endif
+
+      ! the bisection's own count of records in the requested windows, kept apart
+      ! from the selection below so that an empty selection can be told from empty
+      ! windows (see the check after the loop)
+      if (.not. lam_mask) then
+        expect_lines = .true.
+      else if (use_intervals) then
+        do iv = 1, size(intervals)
+          if (ll_has_records (llf, blk, vac2air(intervals(iv)%blue_vac), &
+                              vac2air(intervals(iv)%red_vac))) expect_lines = .true.
+        end do
+      else
+        if (ll_has_records (llf, blk, vac2air(lam_min), vac2air(lam_max))) expect_lines = .true.
+      end if
 
       if (particle%id == 'H I') then
         ! hydrogen keeps its Stark-profile kernel (add_h_opacities), and is read
@@ -1144,6 +1160,20 @@ contains
     if (console_on(ch_hop, 1)) &
       write(console_unit,'(I0, a, I0, a, a)') nactive, ' of ', ntotal, &
         ' lines read from linelist ', trim(linelist_file)
+
+    ! Records lie in the requested windows but none was selected: the selection is
+    ! broken, and a run would go on to a line-free spectrum without saying so.
+    ! Windows that hold no record of this list (a molecular list over a clean
+    ! stretch, say) are legitimate and only noted.
+    if (nactive == 0 .and. ntotal > 0) then
+      if (expect_lines) then
+        call console_error ('init_linelist: '//trim(linelist_file)//' has records in the '// &
+          'requested wavelength windows, but none was selected')
+        error stop 'init_linelist: no lines selected from a list that covers the windows'
+      else
+        call console_warn (ch_hop, 'no line of '//trim(linelist_file)//' lies in the requested windows')
+      end if
+    end if
     self%nline = nactive
     call self%ion_by_id('H I', HI)
     if (associated(HI)) HI%nk = max(HI%nk, nkh)

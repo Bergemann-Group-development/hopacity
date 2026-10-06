@@ -55,7 +55,7 @@ MODULE linelist_reader_mod
   end type ll_file_t
 
   public :: ll_open, ll_close, ll_next_block, ll_block_range, ll_whole_block
-  public :: ll_read_slice, ll_read_ranges, ll_index_records
+  public :: ll_read_slice, ll_read_ranges, ll_index_records, ll_has_records
 
   integer, parameter :: HDR_CHUNK = 4096   !< enough for two headers and one record
   integer, parameter :: PROBE_LEN = 32     !< bytes read to parse a record's wavelength
@@ -348,6 +348,32 @@ SUBROUTINE ll_block_range (self, blk, lam_lo, lam_hi, b_after, b0, b1)
 
   if (b0 < b_after) b0 = min(b_after, b1)
 END SUBROUTINE ll_block_range
+
+!===============================================================================
+!> Whether blk has a record with air wavelength in [lam_lo, lam_hi], decided by
+!> the bisection alone (no widening, no parsing of the selection).  A caller uses
+!> it as a cross-check on the selection it builds from ll_block_range's slices.
+!> A block that is not ascending cannot be bisected and counts as having records.
+!===============================================================================
+FUNCTION ll_has_records (self, blk, lam_lo, lam_hi) RESULT (has)
+  type(ll_file_t), intent(in) :: self
+  type(ll_block_t), intent(in) :: blk
+  real(dp), intent(in) :: lam_lo, lam_hi
+  logical :: has
+  integer(8) :: b0, b1
+  !-----------------------------------------------------------------------------
+  has = .false.
+  if (blk%nrec == 0) return
+  if (blk%width < 0) then
+    has = .true.
+  else if (blk%width > 0) then
+    has = bisect_fixed (self, blk, lam_hi, .true.) > bisect_fixed (self, blk, lam_lo, .false.)
+  else
+    b0 = bisect_ragged (self, blk%dstart, blk%dend, lam_lo, .false.)
+    b1 = bisect_ragged (self, b0,         blk%dend, lam_hi, .true.)
+    has = b1 > b0
+  end if
+END FUNCTION ll_has_records
 
 !===============================================================================
 !> Index of the first record of a fixed-width block whose wavelength is >= lam
