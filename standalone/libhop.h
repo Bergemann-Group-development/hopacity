@@ -1,3 +1,6 @@
+int hop_atmos_free ();
+int hop_atmos_get (const char *name, int n, float *out);
+int hop_atmos_read (const char *atmos_format, const char *atmos_file, int snap, int use_aux, int *dims);
 int hop_free ();
 int hop_get_field (const char *name, int n, double *out);
 double hop_get_grph ();

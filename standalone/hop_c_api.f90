@@ -35,6 +35,7 @@ MODULE hop_c_api
   USE handyfuncs_mod, only: lowercase, vac2air
   USE prec_mod,     only: dp
   USE const_mod,    only: h_k
+  USE atmos_reader_mod, only: atmos_data_t, read_atmos_file, atmos_format_from_name
 #ifdef _OPENMP
   USE omp_lib,      only: omp_set_num_threads, omp_get_max_threads, &
                           omp_pause_resource_all, omp_pause_soft
@@ -47,6 +48,7 @@ MODULE hop_c_api
   public :: hop_init, hop_free, hop_set_option, hop_set_external_abundances, &
             hop_init_linelist_windows, hop_load_state, hop_set_vmic, hop_opacity, &
             hop_write_linelist, hop_linelist_count, hop_last_error
+  public :: hop_atmos_read, hop_atmos_get, hop_atmos_free
 
   ! master is the initialized-but-never-loaded composition; each hop_load_state
   ! solves in a fresh copy of it (comp), mirroring the dispatch pattern
@@ -73,6 +75,10 @@ MODULE hop_c_api
   ! stop/error stop sites inside HOP itself, which still kill the process.
   character(len=512), save :: last_error = ''
   integer, parameter :: MIN_CHUNK_CELLS = 1
+
+  ! The model atmosphere most recently parsed by hop_atmos_read, served field by
+  ! field to hop_atmos_get.  Independent of the composition instance.
+  type(atmos_data_t), allocatable, save :: atmos_file_data
 
   ! The per-line strength collection, filled by hop_linelist_count and served to
   ! hop_get_linelist / hop_linelist_species.  Collecting on the count call is what
@@ -1169,5 +1175,111 @@ CONTAINS
     call comp%electron_scattering(sig4)
     call comp%rayleigh_scattering(lam8, sig4)
   END FUNCTION hop_scattering
+
+  !=============================================================================
+  ! Model-atmosphere files, parsed by atmos_reader_mod exactly as dispatch.x
+  ! reads them, at the file's full resolution and in its own orientation.
+  !=============================================================================
+  ! Parse a file; format 'unknown' infers it from the name as dispatch.x does.
+  ! snap is the Stagger snapshot number and use_aux /= 0 lets a Stagger snapshot
+  ! take T and n_e from its .aux file (both ignored by the other formats).
+  ! dims returns nx, ny, nz, the ghost zones, has_pe, has_rho, has_feh and the
+  ! number of abundances the file carries (92 for MARCS, else 0).
+  FUNCTION hop_atmos_read(atmos_format, atmos_file, snap, use_aux, dims) RESULT(status) &
+           BIND(c, name='hop_atmos_read')
+    character(kind=c_char), intent(in) :: atmos_format(*), atmos_file(*)
+    integer(c_int), value :: snap, use_aux
+    integer(c_int), intent(out) :: dims(*)
+    integer(c_int) :: status
+    character(len=:), allocatable :: fmt, file
+    character(len=512) :: msg
+    integer :: ierr
+    !---------------------------------------------------------------------------
+    status = 0
+    fmt = lowercase(c2f_string(atmos_format))
+    file = c2f_string(atmos_file)
+    if (fmt == 'unknown') fmt = trim(atmos_format_from_name(file))
+    if (allocated(atmos_file_data)) deallocate(atmos_file_data)
+    allocate(atmos_file_data)
+    call read_atmos_file(fmt, file, atmos_file_data, ierr, msg, snap=int(snap), &
+                         use_aux=use_aux /= 0)
+    if (ierr /= 0) then
+      deallocate(atmos_file_data)
+      call fail(trim(msg), int(ierr), status)
+      return
+    end if
+    associate (a => atmos_file_data)
+      dims(1:8) = [a%nx, a%ny, a%nz, a%gz, merge(1, 0, a%has_pe), merge(1, 0, a%has_rho), &
+                   merge(1, 0, a%has_feh), 0]
+      if (allocated(a%abund)) dims(8) = size(a%abund)
+    end associate
+  END FUNCTION hop_atmos_read
+
+  ! One field of the parsed atmosphere as float32, x fastest: ltemp, lpe, lrho
+  ! (natural logs, cgs), vx, vy, vz [cm/s], vmic [km/s] (nx*ny*nz values), xx, yy,
+  ! zz (the axes), feh (1) or abund (log eps for Z=1..92, MARCS only).
+  FUNCTION hop_atmos_get(name, n, out) RESULT(status) BIND(c, name='hop_atmos_get')
+    character(kind=c_char), intent(in) :: name(*)
+    integer(c_int), value :: n
+    real(c_float), intent(out) :: out(*)
+    integer(c_int) :: status
+    character(len=:), allocatable :: nm
+    integer :: ncell
+    !---------------------------------------------------------------------------
+    status = 0
+    if (.not. allocated(atmos_file_data)) then
+      call fail('hop_atmos_get: no atmosphere read; call hop_atmos_read first', 2, status)
+      return
+    end if
+    nm = lowercase(c2f_string(name))
+    associate (a => atmos_file_data)
+      ncell = a%nx * a%ny * a%nz
+      select case (nm)
+      case ('ltemp', 'lpe', 'lrho', 'vx', 'vy', 'vz', 'vmic')
+        if (n /= ncell) then
+          call fail('hop_atmos_get: n differs from nx*ny*nz', 3, status)
+          return
+        end if
+      case ('xx')
+        if (n /= a%nx) call fail('hop_atmos_get: n differs from nx', 3, status)
+      case ('yy')
+        if (n /= a%ny) call fail('hop_atmos_get: n differs from ny', 3, status)
+      case ('zz')
+        if (n /= a%nz) call fail('hop_atmos_get: n differs from nz', 3, status)
+      case ('feh')
+        if (n /= 1) call fail('hop_atmos_get: feh is one value', 3, status)
+      case ('abund')
+        if (.not. allocated(a%abund)) then
+          call fail('hop_atmos_get: the file carries no abundances', 3, status)
+        else if (n /= size(a%abund)) then
+          call fail('hop_atmos_get: n differs from the abundance count', 3, status)
+        end if
+      case default
+        call fail("hop_atmos_get: unknown field '" // nm // "'", 1, status)
+      end select
+      if (status /= 0) return
+      select case (nm)
+      case ('ltemp'); out(1:n) = reshape(a%ltemp, [n])
+      case ('lpe');   out(1:n) = reshape(a%lpe, [n])
+      case ('lrho');  out(1:n) = reshape(a%lrho, [n])
+      case ('vx');    out(1:n) = reshape(a%vx, [n])
+      case ('vy');    out(1:n) = reshape(a%vy, [n])
+      case ('vz');    out(1:n) = reshape(a%vz, [n])
+      case ('vmic');  out(1:n) = reshape(a%vmic, [n])
+      case ('xx');    out(1:n) = a%xx
+      case ('yy');    out(1:n) = a%yy
+      case ('zz');    out(1:n) = a%zz
+      case ('feh');   out(1) = real(a%feh, c_float)
+      case ('abund'); out(1:n) = a%abund
+      end select
+    end associate
+  END FUNCTION hop_atmos_get
+
+  FUNCTION hop_atmos_free() RESULT(status) BIND(c, name='hop_atmos_free')
+    integer(c_int) :: status
+    !---------------------------------------------------------------------------
+    status = 0
+    if (allocated(atmos_file_data)) deallocate(atmos_file_data)
+  END FUNCTION hop_atmos_free
 
 END MODULE hop_c_api

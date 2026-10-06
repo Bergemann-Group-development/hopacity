@@ -51,11 +51,12 @@ SRCS = ../console_mod.f90 ../qlg_mod.f90 ../hop_env_mod.f90 ../const_mod.f90 ../
        ../ion_mod.f90 ../element_mod.f90 ../molecule_mod.f90 \
        ../hprofl_mod.f90 ../linelist_mod.f90 \
        ../bftrans_mod.f90 ../trans_mod.f90 ../spectrum_mod.f90 \
-       ../optab_mod.f90 ../osmet_mod.f90 ../composition_mod.f90 hop_c_api.f90
+       ../optab_mod.f90 ../osmet_mod.f90 ../composition_mod.f90 ../atmos_reader_mod.f90 \
+       hop_c_api.f90
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.f90=.o)))
-# The pruning program adds the atmosphere reader on top of the library objects.
-PRUNE_SRCS = ../atmos_reader_mod.f90 hop_prune.f90
+# The pruning program is the library objects plus its main program.
+PRUNE_SRCS = hop_prune.f90
 PRUNE_OBJS = $(addprefix $(BUILD)/,$(notdir $(PRUNE_SRCS:.f90=.o)))
 
 vpath %.f90 . ..
@@ -83,9 +84,8 @@ $(LIB): $(OBJS)
 # Fortran INCLUDE files are not in the chain above; name their includers
 $(BUILD)/level_mod.o $(BUILD)/bftrans_mod.o: ../exp_neg.inc
 
-# hop_prune.x: the library objects plus the reader and the program, in that order
-$(BUILD)/atmos_reader_mod.o: $(lastword $(OBJS))
-$(BUILD)/hop_prune.o: $(BUILD)/atmos_reader_mod.o
+# hop_prune.x: the library objects plus the program
+$(BUILD)/hop_prune.o: $(lastword $(OBJS))
 $(PRUNE): $(OBJS) $(PRUNE_OBJS)
 	@if [ "x$(E)" == "x@" ] ; then echo " [ LD ]" $(notdir $@) ; fi
 	$(E)$(FC) $(LDFLAGS) -o $@ $(OBJS) $(PRUNE_OBJS)
