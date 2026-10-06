@@ -1277,7 +1277,7 @@ contains
   !-------------------------------------------------------------------------------
   SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures, &
                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
-                                    i_set, window_lam, chi_lines, eta_lines)
+                                    i_set, window_lam, chi_lines, eta_lines, lte_of)
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
@@ -1289,6 +1289,10 @@ contains
     ! set, i.e. processes only NLTE species -- the complement of the masked
     ! tab_comp used to build the sampled LTE line table (sample_linelist).
     logical, intent(in), optional :: only_departures
+    ! lte_of: with only_departures, also processes the species that these departure
+    ! sets belong to, in LTE (no departures passed): the LTE companion set of a run
+    ! whose sampled table leaves them out.
+    class(departure_pointer_t), intent(in), dimension(:), optional :: lte_of
     ! line_scattering: precomputed scattering fractions 1-eps per stage group
     ! (last index 1=neutral incl. molecules, 2=ionized) and the accumulator the
     ! (1-eps)-weighted LTE line opacity is added to; hydrogen stays thermal
@@ -1402,7 +1406,7 @@ contains
     ion => element%ions(1)
     call get_departure_coefficients(ion, dep)
     if (ion%in_linelist .and. allocated(ion%ll) .and. &
-        .not. (skip_lte .and. .not. associated(dep))) then
+        .not. (skip_lte .and. .not. associated(dep) .and. .not. in_lte_of(ion))) then
       associate (hll => ion%ll(0))
       if (hll%nline > 0) then
         fo = self%fo(lo:hi,:,:)
@@ -1526,6 +1530,21 @@ contains
     end subroutine get_departure_coefficients
 
     ! --------------------------------------------------------------------------
+    logical function in_lte_of(ptc)
+      class(particle_type), target :: ptc
+      integer :: di
+      !-------------------------------------------------------------------------
+      in_lte_of = .false.
+      if (.not. present(lte_of)) return
+      do di=1, size(lte_of)
+        if (lte_of(di)%matches(ptc)) then
+          in_lte_of = .true.
+          return
+        endif
+      end do
+    end function in_lte_of
+
+    ! --------------------------------------------------------------------------
     subroutine particle_add_opacities_soa(ptc)
       class(particle_type), target :: ptc
       real(8) :: no_ev(1)              ! placeholder dep_ev; unused in the LTE call
@@ -1534,7 +1553,8 @@ contains
       if (.not. allocated(ptc%n)) error stop 'particle density not allocated'
 
       call get_departure_coefficients(ptc, dep)
-      if (skip_lte .and. .not. associated(dep)) return   ! LTE species live in the sampled table
+      ! LTE species live in the sampled table, except those named in lte_of
+      if (skip_lte .and. .not. associated(dep) .and. .not. in_lte_of(ptc)) return
 
       ! the per-isotope population base / Doppler width construction and the kernel
       ! dispatch now live in linelist_mod (add_particle_opacity); we own only the patch
