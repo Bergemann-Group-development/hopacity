@@ -36,8 +36,9 @@ MODULE bbtrans_mod
   ! Molecular lines may take damping estimates from the molecule's ionisation energy:
   ! the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
   ! and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
-  ! is an enhancement factor. MULTI and Turbospectrum make neither estimate for
-  ! molecules, and their presets switch them off.
+  ! is an enhancement factor. The same switch applies the tabulated negative gvdw forms
+  ! (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
+  ! apply none of these to molecules, and their presets switch them off.
   logical, public :: molecule_damping_estimates=.true.
   real(4), public, save :: tolerance=1e-4
   real(4), public, save :: line_reject_frac=0.0
@@ -205,10 +206,10 @@ contains
       balfac = (4.0/pi)**(0.5*alpha) * gammaf * 2.e10
       gw2 = 0.5*(1 - alpha)
       gw1 = balfac * sigma * 10**(-12*gw2)
-    elseif (.not. is_mol .or. (molecule_damping_estimates .and. gvdw > 0)) then
-      ! Atomic lines take every recipe below. A molecular line takes only the Unsold
-      ! estimate, from the molecule's ionisation energy, and only with
-      ! molecule_damping_estimates; the tabulated negative forms are not applied to it.
+    elseif (.not. is_mol .or. molecule_damping_estimates) then
+      ! Atomic lines take every recipe below; molecular lines only with
+      ! molecule_damping_estimates, the Unsold estimate from the molecule's ionisation
+      ! energy.
       unsold = .true.
       if (gvdw < -20.0) then
         c625 = 10**(0.4 * gvdw)       ! recipe c6 SIU
