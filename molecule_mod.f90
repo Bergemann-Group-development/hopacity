@@ -23,10 +23,11 @@ MODULE molecule_mod
     ! this only keeps the two sides on the same footing; it is never physics.
     real(dp) :: g_nuclear = 1
     ! The molecule's ionisation energy in eV is its %xion, the limit the line-list
-    ! damping estimates are hydrogenic in (prepare_stark, prepare_vanderwaals). It is
-    ! the optional 6th header field; a molecule without it keeps xion = 0, so its lines
-    ! get no Cowley Stark estimate. The dissociation energy is no such limit: it ends
-    ! the nuclear-motion levels, not the Rydberg series of the electron.
+    ! Cowley Stark estimate is hydrogenic in (prepare_stark). It is the optional 6th
+    ! header field; a molecule without it keeps xion = 0, so its lines get no estimate,
+    ! and molecule_damping_estimates = .false. (bbtrans_mod) withholds it from all
+    ! molecules. The dissociation energy is no such limit: it ends the nuclear-motion
+    ! levels, not the Rydberg series of the electron.
     real(dp), dimension(:), allocatable :: de ! dissociation_energies
     real(dp), dimension(:,:,:), allocatable :: dis
   contains
