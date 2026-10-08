@@ -1305,7 +1305,7 @@ contains
     !---------------------------------------------------------------------------
     allocate(order(self%nions))
     call argsort_int(self%z, order)
-    zs = self%z(order)
+    allocate(zs, source=self%z(order))
     ! insertion sort of the masses within each run of equal atomic number
     do i=2, size(mass)
       j = i

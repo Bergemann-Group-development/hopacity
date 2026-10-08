@@ -1221,7 +1221,7 @@ contains
       logical, intent(out) :: found
       character(len=32) :: head, tail
       integer :: dot, k, m, nz, ios
-      integer, allocatable :: z(:), zm(:), order(:)
+      integer, allocatable :: z(:), order(:)
       !-------------------------------------------------------------------------
       found = .false.
       id = ''
@@ -1255,9 +1255,8 @@ contains
       do m = 1, self%nmolec
         associate (mol => self%molecules(m))
           if (mol%nions /= nz .or. scan(mol%id, '+-') > 0) cycle
-          zm = mol%z
           call argsort_int (mol%z, order)
-          if (all(zm(order) == z)) then
+          if (all(mol%z(order) == z)) then
             id = mol%id
             found = .true.
             return
