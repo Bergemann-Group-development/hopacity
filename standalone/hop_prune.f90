@@ -47,6 +47,7 @@ PROGRAM hop_prune
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod, only: hydrogen_BPO
   USE hvcs_mod, only: hydrogen_vcs_table, vcs_data_dir
+  USE anstee_mod, only: anstee_file
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE osmet_mod, only: eosmet
   USE const_mod, only: bk
@@ -90,7 +91,7 @@ PROGRAM hop_prune
   character(len=512) :: linelist_folder=''
   character(len=256) :: linelist_file(128)
   namelist /linelist_params/ dlam, exclude_elements, linelist_file, linelist_folder, &
-    tolerance, only_elements, line_scattering, ll_profile, voigt_kernel
+    tolerance, only_elements, line_scattering, ll_profile, voigt_kernel, anstee_file
 
   ! --- &prune_params ------------------------------------------------------------------
   ! sample_count depths spread evenly over the model's index range (0 = every depth).

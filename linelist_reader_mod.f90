@@ -2,8 +2,14 @@
 !> linelist_reader_mod -- random access to the line-list text files.
 !>
 !> A master line list is a sequence of per-species blocks, each a two-line header
-!> ("'Fe I'" / "'26' 1234") followed by that many records, ascending in air
-!> wavelength.  A run keeps the records inside a handful of windows and ignores
+!> followed by that many records, ascending in air wavelength.  Two header layouts
+!> are recognised, block by block: the Tumult one names the species and then
+!> gives the isotope and the count ("'Fe I'" / "'56' 1234"), the Turbospectrum
+!> one gives species code, ionisation stage and count and then a free label
+!> ("'  26.056  ' 1 1234" / "'Fe I    NLTE'").  The records differ too, and are
+!> parsed by the caller (linelist_mod%build_linelist), which ll_block_t%ts tells
+!> which layout it has; both begin with the air wavelength, which is all this
+!> module reads of them.  A run keeps the records inside a handful of windows and ignores
 !> the rest, so reading the whole file to find them costs time proportional to
 !> the list rather than to the selection: the masters run to a gigabyte, and the
 !> newline index alone over 23 million records costs seconds and hundreds of
@@ -37,8 +43,10 @@ MODULE linelist_reader_mod
 
   !> One species block: its header, its records' byte range, and how they are addressed.
   type, public :: ll_block_t
-    character(len=80) :: id = ''      !< first header line, verbatim
-    character(len=32) :: siso = ''    !< isotope token of the second header line
+    character(len=80) :: id = ''      !< the species line (Tumult) or the label line (Turbospectrum), verbatim
+    character(len=32) :: siso = ''    !< isotope token (Tumult) or whole species code (Turbospectrum)
+    logical           :: ts = .false. !< a Turbospectrum block
+    integer           :: ion = 0      !< ionisation stage a Turbospectrum header states
     integer           :: nrec = 0     !< record count the header declares
     integer(8)        :: dstart = 0   !< first byte of the first record
     integer(8)        :: dend = 0     !< one past the last byte of the block
@@ -123,8 +131,18 @@ SUBROUTINE ll_next_block (self, blk, ok)
   i2 = index(chunk(i1+1:), NL)                       ! end of the iso/count line
   if (i2 == 0) return
   i2 = i1 + i2
-  blk%id = chunk(1:i1-1)
-  read (chunk(i1+1:i2-1), *, iostat=iostat) blk%siso, blk%nrec
+  ! a Turbospectrum header opens with a numeric species code, stage and count;
+  ! a Tumult one with the species name, which no list-directed read of three
+  ! items (string, integer, integer) with a numeric string gets through
+  read (chunk(1:i1-1), *, iostat=iostat) blk%siso, blk%ion, blk%nrec
+  blk%ts = iostat == 0 .and. is_number(blk%siso)
+  if (blk%ts) then
+    blk%id = chunk(i1+1:i2-1)
+  else
+    blk%ion = 0
+    blk%id = chunk(1:i1-1)
+    read (chunk(i1+1:i2-1), *, iostat=iostat) blk%siso, blk%nrec
+  end if
   if (iostat /= 0 .or. blk%nrec < 0) return
 
   blk%dstart = self%pos + i2                         ! first byte after the newline
@@ -179,18 +197,21 @@ END SUBROUTINE ll_next_block
 !> next header; the file ends with the block's own newline; or the file ends
 !> without one, which leaves the last record a byte short of the stride and so
 !> puts the computed end one past the file.  Anything else means the records are
-!> not one width and the caller falls back to hunting record boundaries.  The
-!> last record must also still begin with a number, which is what catches a
-!> stride that happens to land on a boundary by coincidence.
+!> not one width and the caller falls back to hunting record boundaries.  A
+!> stride can land on the block's end by coincidence when ragged records average
+!> the first one's length (Turbospectrum lists), so up to NPROBE strided record
+!> starts spread over the block must also follow a newline, and the last record
+!> must still begin with a number.
 !===============================================================================
 SUBROUTINE check_fixed_width (self, blk, dend, ok)
   type(ll_file_t), intent(in) :: self
   type(ll_block_t), intent(in) :: blk
   integer(8), intent(inout) :: dend
   logical, intent(out) :: ok
+  integer, parameter :: NPROBE = 16
   character(len=1) :: c
   real(dp) :: lam
-  integer :: iostat
+  integer :: iostat, p, k
   !-----------------------------------------------------------------------------
   ok = .false.
   if (dend <= self%fsize) then
@@ -208,6 +229,11 @@ SUBROUTINE check_fixed_width (self, blk, dend, ok)
   else
     return
   end if
+  do p = 1, min(NPROBE, blk%nrec - 1)
+    k = int(int(blk%nrec - 1,8) * p / min(NPROBE, blk%nrec - 1))
+    read (self%unit, pos=blk%dstart + int(k,8)*int(blk%width,8) - 1) c
+    if (c /= NL) return
+  end do
   lam = lam_at (self, blk%dstart + int(blk%nrec-1,8)*int(blk%width,8), iostat)
   ok = iostat == 0
 END SUBROUTINE check_fixed_width
@@ -268,6 +294,20 @@ FUNCTION last_record_start (self, dstart, dend) RESULT (start)
   end do
   if (k > 0) start = from + k
 END FUNCTION last_record_start
+
+!===============================================================================
+!> Whether a token reads as a number in its own right ('26.056', '0606.012013').
+!===============================================================================
+LOGICAL FUNCTION is_number (tok)
+  character(len=*), intent(in) :: tok
+  real(dp) :: x
+  integer :: iostat
+  !-----------------------------------------------------------------------------
+  is_number = .false.
+  if (verify(trim(adjustl(tok)), '0123456789.') /= 0 .or. len_trim(tok) == 0) return
+  read (tok, *, iostat=iostat) x
+  is_number = iostat == 0
+END FUNCTION is_number
 
 !===============================================================================
 !> The air wavelength a record starts with.

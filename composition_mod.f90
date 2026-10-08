@@ -12,6 +12,7 @@ MODULE composition_mod
   USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
   USE hprofl_mod, only:hline_t, hydrogen_line, add_h_opacities
   USE hvcs_mod, only:hydrogen_vcs_table, ensure_vcs_loaded
+  USE anstee_mod, only:ensure_anstee_loaded
   USE line_types_mod, only: linelist_type
   USE linelist_reader_mod, only: ll_file_t, ll_block_t, ll_open, ll_close, &
                                  ll_next_block, ll_block_range, ll_whole_block, &
@@ -972,6 +973,9 @@ contains
     integer(8), allocatable :: r0(:), r1(:)
     logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals, have_block
     logical :: expect_lines
+    ! atomic number of a Turbospectrum block (0 for a molecule), passed on to
+    ! build_linelist; unallocated, it is an absent argument for a tumult block
+    integer, allocatable :: ts_iel
     integer, save :: itimer=0, it_read=0, it_build=0, it_sort=0
     character(len=256) :: msg
     !-----------------------------------------------------------------------------
@@ -1030,11 +1034,23 @@ contains
       nline = blk%nrec
       ntotal = ntotal + nline
       if (nline == 0) cycle
-      read (blk%id, *, iostat=iostat) ion_id
-      if (iostat /= 0) cycle
-      read (blk%siso, *, iostat=iostat) iso
-      if (iostat /= 0) cycle
-      isotope = iso > 0
+      if (allocated(ts_iel)) deallocate(ts_iel)
+      if (blk%ts) then
+        allocate(ts_iel)
+        call ts_species (blk%siso, blk%ion, ion_id, ts_iel, iso, ok)
+        if (.not. ok) then
+          call console_warn (ch_hop, 'Turbospectrum species '//trim(blk%siso)//' not in the composition')
+          cycle
+        end if
+        if (ts_iel > 0) call ensure_anstee_loaded()
+      else
+        read (blk%id, *, iostat=iostat) ion_id
+        if (iostat /= 0) cycle
+        ! the isotope token may carry Turbospectrum's species prefix (26.056)
+        i = index(blk%siso, '.', back=.true.)
+        read (blk%siso(i+1:), *, iostat=iostat) iso
+        if (iostat /= 0) cycle
+      end if
       ion_id = trim_between_words(ion_id)
       ! species switches are applied here rather than after the read, so a block of
       ! an unwanted species costs only its header (see linelist_species_wanted)
@@ -1043,6 +1059,13 @@ contains
       nullify(particle)
       call self%particle_by_id(ion_id(1:6), particle, verbose=.true., is_molecule=is_mol)
       ok = associated(particle)
+      if (ok .and. is_mol .and. iso > 0) then
+        select type (particle)
+        class is (molec_type)
+          iso = particle%canonical_iso(iso)
+        end select
+      end if
+      isotope = iso /= 0
 
       iso_idx = 0
       if (ok .and. isotope) then
@@ -1078,6 +1101,11 @@ contains
       end if
 
       if (particle%id == 'H I') then
+        if (blk%ts) then
+          call console_error ('init_linelist: '//trim(linelist_file)//' holds hydrogen lines in '// &
+            'the Turbospectrum layout, which carries no Stark-profile data; read them from Hlinedata')
+          error stop 'init_linelist: Turbospectrum hydrogen block'
+        end if
         ! hydrogen keeps its Stark-profile kernel (add_h_opacities), and is read
         ! whole: its Stark wings reach far beyond any window margin
         call ll_whole_block (blk, b0, b1)
@@ -1102,7 +1130,7 @@ contains
         call read_slice (b0, b1)
         call build_linelist(particle%ll(iso_idx), buf, lstart(1:nslice), &
           lend(1:nslice), nslice, particle%awgt, particle%j, particle%xion, is_mol, &
-          vbar2e4, lam_mask, lam_min, lam_max)
+          vbar2e4, lam_mask, lam_min, lam_max, ts_iel=ts_iel)
       else if (use_intervals) then
         ! one byte range per interval, read into a single slice: windows far apart
         ! cost only their own records, while build_linelist still sees one ascending
@@ -1122,7 +1150,7 @@ contains
         if (nslice > 0) &
           call build_linelist(particle%ll(iso_idx), buf, lstart(1:nslice), &
             lend(1:nslice), nslice, particle%awgt, particle%j, particle%xion, is_mol, &
-            vbar2e4, lam_mask, lam_min, lam_max, intervals)
+            vbar2e4, lam_mask, lam_min, lam_max, intervals, ts_iel=ts_iel)
       else
         call ll_block_range (llf, blk, vac2air(lam_min), vac2air(lam_max), &
                              blk%dstart, b0, b1)
@@ -1130,7 +1158,7 @@ contains
           call read_slice (b0, b1)
           call build_linelist(particle%ll(iso_idx), buf, lstart(1:nslice), &
             lend(1:nslice), nslice, particle%awgt, particle%j, particle%xion, is_mol, &
-            vbar2e4, lam_mask, lam_min, lam_max)
+            vbar2e4, lam_mask, lam_min, lam_max, ts_iel=ts_iel)
         end if
       end if
       nactive = nactive + (particle%ll(iso_idx)%nline - nbefore)
@@ -1181,6 +1209,63 @@ contains
     call trace%end(itimer)
 
   contains
+    ! A Turbospectrum species code: Z.AAA for an atom, or two-digit atomic numbers in
+    ! ascending order followed by their three-digit masses for a molecule (0607.012014
+    ! is 12C14N, 000 the natural mixture).  Gives the composition id, the atomic
+    ! number (0 for a molecule) and the mass part as an isotope label.
+    subroutine ts_species (code, ion, id, iel, label, found)
+      character(len=*), intent(in) :: code
+      integer, intent(in) :: ion
+      character(len=*), intent(out) :: id
+      integer, intent(out) :: iel, label
+      logical, intent(out) :: found
+      character(len=32) :: head, tail
+      integer :: dot, k, m, nz, ios
+      integer, allocatable :: z(:), zm(:), order(:)
+      !-------------------------------------------------------------------------
+      found = .false.
+      id = ''
+      iel = 0
+      dot = index(code, '.')
+      if (dot == 0) dot = len_trim(code) + 1
+      head = adjustl(code(:dot-1))
+      tail = code(dot+1:)
+      label = 0
+      ios = 0
+      if (tail /= '') read (tail, *, iostat=ios) label
+      if (ios /= 0) return
+      if (len_trim(head) <= 2) then
+        read (head, *, iostat=ios) iel
+        if (ios /= 0 .or. iel < 1 .or. iel > size(element_ids) .or. &
+            ion < 1 .or. ion > ubound(roman, 1)) return
+        id = trim(element_ids(iel))//roman(ion)
+        found = .true.
+        return
+      end if
+      if (ion /= 1) return
+      if (mod(len_trim(head), 2) == 1) head = '0'//head
+      nz = len_trim(head) / 2
+      allocate (z(nz), order(nz))
+      do k = 1, nz
+        read (head(2*k-1:2*k), *, iostat=ios) z(k)
+        if (ios /= 0) return
+      end do
+      call argsort_int (z, order)
+      z = z(order)
+      do m = 1, self%nmolec
+        associate (mol => self%molecules(m))
+          if (mol%nions /= nz .or. scan(mol%id, '+-') > 0) cycle
+          zm = mol%z
+          call argsort_int (mol%z, order)
+          if (all(zm(order) == z)) then
+            id = mol%id
+            found = .true.
+            return
+          end if
+        end associate
+      end do
+    end subroutine ts_species
+
     ! the byte range [b0,b1) of the open list as buf, with its record boundaries;
     ! the offsets are into the slice, which is what build_linelist and add_h_block
     ! index with
@@ -3511,7 +3596,8 @@ contains
     end do
 
     if (allocated(mol%ions)) deallocate(mol%ions)
-    allocate(mol%ions(nions))
+    if (allocated(mol%z)) deallocate(mol%z)
+    allocate(mol%ions(nions), mol%z(nions))
     mol%nions = nions
 
     ! --- Second pass: fill ions ---
@@ -3548,6 +3634,7 @@ contains
           do j=1, count
             nions = nions + 1
             mol%ions(nions)%p => ion
+            mol%z(nions) = findloc(element_ids, elem, dim=1)
             mol%awgt = mol%awgt + ion%awgt
           end do
         else
@@ -3744,7 +3831,12 @@ contains
       if (associated(ptc%isotope)) niso = size(ptc%isotope)
       allocate(iso_values(niso))
       iso_values = [(ptc%isotope(k)%iso, k=1, niso)]
-      call print_ll_particle(unit, ptc%id, iso_values, ptc%ll)
+      select type (ptc)
+      class is (molec_type)
+        call print_ll_particle(unit, ptc%id, iso_values, ptc%ll, iso_digits=3*ptc%nions)
+      class default
+        call print_ll_particle(unit, ptc%id, iso_values, ptc%ll)
+      end select
     end subroutine write_particle
   END SUBROUTINE write_linelists
 

@@ -34,6 +34,8 @@ MODULE linelist_mod
                          prepare_radiative, prepare_stark, prepare_vanderwaals
   USE line_types_mod, only: linelist_type
   USE ion_mod, only: particle_type
+  USE anstee_mod, only: anstee_cross_section
+  USE console_mod, only: console_error
   ! The one Voigt kernel. add_opacity_equi sizes and sweeps each line window with one
   ! qlg_bot_line_sweep call in grid steps; add_opacity, whose abscissa is not a uniform
   ! ramp, takes the setup and the extent from qlg_bot_line in log(lambda) and evaluates
@@ -97,9 +99,16 @@ contains
   ! and last byte of record i (so no per-record string copy is made). Records are
   ! assumed pre-sorted ascending in wavelength. If do_mask, only records with lam_air
   ! in [lam_min, lam_max] are kept (contiguous slice, located by bisection).
+  !
+  ! ts_iel marks Turbospectrum records (parse_ts_record) and gives the species' atomic
+  ! number, 0 for a molecule. Turbospectrum resolves the van der Waals broadening of
+  ! an atomic line whose fdamp is below 20 through its anstee.f lookup before it uses
+  ! fdamp itself; anstee_mod repeats that lookup, and a cross-section it finds is
+  ! stored packed as an ABO value, so that gv_in, and the linelist_out.txt written
+  ! from it, state the broadening the line was given.
   !-------------------------------------------------------------------------------------
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
-                            vbar2e4, do_mask, lam_min, lam_max, intervals)
+                            vbar2e4, do_mask, lam_min, lam_max, intervals, ts_iel)
     type(linelist_type), intent(inout) :: ll
     character(len=*),    intent(in)    :: buf
     integer(8),          intent(in)    :: lstart(:), lend(:)
@@ -108,7 +117,11 @@ contains
     logical,             intent(in)    :: is_mol, do_mask
     real(dp),            intent(in)    :: lam_min, lam_max
     type(interval_t), intent(in), optional :: intervals(:)
+    integer,          intent(in), optional :: ts_iel
     real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, grad_in, gstk_in, r_i, r_j
+    real(dp) :: sigma, alpha
+    character(len=1) :: orb_lo, orb_up
+    logical :: ts, found
     real(dp) :: nu0, grad_t, gw1_t, gw2_t, gstk_t
     real(dp) :: fields(10)
     integer  :: lo, hi, nkeep, i, k, iostat, nvalue
@@ -117,6 +130,7 @@ contains
     integer, save :: it_mask=0, it_parse=0
     !-----------------------------------------------------------------------------------
     if (n <= 0) return
+    ts = present(ts_iel)
 
     ! select records based on intervals (multi-window) or single lam_min/lam_max range
     call trace%begin ('ll_build_mask', itimer=it_mask)
@@ -179,13 +193,30 @@ contains
     k = ll%nline
     do ib = 1, nblk
     do i = blk_lo(ib), blk_hi(ib)
-      call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
+      if (ts) then
+        call parse_ts_record(buf(lstart(i):lend(i)), fields, orb_lo, orb_up, iostat)
+        if (iostat /= 0) then
+          call console_error ('build_linelist: unreadable Turbospectrum record: '// &
+                              buf(lstart(i):lend(i)))
+          error stop 'build_linelist: unreadable Turbospectrum record'
+        end if
+        nvalue = 8
+      else
+        call parse_record(buf(lstart(i):lend(i)), fields, iostat, nvalue)
+      end if
       lam_air = fields(1); lower_ev = fields(2); loggf = fields(3)
       gv_in = fields(4); grad_in = fields(5); gstk_in = fields(6)
       r_i = fields(7); r_j = fields(8)
       lam_vac = air2vac(lam_air)
       if (present(intervals)) then
         if (.not. in_any_interval(lam_vac, intervals)) cycle
+      end if
+      if (ts) then
+        if (ts_iel > 0 .and. gv_in < 20) then
+          call anstee_cross_section(ts_iel, ion_j, lam_air, lower_ev, xion, orb_lo, &
+                                    orb_up, sigma, alpha, found)
+          if (found) gv_in = nint(sigma) + alpha
+        end if
       end if
 
       k = k + 1
@@ -1141,12 +1172,18 @@ contains
   ! (ll%reach times the vacuum wavelength). init_linelist reads it back so a run can
   ! select lines by it (add_opacity); hydrogen lines record none and write 0.
   !-------------------------------------------------------------------------------------
-  SUBROUTINE write_ll_header(unit, id, iso, n)
+  ! A molecule's isotopologue label is written with all iso_digits digits (three per
+  ! constituent, molecule_mod%generate_isotopic_combinations), so 12CH reads 000012.
+  SUBROUTINE write_ll_header(unit, id, iso, n, iso_digits)
     integer, intent(in) :: unit, iso, n
     character(len=*), intent(in) :: id
+    integer, intent(in), optional :: iso_digits
+    character(len=32) :: fmt
     !-----------------------------------------------------------------------------------
     write(unit, "(A)") "'"//trim(id)//"'"
-    write(unit, "(A,I0,A,I0)") "'", iso, "' ", n
+    fmt = "(A,I0,A,I0)"
+    if (present(iso_digits)) write(fmt, "(A,I0,A,I0,A)") "(A,I", iso_digits, ".", iso_digits, ",A,I0)"
+    write(unit, fmt) "'", iso, "' ", n
   END SUBROUTINE write_ll_header
 
   !-------------------------------------------------------------------------------------
@@ -1181,11 +1218,12 @@ contains
   ! first), a header plus the records that were used. ll is the per-isotope SoA array
   ! (0 = main, k = isotope iso_values(k)).
   !-------------------------------------------------------------------------------------
-  SUBROUTINE print_ll_particle(unit, id, iso_values, ll)
+  SUBROUTINE print_ll_particle(unit, id, iso_values, ll, iso_digits)
     integer,             intent(in) :: unit
     character(len=*),    intent(in) :: id
     integer,             intent(in) :: iso_values(:)
     type(linelist_type), intent(in) :: ll(0:)
+    integer, intent(in), optional   :: iso_digits
     integer :: l, kiso, isoval, n
     !-----------------------------------------------------------------------------------
     do kiso=0, ubound(ll,1)
@@ -1198,7 +1236,7 @@ contains
       end do
       if (n == 0) cycle
 
-      call write_ll_header(unit, id, isoval, n)
+      call write_ll_header(unit, id, isoval, n, iso_digits)
       do l=1, ll(kiso)%nline
         associate(sll => ll(kiso))
           if (.not. (sll%active(l) .and. sll%used(l))) cycle
@@ -1303,6 +1341,127 @@ contains
     nvalue = 0
     read(str, *, iostat=iostat) values(1:8)
   END SUBROUTINE parse_record
+
+  ! One Turbospectrum record, "lam Elow loggf fdamp gu raddmp [gamst] 'lo' 'up' eqw
+  ! eqwerr ['comment' [ilo iup ...]]", in the column order of parse_record: values(1:8)
+  ! = lam, Elow, loggf, gvdw (= fdamp), grad (= raddmp), gstk (= gamst, 0 without),
+  ! and the NLTE level indices ilo, iup (0 without). gu has no counterpart: HOP's
+  ! default radiative width needs only gf. orb_lo/orb_up are the orbital symbols
+  ! anstee_mod keys on; a record of the old six-number layout has none ('x').
+  ! Quoted tokens follow list-directed rules, as Turbospectrum reads them: '' inside
+  ! a token is a quote, and '' on its own an empty token.
+  SUBROUTINE parse_ts_record(str, values, orb_lo, orb_up, iostat)
+    character(len=*), intent(in)  :: str
+    real(dp),         intent(out) :: values(10)
+    character(len=1), intent(out) :: orb_lo, orb_up
+    integer,          intent(out) :: iostat
+    real(dp) :: num(7)
+    integer :: q, p, t0, t1, nnum, k
+    logical :: ok, quoted
+    !-----------------------------------------------------------------------------------
+    values = 0
+    orb_lo = 'x'
+    orb_up = 'x'
+    iostat = 1
+    q = index(str, "'")
+    if (q == 0) q = len_trim(str) + 1
+    call parse_fields_fast(str(1:q-1), num, nnum, ok)
+    if (.not. ok .or. nnum < 6) return
+    values(1:3) = num(1:3)                  ! lam, Elow, loggf
+    values(4)   = num(4)                    ! fdamp
+    values(5)   = num(6)                    ! raddmp
+    if (nnum == 7) values(6) = num(7)       ! gamst
+    if (q > len_trim(str)) then
+      iostat = 0
+      return
+    end if
+
+    p = q
+    do k = 1, 2                             ! the orbital symbols
+      call next_token(str, p, t0, t1, quoted, ok)
+      if (.not. (ok .and. quoted)) return
+      if (t1 >= t0) then
+        if (k == 1) orb_lo = str(t0:t0)
+        if (k == 2) orb_up = str(t0:t0)
+      end if
+    end do
+    do k = 1, 2                             ! eqw, eqwerr
+      call next_token(str, p, t0, t1, quoted, ok)
+      if (.not. ok) then                    ! a record may end after the symbols
+        iostat = 0
+        return
+      end if
+      if (quoted) return
+    end do
+    ! the comment; without it (indices straight after eqwerr) Turbospectrum reads the
+    ! block without level indices, and so does this
+    call next_token(str, p, t0, t1, quoted, ok)
+    if (.not. (ok .and. quoted)) then
+      iostat = 0
+      return
+    end if
+    do k = 7, 8                             ! the NLTE level indices
+      call next_token(str, p, t0, t1, quoted, ok)
+      if (.not. ok) then
+        iostat = merge(0, 1, k == 7)        ! none at all, or both
+        return
+      end if
+      if (quoted) return
+      read(str(t0:t1), *, iostat=iostat) values(k)
+      if (iostat /= 0) return
+    end do
+    iostat = 0
+  END SUBROUTINE parse_ts_record
+
+  ! The next blank-separated token of str at or after p: its text is str(t0:t1)
+  ! (without the quotes of a quoted one, t1 < t0 when empty) and p moves past it.
+  ! ok is false at the end of the record or on an unterminated quote.
+  PURE SUBROUTINE next_token(str, p, t0, t1, quoted, ok)
+    character(len=*), intent(in)    :: str
+    integer,          intent(inout) :: p
+    integer,          intent(out)   :: t0, t1
+    logical,          intent(out)   :: quoted, ok
+    integer :: last
+    !-----------------------------------------------------------------------------------
+    last = len_trim(str)
+    ok = .false.
+    quoted = .false.
+    t0 = 0
+    t1 = -1
+    do while (p <= last)
+      if (str(p:p) /= ' ' .and. str(p:p) /= achar(9)) exit
+      p = p + 1
+    end do
+    if (p > last) return
+    if (str(p:p) == "'") then
+      quoted = .true.
+      t0 = p + 1
+      p = p + 1
+      do while (p <= last)
+        if (str(p:p) == "'") then
+          if (p < last) then
+            if (str(p+1:p+1) == "'") then
+              p = p + 2
+              cycle
+            end if
+          end if
+          t1 = p - 1
+          p = p + 1
+          ok = .true.
+          return
+        end if
+        p = p + 1
+      end do
+      return
+    end if
+    t0 = p
+    do while (p <= last)
+      if (str(p:p) == ' ' .or. str(p:p) == achar(9)) exit
+      p = p + 1
+    end do
+    t1 = p - 1
+    ok = .true.
+  END SUBROUTINE next_token
 
   PURE SUBROUTINE parse_fields_fast(str, values, nvalue, ok)
     character(len=*), intent(in) :: str

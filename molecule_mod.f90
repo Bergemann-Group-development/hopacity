@@ -10,6 +10,8 @@ MODULE molecule_mod
   type, extends(particle_type) :: molec_type
     integer :: nions
     class(ion_pointer_t), allocatable :: ions(:)
+    ! atomic number of each constituent, parallel to ions(:)
+    integer, allocatable :: z(:)
     real(dp) :: dc(5) ! dissociation_constants
     ! Total nuclear spin statistical weight, prod over constituent nuclei of
     ! (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
@@ -36,6 +38,7 @@ MODULE molecule_mod
     procedure :: allocate => allocate_molec
     procedure :: deallocate => deallocate_molec
     procedure :: generate_isotopic_combinations
+    procedure :: canonical_iso
   end type
 
   logical, public :: irwin_dis=.true.
@@ -1183,92 +1186,141 @@ contains
   END SUBROUTINE deallocate_molec
 
   !===============================================================================
+  ! Isotopologue labels follow Turbospectrum's mass part: three digits per constituent,
+  ! constituents in ascending atomic number, mass numbers ascending among equal atomic
+  ! numbers, 000 for the natural mixture.  12C14N is 012014, 1H12C is 000012 since
+  ! hydrogen has no isotope table, and 12C13C is 012013.  The label is stored as an
+  ! integer, which drops the leading zeros; the number of constituents restores them.
+  ! A constituent without an isotope table is always 000.  Combinations that differ
+  ! only in the order of equal atoms share a label, and their fractions are summed.
   SUBROUTINE generate_isotopic_combinations(self)
     class(molec_type), intent(inout) :: self
     class(ion_type), pointer :: ion
-    class(isotope_type), pointer :: iso, iso2
-    integer :: i, j, k
-    integer, allocatable :: current_iso(:), order(:)
-    real(8) :: total_mass, total_frac
-    character(16) :: mass_id
+    class(isotope_type), pointer :: iso
+    integer :: i, k, n
+    integer, allocatable :: current_iso(:), order(:), mass(:), label(:)
+    real(8), allocatable :: awgt(:), frac(:)
+    logical, allocatable :: first(:)
     logical :: done
     !---------------------------------------------------------------------------
-    ! Estimate number of isotopic combinations (upper bound)
-    self%niso = 1
+    n = 1
     do i=1, self%nions
       ion => self%ions(i)%p
-      if (associated(ion%isotope)) then
-        self%niso = self%niso * (ion%niso+1)
-      endif
+      if (associated(ion%isotope)) n = n * (ion%niso+1)
     end do
+    allocate(label(n), awgt(n), frac(n), first(n))
 
-    allocate(self%isotope(self%niso))
-
-    ! Initialize index tracking for each ion
-    allocate(current_iso(self%nions))
-    allocate(order(self%nions))
-    call argsort_int([(nint(self%ions(i)%p%awgt), i=1, self%nions)], order)
-    current_iso = [(merge(0,1,associated(self%ions(order(i))%p%isotope)), i=1, self%nions)]
-    k = 1
+    allocate(current_iso(self%nions), order(self%nions), mass(self%nions))
+    call argsort_int(self%z, order)
+    current_iso = 0
+    k = 0
     done = .false.
-
-    ! Generate all isotopic combinations
     do while (.not. done)
-      ! Compute total mass and fraction
-      total_mass = 0.0d0
-      total_frac = 1.0d0
-      mass_id = ''
-
+      k = k + 1
+      awgt(k) = 0
+      frac(k) = 1
       do i=1, self%nions
         ion => self%ions(order(i))%p
-        if (.not. associated(ion%isotope)) then
-          total_mass = total_mass + ion%awgt
-          write(mass_id, '(A, I0)') trim(mass_id), nint(ion%awgt)
+        if (current_iso(i) == 0) then
+          awgt(k) = awgt(k) + ion%awgt
+          mass(i) = 0
         else
-          if (current_iso(i)==0) then
-            total_mass = total_mass + ion%awgt
-            write(mass_id, '(A, I0)') trim(mass_id), 0
-          else
-            iso => ion%isotope(current_iso(i))
-            total_mass = total_mass + iso%awgt
-            total_frac = total_frac * iso%frac
-            write(mass_id, '(A, I0)') trim(mass_id), nint(iso%awgt)
-          endif
+          iso => ion%isotope(current_iso(i))
+          awgt(k) = awgt(k) + iso%awgt
+          frac(k) = frac(k) * iso%frac
+          mass(i) = nint(iso%awgt)
         endif
       end do
+      label(k) = pack_label(self, mass)
 
-      ! Store computed isotope in molecule
-      iso => self%isotope(k)
-      iso%awgt = total_mass
-      iso%frac = total_frac
-      read(mass_id, *) iso%iso
-      k = k + 1
-
-      ! Generate next combination
+      ! next combination; constituents without an isotope table stay natural
       do i=self%nions, 1, -1
         ion => self%ions(order(i))%p
-        current_iso(i) = current_iso(i) + 1
-        if (current_iso(i) <= ion%niso) exit
-        current_iso(i) = merge(0,1,associated(ion%isotope))
+        if (associated(ion%isotope)) then
+          current_iso(i) = current_iso(i) + 1
+          if (current_iso(i) <= ion%niso) exit
+          current_iso(i) = 0
+        endif
         if (i == 1) done = .true.
       end do
+      if (self%nions == 0) done = .true.
     end do
-    ! sum up duplicates
-    ! this isn't quite perfect yet as it generates extra isotopes
-    ! for H2, C2, etc. with frac > 1, as e.g. (0)12 and 120 are summed.
-    ! It's fine as long as we don't use them though.
-    ! Also haven't tested this for triatomic molecules yet which do not contain H.
-    do i=1, self%niso
-      iso => self%isotope(i)
-      do k=i+1, self%niso
-        iso2 => self%isotope(k)
-        if (iso%awgt == iso2%awgt .and. iso%frac == iso2%frac) then
-          iso%frac = iso%frac + iso2%frac
-          iso2%frac = iso%frac
-        endif
+
+    first = [(.not. any(label(:i-1) == label(i)), i=1, n)]
+    self%niso = count(first)
+    allocate(self%isotope(self%niso))
+    k = 0
+    do i=1, n
+      if (.not. first(i)) cycle
+      k = k + 1
+      iso => self%isotope(k)
+      iso%iso = label(i)
+      iso%awgt = awgt(i)
+      iso%frac = sum(frac, mask=label == label(i))
+    end do
+  END SUBROUTINE generate_isotopic_combinations
+
+  !===============================================================================
+  ! The isotopologue label of a line-list header in the convention above.  An
+  ! explicit mass for a constituent without an isotope table that equals its
+  ! natural mass number (hydrogen written 001) reads as the natural mixture, and the
+  ! masses of equal atoms are put in ascending order.
+  INTEGER FUNCTION canonical_iso(self, iso) result(label)
+    class(molec_type), intent(in) :: self
+    integer, intent(in) :: iso
+    integer, allocatable :: order(:), mass(:)
+    integer :: i, rest
+    !---------------------------------------------------------------------------
+    allocate(order(self%nions), mass(self%nions))
+    call argsort_int(self%z, order)
+    rest = iso
+    do i=self%nions, 1, -1
+      mass(i) = mod(rest, 1000)
+      rest = rest / 1000
+    end do
+    if (rest /= 0) then
+      label = -1
+      return
+    end if
+    do i=1, self%nions
+      associate(ion => self%ions(order(i))%p)
+        if (.not. associated(ion%isotope) .and. mass(i) == nint(ion%awgt)) mass(i) = 0
+      end associate
+    end do
+    label = pack_label(self, mass)
+  END FUNCTION canonical_iso
+
+  !===============================================================================
+  ! Masses given in ascending atomic number, packed three digits each.
+  INTEGER FUNCTION pack_label(self, mass) result(label)
+    class(molec_type), intent(in) :: self
+    integer, intent(inout) :: mass(:)
+    integer, allocatable :: order(:), zs(:)
+    integer(8) :: packed
+    integer :: i, j, t
+    !---------------------------------------------------------------------------
+    allocate(order(self%nions))
+    call argsort_int(self%z, order)
+    zs = self%z(order)
+    ! insertion sort of the masses within each run of equal atomic number
+    do i=2, size(mass)
+      j = i
+      do while (j > 1)
+        if (zs(j-1) /= zs(j) .or. mass(j-1) <= mass(j)) exit
+        t = mass(j); mass(j) = mass(j-1); mass(j-1) = t
+        j = j - 1
       end do
     end do
-    deallocate(current_iso)
-  END SUBROUTINE generate_isotopic_combinations
+    packed = 0
+    do i=1, size(mass)
+      packed = packed * 1000 + mass(i)
+      if (packed > huge(label)) then
+        call console_error('isotopologue label of '//trim(self%id)//' exceeds the integer range')
+        error stop
+      end if
+    end do
+    label = int(packed)
+  END FUNCTION pack_label
+
 
 END MODULE molecule_mod

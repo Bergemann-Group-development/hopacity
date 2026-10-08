@@ -28,6 +28,7 @@ MODULE hop_c_api
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO, holtsmark
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
+  USE anstee_mod,   only: anstee_file
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE op_math_mod,  only: interval_t, merge_intervals
   USE qlg,          only: qlg_init
@@ -93,7 +94,7 @@ MODULE hop_c_api
   !> Kept adjacent to the select case below -- the two must agree, and
   !> tests/test_hop_abi.py checks that they do.
   character(len=*), parameter :: option_names = &
-    'abundances exclude_elements only_elements vcs_data_dir ' // &
+    'abundances exclude_elements only_elements vcs_data_dir anstee_file ' // &
     'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
@@ -587,6 +588,8 @@ CONTAINS
       only_elements = val
     case ('vcs_data_dir')
       vcs_data_dir = val
+    case ('anstee_file')
+      anstee_file = val
     ! --- reals --------------------------------------------------------------
     case ('ref_lam')
       call parse_real(val, rv, status); if (status == 0) ref_lam = rv
