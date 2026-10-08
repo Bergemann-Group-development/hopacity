@@ -1005,11 +1005,22 @@ contains
         lnbase(:,:,:,1) = lnbase(:,:,:,1) - ptc%part(lo:hi,:,:) + log(idf3) &
                         + real(log(iso_frac), 4)
 
+        ! A level index from the line list (or from an earlier energy match) is kept and
+        ! must name a level of the line's own stage; an end without one (0) takes the
+        ! level nearest in energy.
         if (do_nlte) then
           do l = 1, ll_n
-            sll%lev_i(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8))
-            sll%lev_j(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8) &
-                                                + H_E*sll%nu0(l))
+            if (sll%lev_i(l) > 0) then
+              call check_level(sll%lev_i(l))
+            else
+              sll%lev_i(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8))
+            end if
+            if (sll%lev_j(l) > 0) then
+              call check_level(sll%lev_j(l))
+            else
+              sll%lev_j(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8) &
+                                                  + H_E*sll%nu0(l))
+            end if
           end do
         end if
 
@@ -1037,6 +1048,14 @@ contains
         end if
       end associate
     end do
+  CONTAINS
+    SUBROUTINE check_level(lev)
+      integer, intent(in) :: lev
+      if (lev > size(dep_ev)) &
+        error stop 'add_particle_opacity: a line-list level index exceeds the atom''s levels'
+      if (int(dep_ev(lev)/100) /= ptc%j) &
+        error stop 'add_particle_opacity: a line-list level index names a level of another stage'
+    END SUBROUTINE check_level
   END SUBROUTINE add_particle_opacity
 
   !=====================================================================================
