@@ -33,6 +33,13 @@ MODULE bbtrans_mod
   end type
 
   logical, public :: disable_stk=.false., disable_vdw=.false., disable_rad=.false.
+  ! Molecular lines may take damping estimates from the molecule's ionisation energy:
+  ! the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
+  ! and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
+  ! is an enhancement factor. The same switch applies the tabulated negative gvdw forms
+  ! (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
+  ! apply none of these to molecules, and their presets switch them off.
+  logical, public :: molecule_damping_estimates=.true.
   real(4), public, save :: tolerance=1e-4
   real(4), public, save :: line_reject_frac=0.0
   real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3
@@ -87,12 +94,13 @@ contains
   ! line-list lines (linelist_mod%build_linelist, which calls the scalar forms
   ! directly).  All results are scaled by over_4pi/nu0.
   !------------------------------------------------------------------------------------
-  PURE ELEMENTAL SUBROUTINE bb_prepare_Stark(self, gstk, j, cnt_ev)
+  PURE ELEMENTAL SUBROUTINE bb_prepare_Stark(self, gstk, j, cnt_ev, is_mol)
     class(bbtrans_type), intent(inout)  :: self
     real(dp), intent(in) :: gstk, cnt_ev
     integer, intent(in) :: j
+    logical, intent(in) :: is_mol
     !----------------------------------------------------------------------------------
-    call prepare_stark(self%gstk, gstk, self%nu0, self%lower_ev, j, cnt_ev)
+    call prepare_stark(self%gstk, gstk, self%nu0, self%lower_ev, j, cnt_ev, is_mol)
   END SUBROUTINE bb_prepare_Stark
 
   PURE ELEMENTAL SUBROUTINE bb_prepare_Radiative(self, grad)
@@ -131,10 +139,11 @@ contains
   END SUBROUTINE prepare_radiative
 
   !====================================================================================
-  PURE SUBROUTINE prepare_stark(gstk, gstk_in, nu0, lower_ev, j, cnt_ev)
+  PURE SUBROUTINE prepare_stark(gstk, gstk_in, nu0, lower_ev, j, cnt_ev, is_mol)
     real(dp), intent(out) :: gstk
     real(dp), intent(in)  :: gstk_in, nu0, lower_ev, cnt_ev
     integer,  intent(in)  :: j
+    logical,  intent(in)  :: is_mol
     real(dp), parameter :: scale = 1e4**(-one_sixth)   ! (T/1e4 K)**(1/6), with T**(1/6) in stark_pe
     real(dp), parameter :: c19 = log10(39. * (8. / (PI*EM*BK**5))**one_sixth) ! ~19.4
     real(dp) :: upper_ev, c1
@@ -150,8 +159,9 @@ contains
       ! limit cnt_ev. It has no meaning for an upper level at or above the limit
       ! (autoionising, converging on an excited parent term, or listed against a
       ! rounded limit), where n*^4 would be taken from |cnt_ev - upper_ev| and grows
-      ! without bound towards it, so such a line gets no Cowley estimate.
-      if (upper_ev < cnt_ev) then
+      ! without bound towards it, so such a line gets no Cowley estimate. A molecular
+      ! line gets none either unless molecule_damping_estimates is set.
+      if (upper_ev < cnt_ev .and. (molecule_damping_estimates .or. .not. is_mol)) then
         ! Cowley (1971) eqs. 5 and 6 at 1e4 K, which he recommends using at all T;
         ! c1 is n*^4 of the upper level (his eq. 4)
         c1 = (j**2 * RydV / (cnt_ev - upper_ev))**2
@@ -196,7 +206,10 @@ contains
       balfac = (4.0/pi)**(0.5*alpha) * gammaf * 2.e10
       gw2 = 0.5*(1 - alpha)
       gw1 = balfac * sigma * 10**(-12*gw2)
-    elseif (.not. is_mol) then    ! Unsold is not used for molecules
+    elseif (.not. is_mol .or. molecule_damping_estimates) then
+      ! Atomic lines take every recipe below; molecular lines only with
+      ! molecule_damping_estimates, the Unsold estimate from the molecule's ionisation
+      ! energy.
       unsold = .true.
       if (gvdw < -20.0) then
         c625 = 10**(0.4 * gvdw)       ! recipe c6 SIU

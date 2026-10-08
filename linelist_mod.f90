@@ -239,7 +239,7 @@ contains
       ll%gstk_in(k)    = gstk_in
 
       call prepare_radiative   (grad_t,  grad_in, nu0, loggf)
-      call prepare_stark       (gstk_t,  gstk_in, nu0, lower_ev, ion_j, xion)
+      call prepare_stark       (gstk_t,  gstk_in, nu0, lower_ev, ion_j, xion, is_mol)
       call prepare_vanderwaals (gw1_t, gw2_t, ll%unsold(k), gv_in, nu0, &
                                 lower_ev, ion_j, xion, vbar2e4, is_mol)
       ll%grad(k)  = grad_t

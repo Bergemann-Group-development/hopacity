@@ -22,7 +22,7 @@ MODULE hop_c_api
   USE composition_mod
   USE spectrum_mod, only: spectrum_type, lam_tolerance
   USE bbtrans_mod,  only: tolerance, line_reject_frac, disable_rad, disable_stk, &
-                          disable_vdw
+                          disable_vdw, molecule_damping_estimates
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
@@ -98,7 +98,7 @@ MODULE hop_c_api
     'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
-    'irwin_dis disable_rad disable_stk disable_vdw hydrogen_bpo ' // &
+    'irwin_dis disable_rad disable_stk disable_vdw molecule_damping_estimates hydrogen_bpo ' // &
     'hydrogen_vcs_table ll_profile voigt_kernel verbose'
 
 CONTAINS
@@ -628,6 +628,8 @@ CONTAINS
       call parse_logical(val, lv, status); if (status == 0) disable_stk = lv
     case ('disable_vdw')
       call parse_logical(val, lv, status); if (status == 0) disable_vdw = lv
+    case ('molecule_damping_estimates')
+      call parse_logical(val, lv, status); if (status == 0) molecule_damping_estimates = lv
     case ('hydrogen_bpo')
       call parse_logical(val, lv, status); if (status == 0) hydrogen_BPO = lv
     case ('hydrogen_vcs_table')
