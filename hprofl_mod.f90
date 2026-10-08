@@ -678,9 +678,10 @@ contains
     self%gw2 = h%gw2
     self%gw3 = h%gw3
     self%io  = h%io
-    self%dq  = h%dq(1:h%io)
-    self%wt  = h%wt(1:h%io)
-    self%da  = spread(0d0, 1, h%io)
+    if (allocated(self%dq)) deallocate(self%dq, self%wt, self%da)
+    allocate(self%dq, source=h%dq(1:h%io))
+    allocate(self%wt, source=h%wt(1:h%io))
+    allocate(self%da(h%io), source=0d0)
   END SUBROUTINE prepare_hydrogen_damping
 
   !===============================================================================

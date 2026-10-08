@@ -545,15 +545,16 @@ CONTAINS
     integer, intent(out) :: ierr
     character(len=*), intent(out) :: msg
     character(len=:), allocatable :: base
-    integer :: lunit, nx, ny, nz
+    integer :: lunit, nx, ny, nz, nb
     real(4), dimension(:,:,:), allocatable :: ne, temp, rho
     !---------------------------------------------------------------------------
-    base = trim(atmos_file)
-    if (endswith(base, '.atmos')) then
-      base = base(1:len(base)-6)
-    elseif (endswith(base, '.mesh')) then
-      base = base(1:len(base)-5)
+    nb = len_trim(atmos_file)
+    if (endswith(atmos_file(1:nb), '.atmos')) then
+      nb = nb - 6
+    elseif (endswith(atmos_file(1:nb), '.mesh')) then
+      nb = nb - 5
     endif
+    allocate(base, source=atmos_file(1:nb))
     call open_existing(base // '.mesh', lunit, ierr, msg)
     if (ierr /= 0) return
     atmos%format = 'multi'
@@ -602,7 +603,7 @@ CONTAINS
       msg = "a stagger2 file name contains 'atm3d.' - " // trim(atmos_file)
       return
     endif
-    mesh_file = atmos_file(1:pos-1) // 'mesh.' // trim(atmos_file(pos+6:))
+    allocate(mesh_file, source=atmos_file(1:pos-1) // 'mesh.' // trim(atmos_file(pos+6:)))
     call open_existing(mesh_file, lunit, ierr, msg)
     if (ierr /= 0) return
     atmos%format = 'stagger2'

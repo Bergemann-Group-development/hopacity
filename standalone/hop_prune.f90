@@ -304,6 +304,7 @@ CONTAINS
   SUBROUTINE sample_depths(nz, n, idx)
     integer, intent(in) :: nz, n
     integer, allocatable, intent(out) :: idx(:)
+    integer, allocatable :: kept(:)
     integer :: m, i, k, last
     !---------------------------------------------------------------------------
     m = n
@@ -323,7 +324,8 @@ CONTAINS
         last = idx(k)
       end if
     end do
-    idx = idx(1:k)
+    allocate(kept, source=idx(1:k))
+    call move_alloc(kept, idx)
   END SUBROUTINE sample_depths
 
   !-----------------------------------------------------------------------------
@@ -352,14 +354,14 @@ CONTAINS
     atmos_format_used = fmt
     nz_model = atmos%nz
     nsampled = nsample
-    sampled_depths = sample
+    allocate(sampled_depths, source=sample)
     use_rho_used = with_rho
     use_ne_used = with_ne
     use_abnd_used = use_abnd .and. allocated(atmos%abund)
     vmic_used = vmic_eff
     feh_used = FeH
-    blue_vac = blue
-    red_vac = red
+    allocate(blue_vac, source=blue)
+    allocate(red_vac, source=red)
     nnu_grid = sp%nnu
     ntransitions = nkept
     open(newunit=u, file=path, status='replace', action='write')

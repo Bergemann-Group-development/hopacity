@@ -3736,8 +3736,8 @@ contains
     allocate(absk(nf, nx, ny, nz, nb), source=0.0)
     allocate(scat(nf, nx, ny, nz, 2), source=0.0)
     call self%ion_by_id('HE I', HeI)
-    lam = CC / nu * 1e8
-    hnu_e = h_e * nu
+    allocate(lam, source=CC / nu * 1e8)
+    allocate(hnu_e, source=h_e * nu)
 
     do z=1, nz
       do y=1, ny

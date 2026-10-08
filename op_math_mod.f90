@@ -549,11 +549,7 @@ contains
       end if
     end do
 
-    ! trim to actual size.  The array is reallocated explicitly: a whole-array assignment
-    ! reallocates only under the standard semantics, and the builds that compile with
-    ! -assume norealloc_lhs would leave the size at n_windows, with the unset tail
-    ! intervals that follow n_merged read as extra (garbage) windows by every caller
-    ! that takes size(merged_intervals).
+    ! trim to actual size
     if (n_merged < n_windows) then
       allocate(trimmed(n_merged))
       trimmed = merged_intervals(1:n_merged)

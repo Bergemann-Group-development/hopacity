@@ -540,7 +540,7 @@ MODULE spectrum_mod
       allocate(keep(self%nnu))
       keep = self%lam >= crop_blue .and. self%lam <= crop_red
       if (count(keep) == self%nnu) return          ! nothing outside the window
-      lam = pack(self%lam, keep)
+      allocate(lam, source=pack(self%lam, keep))
       if (size(lam) == 0) then
         call io%warning('spectrum_type%crop: [aa_blue, aa_red] excludes the whole model '// &
                         'atom grid -- output spectrum will be empty')

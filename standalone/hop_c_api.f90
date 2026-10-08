@@ -207,13 +207,15 @@ CONTAINS
     character(kind=c_char), intent(in) :: path(*)
     integer(c_int) :: status
     integer :: lunit, iostat
+    character(len=:), allocatable :: file
     !---------------------------------------------------------------------------
     status = 0
     if (.not. allocated(comp)) then
       call fail('hop_write_linelist: no composition; call hop_init first', 3, status)
       return
     end if
-    open(newunit=lunit, file=c2f_string(path), form='formatted', action='write', &
+    call c2f_string(path, file)
+    open(newunit=lunit, file=file, form='formatted', action='write', &
          status='replace', iostat=iostat)
     if (iostat /= 0) then
       call fail('hop_write_linelist: cannot open the output file', 3, status)
@@ -270,15 +272,16 @@ CONTAINS
     character(kind=c_char), intent(out) :: buf(*)
     integer(c_int), value :: buflen
     integer(c_int) :: status
-    character(len=:), allocatable :: text
+    character(len=:), allocatable :: text, longer
     integer :: i
     !---------------------------------------------------------------------------
     if (.not. allocated(ll_species) .or. ll_nspecies < 1) then
-      text = ''
+      allocate(character(len=0) :: text)
     else
-      text = trim(ll_species(1))
+      allocate(text, source=trim(ll_species(1)))
       do i = 2, ll_nspecies
-        text = text // new_line('a') // trim(ll_species(i))
+        allocate(longer, source=text // new_line('a') // trim(ll_species(i)))
+        call move_alloc(longer, text)
       end do
     end if
     call f2c_string(text, buf, buflen, status)
@@ -376,20 +379,24 @@ CONTAINS
   !=============================================================================
   ! Helpers
   !=============================================================================
-  FUNCTION c2f_string(cs) RESULT(fs)
+  ! A subroutine rather than a function with a deferred-length result: built with
+  ! -fno-realloc-lhs, gfortran hands such a result to callers in this module with
+  ! length 0.
+  SUBROUTINE c2f_string(cs, fs)
     character(kind=c_char), intent(in) :: cs(*)
-    character(len=:), allocatable :: fs
+    character(len=:), allocatable, intent(out) :: fs
     integer :: i, n
     !---------------------------------------------------------------------------
     n = 0
-    do while (cs(n+1) /= c_null_char .and. n < 4096)
+    do while (n < 4096)
+      if (cs(n+1) == c_null_char) exit
       n = n + 1
     end do
     allocate(character(len=n) :: fs)
     do i = 1, n
       fs(i:i) = cs(i)
     end do
-  END FUNCTION c2f_string
+  END SUBROUTINE c2f_string
 
   !-----------------------------------------------------------------------------
   ! Species lookup shared by hop_keep_species/hop_get_species.  Guards the bare
@@ -439,10 +446,10 @@ CONTAINS
       call fail('already initialized; call hop_free first', 1, status)
       return
     end if
-    absdat_f = c2f_string(absdat_file)
-    abund_f  = c2f_string(abund_file)
-    iso_f    = c2f_string(isotope_file)
-    molec_f  = c2f_string(molec_file)
+    call c2f_string(absdat_file, absdat_f)
+    call c2f_string(abund_file, abund_f)
+    call c2f_string(isotope_file, iso_f)
+    call c2f_string(molec_file, molec_f)
 
     ! QLG-bot's lookup tables. Must happen before any opacity or rate is accumulated:
     ! the kernel is PURE and cannot check, so a missed call is a silently zero profile
@@ -542,7 +549,8 @@ CONTAINS
     integer(c_int), intent(inout) :: status
     character(len=:), allocatable :: t
     !---------------------------------------------------------------------------
-    t = lowercase(trim(adjustl(s)))
+    allocate(t, source=trim(adjustl(s)))
+    t = lowercase(t)
     select case (t)
     case ('1', 't', 'true', '.true.', 'yes', 'on')
       out = .true.
@@ -574,8 +582,9 @@ CONTAINS
     integer  :: iv
     logical  :: lv
     !---------------------------------------------------------------------------
-    nm  = lowercase(c2f_string(name))
-    val = c2f_string(value)
+    call c2f_string(name, nm)
+    nm = lowercase(nm)
+    call c2f_string(value, val)
     status = 0
     select case (nm)
     ! --- strings ------------------------------------------------------------
@@ -727,7 +736,8 @@ CONTAINS
                 3, status)
       return
     end if
-    nm = lowercase(c2f_string(name))
+    call c2f_string(name, nm)
+    nm = lowercase(nm)
     select case (nm)
     case ('temp')
       out(1:n) = reshape(comp%temp, [n])
@@ -761,12 +771,14 @@ CONTAINS
     character(kind=c_char), intent(in) :: name(*)
     integer(c_int) :: status
     class(particle_type), pointer :: particle
+    character(len=:), allocatable :: nm
     !---------------------------------------------------------------------------
     if (.not. allocated(master)) then
       call fail('hop_keep_species: no instance; call hop_init first', 2, status)
       return
     end if
-    call species_lookup(master, c2f_string(name), particle, status)
+    call c2f_string(name, nm)
+    call species_lookup(master, nm, particle, status)
     if (status == 0) particle%in_opac = .true.
   END FUNCTION hop_keep_species
 
@@ -782,13 +794,15 @@ CONTAINS
     real(c_double), intent(out) :: out(*)
     integer(c_int) :: status
     class(particle_type), pointer :: particle
+    character(len=:), allocatable :: nm
     !---------------------------------------------------------------------------
     if (hop_get_n() /= n .or. n < 1) then
       call fail('hop_get_species: no state loaded, or n differs from the loaded size', &
                 3, status)
       return
     end if
-    call species_lookup(comp, c2f_string(name), particle, status)
+    call c2f_string(name, nm)
+    call species_lookup(comp, nm, particle, status)
     if (status /= 0) return
     if (.not. allocated(particle%n)) then
       call fail('species density not retained; call hop_keep_species before ' // &
@@ -1074,7 +1088,7 @@ CONTAINS
       call fail('hop_init_linelist_windows: instance not initialised', 2, status)
       return
     end if
-    file_f = c2f_string(linelist_file)
+    call c2f_string(linelist_file, file_f)
     if (len(file_f) == 0) then
       call fail('hop_init_linelist_windows: empty file name', 3, status)
       return
@@ -1117,7 +1131,7 @@ CONTAINS
       call fail('hop_init_linelist: instance not initialised', 2, status)
       return
     end if
-    file_f = c2f_string(linelist_file)
+    call c2f_string(linelist_file, file_f)
     if (len(file_f) == 0) then
       call fail('hop_init_linelist: empty file name', 3, status)
       return
@@ -1201,9 +1215,13 @@ CONTAINS
     integer :: ierr
     !---------------------------------------------------------------------------
     status = 0
-    fmt = lowercase(c2f_string(atmos_format))
-    file = c2f_string(atmos_file)
-    if (fmt == 'unknown') fmt = trim(atmos_format_from_name(file))
+    call c2f_string(atmos_format, fmt)
+    fmt = lowercase(fmt)
+    call c2f_string(atmos_file, file)
+    if (fmt == 'unknown') then
+      deallocate(fmt)
+      allocate(fmt, source=trim(atmos_format_from_name(file)))
+    end if
     if (allocated(atmos_file_data)) deallocate(atmos_file_data)
     allocate(atmos_file_data)
     call read_atmos_file(fmt, file, atmos_file_data, ierr, msg, snap=int(snap), &
@@ -1236,7 +1254,8 @@ CONTAINS
       call fail('hop_atmos_get: no atmosphere read; call hop_atmos_read first', 2, status)
       return
     end if
-    nm = lowercase(c2f_string(name))
+    call c2f_string(name, nm)
+    nm = lowercase(nm)
     associate (a => atmos_file_data)
       ncell = a%nx * a%ny * a%nz
       select case (nm)

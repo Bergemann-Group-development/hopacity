@@ -80,7 +80,7 @@ SUBROUTINE ll_open (self, path)
   integer :: iostat
   !-----------------------------------------------------------------------------
   call os%check_file (path)
-  self%path = trim(path)
+  allocate (self%path, source=trim(path))
   open (newunit=self%unit, file=self%path, access='stream', form='unformatted', &
         status='old', action='read', iostat=iostat)
   if (iostat /= 0) then

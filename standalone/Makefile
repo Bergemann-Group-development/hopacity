@@ -29,7 +29,7 @@ ifeq ($(COMPILER),gfortran)
   FC      = gfortran
   DEBUG  ?= -fbacktrace
   FFLAGS  = -x f95-cpp-input -DHOP_STANDALONE -ffree-line-length-0 -w \
-            -fno-range-check -fallow-argument-mismatch -fopenmp \
+            -fno-range-check -fallow-argument-mismatch -fno-realloc-lhs -fopenmp \
             $(OPT) $(HW) $(DEBUG) -fPIC -I$(BUILD) -J$(BUILD)
   LDFLAGS = $(OPT) $(DEBUG) -fopenmp
 else ifneq ($(filter ifort ifx,$(COMPILER)),)
