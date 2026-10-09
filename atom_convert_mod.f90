@@ -44,7 +44,7 @@ MODULE atom_convert_mod
     integer :: nlevel = 0, nline = 0, nbf = 0, ncol = 0
     real(8), allocatable :: ev(:), g(:)               ! [eV]
     integer, allocatable :: ion(:)
-    character(len=20), allocatable :: label(:)
+    character(len=64), allocatable :: label(:)
     ! bound-bound records as written, components already split
     integer, allocatable :: li(:), lj(:), nq(:), parent(:)
     real(8), allocatable :: lam_vac(:), loggf(:), grad(:), gvdw(:), gstk(:), qmax(:), q0(:)
