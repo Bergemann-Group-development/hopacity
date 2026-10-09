@@ -40,7 +40,8 @@ PROGRAM hop_prune
                           lam_file, window_file, in_air
   USE composition_mod, only: abundances, relative_abundances, exclude_elements, &
                              only_elements, opac_table_vmic, mhd_eos, &
-                             line_scattering, helium_scattering, ref_lam, debug_opac
+                             line_scattering, helium_scattering, ref_lam, debug_opac, &
+                             match_nlte_levels
   USE bbtrans_mod, only: tolerance, disable_rad, disable_stk, disable_vdw, &
                          molecule_damping_estimates
   USE bftrans_mod, only: H_occupation_probability
@@ -92,7 +93,8 @@ PROGRAM hop_prune
   character(len=512) :: linelist_folder=''
   character(len=256) :: linelist_file(128)
   namelist /linelist_params/ dlam, exclude_elements, linelist_file, linelist_folder, &
-    tolerance, only_elements, line_scattering, ll_profile, voigt_kernel, anstee_file
+    tolerance, only_elements, line_scattering, ll_profile, voigt_kernel, anstee_file, &
+    match_nlte_levels
 
   ! --- &prune_params ------------------------------------------------------------------
   ! sample_count depths spread evenly over the model's index range (0 = every depth).
