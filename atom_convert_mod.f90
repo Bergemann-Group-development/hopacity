@@ -582,10 +582,14 @@ END SUBROUTINE union_grid
 SUBROUTINE write_pandas_atom (atom, out_file, source)
   type(classic_atom_t), intent(in) :: atom
   character(len=*), intent(in) :: out_file, source
-  integer :: u, i, k
-  character(len=*), parameter :: ev = '1x,f11.6', g = '1x,i4', lam = '1x,f14.3', &
-    loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,g16.8', gstk = '1x,g11.3', &
-    q = '1x,g13.6', alpha = '1x,es10.3', col = '1x,es11.4'
+  integer :: u, i, k, wl, wp, wk
+  ! field widths without the separating blank
+  integer, parameter :: w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, w_grad=10, &
+    w_gvdw=16, w_gstk=11, w_nq=4, w_q=13, w_alpha=10, w_col=11
+  character(len=*), parameter :: ev = '1x,f11.6', g = '1x,i4', ion = '1x,i3', &
+    lam = '1x,f14.3', loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,g16.8', &
+    gstk = '1x,g11.3', nq = '1x,i4', q = '1x,g13.6', alpha = '1x,es10.3', col = '1x,es11.4'
+  character(len=8) :: idx, lvl, lvl0, prof, key
   !-----------------------------------------------------------------------------
   open(newunit=u, file=out_file, form='formatted', status='replace', action='write')
   write(u, '(a)') '* converted from the MULTI-format atom '//trim(source)
@@ -596,48 +600,98 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   write(u, '(f5.2,1x,f0.3)') atom%abnd, atom%awgt
   write(u, '(i0,3(1x,i0))') atom%nlevel, atom%nline, atom%nbf, atom%ncol
 
-  write(u, '(a)') '  ev g ion label'
+  ! the level indices i and j share one width; idx is the table's own index
+  wl = ndigits(atom%nlevel-1)
+  write(lvl, '(a,i0)') '1x,i', wl
+  write(lvl0, '(a,i0)') 'i', wl
+
+  call set_index(atom%nlevel)
+  write(u, '(a)') repeat(' ', ndigits(atom%nlevel-1))//title('ev', w_ev)//title('g', w_g)// &
+    title('ion', w_ion)//' label'
   do i=1, atom%nlevel
-    write(u, '(i0,'//ev//','//g//',1x,i0,3a)') i-1, atom%ev(i), nint(atom%g(i)), atom%ion(i), &
-      " '", trim(atom%label(i)), "'"
+    write(u, '('//trim(idx)//','//ev//','//g//','//ion//',3a)') i-1, atom%ev(i), &
+      nint(atom%g(i)), atom%ion(i), " '", trim(atom%label(i)), "'"
   end do
 
   if (atom%nline > 0) then
-    write(u, '(a)') '  i j lam_air evi loggf grad gvdw gstk nq qmax q0 profile iso'
+    wp = max(len('profile'), maxval(len_trim(atom%profile)))
+    write(prof, '(a,i0)') '1x,a', wp
+    call set_index(atom%nline)
+    write(u, '(a)') repeat(' ', ndigits(atom%nline-1))//title('i', wl)//title('j', wl)// &
+      title('lam_air', w_lam)//title('evi', w_ev)//title('loggf', w_loggf)// &
+      title('grad', w_grad)//title('gvdw', w_gvdw, 4)//title('gstk', w_gstk, 4)// &
+      title('nq', w_nq)//title('qmax', w_q, 4)//title('q0', w_q, 4)//title('profile', wp)// &
+      ' iso'
     do i=1, atom%nline
-      write(u, '(i0,2(1x,i0),'//lam//','//ev//','//loggf//','//grad//','//gvdw//','// &
-        gstk//',1x,i0,2('//q//'),1x,a,a)') i-1, atom%li(i)-1, &
-        atom%lj(i)-1, vac2air(atom%lam_vac(i)), atom%ev(atom%li(i)), atom%loggf(i), &
-        atom%grad(i), atom%gvdw(i), atom%gstk(i), atom%nq(i), atom%qmax(i), atom%q0(i), &
-        trim(atom%profile(i)), ' 0'
+      write(u, '('//trim(idx)//',2('//trim(lvl)//'),'//lam//','//ev//','//loggf//','// &
+        grad//','//gvdw//','//gstk//','//nq//',2('//q//'),'//trim(prof)//',a)') i-1, &
+        atom%li(i)-1, atom%lj(i)-1, vac2air(atom%lam_vac(i)), atom%ev(atom%li(i)), &
+        atom%loggf(i), atom%grad(i), atom%gvdw(i), atom%gstk(i), atom%nq(i), &
+        atom%qmax(i), atom%q0(i), adjustr(atom%profile(i)(1:wp)), '   0'
     end do
   endif
 
   ! the bound-free wavelengths are vacuum wavelengths, under the column name
-  ! read_pandas has always used
+  ! read_pandas has always used; this table has no index column
   if (atom%nbf > 0) then
     if (atom%excited_bf) then
-      write(u, '(a)') ' i lam_air alpha j'
+      write(u, '(a)') title('i', wl-1)//title('lam_air', w_lam)//title('alpha', w_alpha)// &
+        title('j', wl)
       do i=1, atom%nbf
-        write(u, '(i0,'//lam//','//alpha//',1x,i0)') atom%bf_i(i)-1, atom%bf_lam(i), &
-          atom%bf_alpha(i), atom%bf_j(i)-1
+        write(u, '('//trim(lvl0)//','//lam//','//alpha//','//trim(lvl)//')') atom%bf_i(i)-1, &
+          atom%bf_lam(i), atom%bf_alpha(i), atom%bf_j(i)-1
       end do
     else
-      write(u, '(a)') ' i lam_air alpha'
+      write(u, '(a)') title('i', wl-1)//title('lam_air', w_lam)//title('alpha', w_alpha)
       do i=1, atom%nbf
-        write(u, '(i0,'//lam//','//alpha//')') atom%bf_i(i)-1, atom%bf_lam(i), atom%bf_alpha(i)
+        write(u, '('//trim(lvl0)//','//lam//','//alpha//')') atom%bf_i(i)-1, atom%bf_lam(i), &
+          atom%bf_alpha(i)
       end do
     endif
   endif
 
+  ! the temperatures are the titles of the rate columns
   if (atom%ncol > 0) then
-    write(u, '(a,*('//col//'))') '  key i j', atom%temp
+    wk = max(len('key'), maxval(len_trim(atom%col_key)))
+    write(key, '(a,i0)') '1x,a', wk
+    call set_index(atom%ncol)
+    write(u, '(a,*('//col//'))') repeat(' ', ndigits(atom%ncol-1))//title('key', wk)// &
+      title('i', wl)//title('j', wl), atom%temp
     do i=1, atom%ncol
-      write(u, '(i0,1x,a,2(1x,i0),*('//col//'))') i-1, trim(atom%col_key(i)), &
-        atom%col_l(i)-1, atom%col_u(i)-1, (atom%col_val(k,i), k=1, size(atom%temp))
+      write(u, '('//trim(idx)//','//trim(key)//',2('//trim(lvl)//'),*('//col//'))') i-1, &
+        adjustr(atom%col_key(i)(1:wk)), atom%col_l(i)-1, atom%col_u(i)-1, &
+        (atom%col_val(k,i), k=1, size(atom%temp))
     end do
   endif
   close(u)
+CONTAINS
+  ! edit descriptor of the index column of a table with n rows
+  SUBROUTINE set_index (n)
+    integer, intent(in) :: n
+    write(idx, '(a,i0)') 'i', ndigits(n-1)
+  END SUBROUTINE set_index
+  ! name right-aligned over a field of width w after its separating blank; a G edit
+  ! leaves trail blanks after a fixed-point value
+  FUNCTION title (name, w, trail) result (s)
+    character(len=*), intent(in) :: name
+    integer, intent(in) :: w
+    integer, intent(in), optional :: trail
+    character(len=w+1) :: s
+    integer :: t
+    t = 0
+    if (present(trail)) t = trail
+    s = repeat(' ', w+1-t-len(name))//name
+  END FUNCTION title
+  INTEGER FUNCTION ndigits (n)
+    integer, intent(in) :: n
+    integer :: m
+    ndigits = 1
+    m = n
+    do while (m >= 10)
+      m = m/10
+      ndigits = ndigits+1
+    end do
+  END FUNCTION ndigits
 END SUBROUTINE write_pandas_atom
 
 END MODULE atom_convert_mod
