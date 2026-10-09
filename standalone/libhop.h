@@ -7,7 +7,6 @@ double hop_get_grph ();
 int hop_get_linelist (int n, double *lam_air, double *evi, double *loggf, double *strength, int *ispec);
 int hop_get_n ();
 int hop_get_species (const char *name, int n, double *out);
-int hop_holtsmark (int nbeta, const double *beta, double p, int n, int m, double *out);
 int hop_init (const char *absdat_file, const char *abund_file, const char *isotope_file, const char *molec_file, double feh, float tmolim, float alpha_enh, float r_process_enh);
 int hop_init_linelist (const char *linelist_file, double dlam, int nlam, const double *lam);
 int hop_init_linelist_windows (const char *linelist_file, double dlam, int nwin, const double *blue_vac, const double *red_vac);

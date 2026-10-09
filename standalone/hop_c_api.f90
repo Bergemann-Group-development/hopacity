@@ -26,7 +26,7 @@ MODULE hop_c_api
   USE bftrans_mod,  only: H_occupation_probability
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
-  USE hprofl_mod,   only: hydrogen_BPO, holtsmark
+  USE hprofl_mod,   only: hydrogen_BPO
   USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
   USE anstee_mod,   only: anstee_file
   USE linelist_mod, only: ll_profile, voigt_kernel
@@ -1144,32 +1144,6 @@ CONTAINS
       call master%init_linelist(file_f, dlam)
     end if
   END FUNCTION hop_init_linelist
-
-  !-----------------------------------------------------------------------------
-  ! Griem's tabulated quasistatic Stark profile S(beta, p) for the hydrogen line
-  ! (n, m), evaluated over a vector of beta.  HOP itself calls holtsmark() one
-  ! beta at a time from stark1 (hprofl_mod); this batches it for the hydrogen-
-  ! Stark study code, which fits a component pattern to S.  Needs no instance --
-  ! holtsmark reads only its own tabulated data.
-  !-----------------------------------------------------------------------------
-  FUNCTION hop_holtsmark(nbeta, beta, p, n, m, out) RESULT(status) &
-           BIND(c, name='hop_holtsmark')
-    integer(c_int), value :: nbeta, n, m
-    real(c_double), intent(in)  :: beta(*)
-    real(c_double), value       :: p
-    real(c_double), intent(out) :: out(*)
-    integer(c_int) :: status
-    integer :: i
-    !---------------------------------------------------------------------------
-    status = 0
-    if (nbeta < 1) then
-      call fail('hop_holtsmark: nbeta must be >= 1', 3, status)
-      return
-    end if
-    do i = 1, nbeta
-      out(i) = real(holtsmark(beta(i), p, n, m), c_double)
-    end do
-  END FUNCTION hop_holtsmark
 
   FUNCTION hop_scattering(nlam, lam, sig) RESULT(status) &
            BIND(c, name='hop_scattering')
