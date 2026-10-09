@@ -1,5 +1,6 @@
-# Build HOP as a standalone shared library (libhop.so) and the hop_prune.x
-# line-list pruning executable, with no DISPATCH framework dependencies.  The
+# Build HOP as a standalone shared library (libhop.so), the hop_prune.x
+# line-list pruning executable and the atom_convert.x model-atom converter, with
+# no DISPATCH framework dependencies.  The
 # framework singletons (io, os, trace) are replaced by the -DHOP_STANDALONE
 # branch of ../hop_env_mod.f90, and every source below lives under HOP/ --
 # nothing is pulled in from ../../SRC, so the package is self-contained.  This
@@ -8,12 +9,13 @@
 # with its own COMPILER and OPTS, and the objects here (compiled with
 # -DHOP_STANDALONE) never mix with the framework-enabled ones linked into dispatch.x.
 #
-# Usage:  make [-j N] [COMPILER=ifort] [OPT=-O2] [BUILD=dir]   # libhop.so, hop_prune.x
+# Usage:  make [-j N] [COMPILER=ifort] [OPT=-O2] [BUILD=dir]   # libhop.so, hop_prune.x, atom_convert.x
 #         make bindings                                        # rewrite libhop.h after an API change
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 HDR   := libhop.h
 PRUNE := $(BUILD)/hop_prune.x
+CONVERT := $(BUILD)/atom_convert.x
 DISPATCH_TOP ?= ../../../..
 COMPILER ?= gfortran
 OPTS ?= hoppe
@@ -52,7 +54,7 @@ SRCS = ../console_mod.f90 ../qlg_mod.f90 ../hop_env_mod.f90 ../const_mod.f90 ../
        ../hprofl_mod.f90 ../linelist_mod.f90 \
        ../bftrans_mod.f90 ../trans_mod.f90 ../spectrum_mod.f90 \
        ../optab_mod.f90 ../osmet_mod.f90 ../composition_mod.f90 ../atmos_reader_mod.f90 \
-       hop_c_api.f90
+       ../atom_convert_mod.f90 hop_c_api.f90
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.f90=.o)))
 # The pruning program is the library objects plus its main program.
@@ -61,7 +63,7 @@ PRUNE_OBJS = $(addprefix $(BUILD)/,$(notdir $(PRUNE_SRCS:.f90=.o)))
 
 vpath %.f90 . ..
 
-all: $(LIB) $(PRUNE)
+all: $(LIB) $(PRUNE) $(CONVERT)
 	@:
 
 # The header is the C prototypes of the BIND(C) functions, written by gen_bindings.py
@@ -92,6 +94,14 @@ $(PRUNE): $(OBJS) $(PRUNE_OBJS)
 
 hop_prune.x: $(PRUNE)
 
+# atom_convert.x: the library objects plus the program
+$(BUILD)/atom_convert.o: $(lastword $(OBJS))
+$(CONVERT): $(OBJS) $(BUILD)/atom_convert.o
+	@if [ "x$(E)" == "x@" ] ; then echo " [ LD ]" $(notdir $@) ; fi
+	$(E)$(FC) $(LDFLAGS) -o $@ $(OBJS) $(BUILD)/atom_convert.o
+
+atom_convert.x: $(CONVERT)
+
 $(BUILD)/%.o: %.f90 | $(BUILD)
 	@if [ "x$(E)" == "x@" ] ; then echo " [ FC ]" $(notdir $@) ; fi
 	$(E)$(FC) $(FFLAGS) -c $< -o $@
@@ -108,4 +118,4 @@ clean:
 	rm -rf $(BUILD)
 	rm -f *.mod
 
-.PHONY: all clean bindings hop_prune.x
+.PHONY: all clean bindings hop_prune.x atom_convert.x

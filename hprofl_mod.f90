@@ -677,10 +677,6 @@ contains
     self%gw1 = h%gw1
     self%gw2 = h%gw2
     self%gw3 = h%gw3
-    self%io  = h%io
-    self%dq  = h%dq(1:h%io)
-    self%wt  = h%wt(1:h%io)
-    self%da  = spread(0d0, 1, h%io)
   END SUBROUTINE prepare_hydrogen_damping
 
   !===============================================================================
