@@ -988,7 +988,7 @@ contains
     real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
     real(4)  :: eps_dummy(0,0,0,0), scat_dummy(0,0,0,0)
     real(dp) :: iso_frac
-    integer  :: m(3), kiso, ll_n, l, lo, hi
+    integer  :: m(3), kiso, ll_n, lo, hi
     logical  :: do_scat, use_population
     !-----------------------------------------------------------------------------------
     m = shape(temp)

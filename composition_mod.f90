@@ -242,7 +242,7 @@ contains
   FUNCTION departure_atom(file) RESULT(atom)
     character(len=*), intent(in) :: file
     type(departure_atom_t), pointer :: atom
-    integer :: lunit, nlevel, nline, idx, ion, l
+    integer :: lunit, nlevel, nline, idx, l
     integer, allocatable :: stage(:)
     real(8) :: g, lam_air, ground_ev
     !---------------------------------------------------------------------------
@@ -440,12 +440,11 @@ contains
     integer :: absdat, lunit, iostat
     integer :: i, j, k, l, m, nl, nk, niso
     integer :: lvl_count, skip_back
-    real(dp) :: abund, xion, g2, dump, tecor, decor, ex, stim
+    real(dp) :: abund, xion, g2, dump, tecor, decor
     character(len=3) :: id
     character(len=6) :: key
     character(len=65) :: text
     character(len=128) :: text_line
-    character(len=10) :: s10
     integer :: g0, nqfix, nqtemp, ifish, ncor
     real(dp) :: acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c, scale
     real(dp), dimension(:,:), allocatable :: xkap
@@ -1025,10 +1024,9 @@ contains
     class(composition_type), target :: self
     class(element_type), pointer :: element
     class(molec_type), pointer :: mol
-    integer :: n_excluded, i, ii, p
-    character(len=3) :: id
+    integer :: i
     character(len=512) :: drop, only
-    logical :: new_word, in_drop, no_only
+    logical :: in_drop, no_only
     ! ----------------------------------------------------------------------------
     drop = ''
     only = ''
@@ -1182,7 +1180,7 @@ contains
     type(ll_block_t) :: blk
     real(dp) :: lam_min, lam_max, vbar2e4
     integer :: iostat, nslice, nline, iso, iso_idx, nbefore, nkh, iv
-    integer :: i, j, nactive, ntotal, niso
+    integer :: i, j, nactive, ntotal
     integer(8) :: b0, b1, b_after
     integer(8), allocatable :: r0(:), r1(:)
     logical :: isotope, ok, is_mol, lam_mask, hlinedata, use_intervals, have_block
@@ -1989,10 +1987,10 @@ contains
     real(4), intent(in), dimension(:,:,:), optional :: vmic, vx, vy, vz
     real(8), intent(in), dimension(:,:), optional :: set_da
     logical, intent(in), dimension(:,:), optional :: set_element
-    real(dp), dimension(:,:,:), allocatable :: ro, eh, charge
+    real(dp), dimension(:,:,:), allocatable :: ro
     real(4), dimension(:,:,:,:), pointer :: chi500
-    real(dp) :: nu500(1), nudebug(1)
-    integer :: i,j, nx, ny, nz, lunit, m(3)
+    real(dp) :: nudebug(1)
+    integer :: i,j, m(3)
     integer :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%load_state_variables', itimer=itimer)
@@ -2307,7 +2305,6 @@ contains
   SUBROUTINE set_aux_data(self, temp, ne)
     class(composition_type), target :: self
     real(dp), intent(in),  dimension(:,:,:) :: temp, ne
-    integer :: i, j
     real(dp), parameter :: fo_const = 2*PI*(4./15.)**two_third*EC ! 1.25e-9
     real(dp), parameter :: dxi_const = (EC**3 * sqrt(8*PI)) / (temp_to_theta*BK*EE) ! 4.98e-4
     !---------------------------------------------------------------------------
@@ -2641,7 +2638,7 @@ contains
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion, HeI, HI
     class(molec_type), pointer :: H2, H2p
-    integer :: i, x, y, z
+    integer :: i
     !---------------------------------------------------------------------------
     call self%molecule_by_id('H2',  H2)
     call self%molecule_by_id('H2+', H2p)
@@ -3480,7 +3477,7 @@ contains
     logical :: is_mol
     character(3) :: id1, id2
     character(6) :: trim_id
-    integer :: idx, iostat, imol, iele
+    integer :: idx, imol, iele
     !---------------------------------------------------------------------------
     element => null()
     particle => null()
@@ -3591,8 +3588,7 @@ contains
     real(dp), dimension(:), allocatable :: lam3
     real(dp) :: hrest, fakt, e_kT, dxi
     real(dp), parameter :: nniv2 = 15.5**2
-    integer :: f, x,y,z, xlo, xhi
-    integer :: p(4)=pp
+    integer :: x,y,z, xlo, xhi
     !---------------------------------------------------------------------
     call self%ion_by_id('H I', HI)
     allocate(lam3, mold=lam)
@@ -3630,7 +3626,7 @@ contains
     integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), parameter :: thomson = 8./3.*PI*(EC**2/(EM*CC**2))**2
     real(dp) :: els
-    integer :: f, x, y, z, lo, hi
+    integer :: x, y, z, lo, hi
     !---------------------------------------------------------------------
     lo = 1; hi = size(chi, 2)
     if (present(i0)) lo = i0
@@ -3655,7 +3651,7 @@ contains
     real(4), dimension(:,:,:,:), intent(inout) :: chi
     integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: xray2, HeIscat
-    real(dp) :: xr, ll, scalar, h2ray, rayh, rayh2, nHI, nH2, nHE
+    real(dp) :: xr, rayh, rayh2, nHI, nH2, nHE
     logical :: do_H2
     integer :: f, x, y, z, xlo, xhi
     !---------------------------------------------------------------------
@@ -3717,7 +3713,7 @@ contains
     type(molec_type) :: molecule
     type(ion_type), pointer :: ion
     character(len=*) :: molec_file
-    integer :: i, j, k, lunit, iostat
+    integer :: i, j, lunit, iostat
     !---------------------------------------------------------------------------
     self%nmolec = 0
     if (self%tmolim <= 0) return
@@ -3911,7 +3907,7 @@ contains
     character(len=1024) :: text
     integer, dimension(:), allocatable :: bin, nel, order
     character(6), dimension(:), allocatable :: key
-    integer :: f, x, y, z, i, j, ib, nb, nh, nx, ny, nz, nf, nt, lunit
+    integer :: f, x, y, z, i, ib, nb, nx, ny, nz, nf, nt, lunit
     logical :: first_time = .true.
     integer, save :: itimer=0
     !---------------------------------------------------------------------------

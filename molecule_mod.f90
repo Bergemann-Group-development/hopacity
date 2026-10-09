@@ -105,7 +105,7 @@ contains
     class(molec_type), intent(in) :: self
     real(dp), intent(in), dimension(:,:,:) :: temp, teta, e_kT
     real(dp), intent(out), dimension(:,:,:) :: dis
-    real(dp) :: awgt15, scalar, N_tot, const_term
+    real(dp) :: awgt15, scalar, const_term
     real(dp), parameter :: const_base = log((2*PI*UU/HH**2)**(-1.5) * BK**(-2.5))
     integer :: j, nm1
     !---------------------------------------------------------------------------
@@ -239,10 +239,10 @@ contains
     real(dp), dimension(:,:), allocatable :: ywrow
     logical,  dimension(:),   allocatable :: wrow_ok
     logical :: have_warm, use_save, have_seed, skip_setup, same_alloc
-    real(dp) :: norm2, norm2t, errf, lam, smax, worst
+    real(dp) :: norm2, norm2t, errf, worst
     real(dp) :: y1, worsty
     integer  :: sweep
-    logical  :: converged, badstep
+    logical  :: converged
     integer,  parameter :: niter_max = 100
     integer,  parameter :: nround    = 2          ! allocation auction rounds
     integer,  parameter :: nsweep    = 32         ! Gauss-Seidel sweeps/round

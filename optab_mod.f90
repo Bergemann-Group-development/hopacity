@@ -88,7 +88,7 @@ contains
     class(optab_type) :: self
     class(spectrum_type) :: sp
     character(len=*), intent(in) :: opac_table
-    integer :: i, lunit, iostat
+    integer :: i, lunit
     !---------------------------------------------------------------------------
     if (console_on(ch_hop, 1)) write(console_unit,'(A,A)') 'Reading opacity table: ', trim(opac_table)
 
@@ -359,8 +359,7 @@ contains
     real(4) :: hl, tl, pl, tt, te, pt, pe
     real(4) :: wc0, wc1, wcm0, wcm1
     real(4) :: tc0, tc1, tcm0, tcm1, nc0, nc1, ncm0, ncm1
-    real(4) :: v00, v10, v01, v11, gt00, gt10, gt01, gt11
-    real(4) :: ge00, ge10, ge01, ge11, f0, f1, ge0, ge1, kappa, add
+    real(4) :: kappa, add
     real(4) :: dc1_4, dc2_4
     integer :: nx, ny, nz, x, y, z, f, k, k1, it, je
     logical :: do_scat

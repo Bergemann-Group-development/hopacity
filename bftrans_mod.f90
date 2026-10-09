@@ -86,7 +86,7 @@ contains
     real(4), dimension(:,:), intent(inout) :: lagrange
     real(dp), dimension(:), pointer, contiguous :: xx
     real(dp) :: x
-    integer :: nf, f
+    integer :: nf
     integer :: i,j,k
     logical :: quadratic, above, below, skip
     integer, save :: itimer=0
@@ -419,8 +419,6 @@ contains
     real(dp), dimension(:,:,:), intent(in) :: e_kT, teta, pe, dxi
     real(dp), dimension(:,:,:), intent(inout) :: fakt
     integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
-    real(dp), dimension(:,:,:), allocatable :: h1
-    integer, dimension(:,:,:), allocatable :: nniv
     real(dp) :: scalar
     integer :: lo, hi
     integer :: itimer=0
@@ -479,8 +477,7 @@ contains
     real(dp), dimension(:,:,:), allocatable :: fakt
     logical, optional :: sorted
     logical :: active
-    real(dp) :: prev, post
-    integer :: i,j,k,f,nf, m(2), p(4)=pp
+    integer :: nf
     integer :: fs, fe, lo, hi
     integer, dimension(:), allocatable :: iw
     logical, dimension(:), allocatable :: quad

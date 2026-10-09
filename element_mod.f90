@@ -26,7 +26,7 @@ contains
     type(level_type), pointer :: lvl
     real(dp), dimension(:,:,:), intent(in) :: temp, e_kT, ne
     real(dp), dimension(:,:,:), allocatable :: beta
-    integer :: i, j, l, u, x, y, z
+    integer :: i, j, l, u
     !---------------------------------------------------------------------------
     l = lbound(self%ions,1)
     u = ubound(self%ions,1)
@@ -62,7 +62,7 @@ contains
     class(element_type), target :: self
     real(dp), dimension(:,:,:), intent(in) :: e_kT, dxi, lsaha
     real(dp), dimension(:,:,:), allocatable :: fil, partition_ratio, partp
-    integer :: j, l, u, x, y, z
+    integer :: j, l, u
     !---------------------------------------------------------------------------
     allocate(fil, partition_ratio, partp, mold=dxi)
     l = lbound(self%ions,1)

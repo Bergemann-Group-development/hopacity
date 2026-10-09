@@ -69,13 +69,12 @@ MODULE spectrum_mod
       real(8), dimension(:,:), allocatable :: windows
       type(interval_t), allocatable :: merged(:)
       integer :: n_merged
-      integer :: i, j, n_windows, nnu_seg, lunit, iostat, n_kept
+      integer :: i, j, n_windows, nnu_seg, lunit, iostat
       real(8) :: blue, red, fac, blue_vac, red_vac
       real(8), dimension(:), allocatable :: lam_seg, all_lam
       integer, dimension(:), allocatable :: seg_first, seg_last
       real(8), dimension(:), allocatable :: seg_blue, seg_red
       character(len=256) :: line, msg
-      logical :: is_comment
 
       ! Read window file
       call os%check_file(wfile)

@@ -207,7 +207,6 @@ contains
   !===============================================================================
   FUNCTION extract_int (str) result(val)
     character(len=*) :: str
-    character(len=256) :: dummy
     integer :: i, o, val
     ! ----------------------------------------------------------------------------
     i = scan(str, '0123456789')
@@ -331,7 +330,6 @@ contains
   PURE FUNCTION capitalize(string)
     character(len=*),intent(in) :: string
     character(len=len(string)) :: capitalize
-    integer :: i,k
     !---------------------------------------------------------------------------------
     capitalize = lowercase(trim(string))
     capitalize(1:1) = uppercase(capitalize(1:1))

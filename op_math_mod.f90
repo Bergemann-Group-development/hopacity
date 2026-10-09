@@ -511,7 +511,7 @@ contains
     type(interval_t), intent(out), allocatable :: merged_intervals(:)
     integer, intent(out) :: n_merged
     type(interval_t), allocatable :: expanded(:), trimmed(:)
-    integer :: i, j
+    integer :: i
     real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
     !-----------------------------------------------------------------------------------
 
