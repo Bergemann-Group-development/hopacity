@@ -583,7 +583,7 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   type(classic_atom_t), intent(in) :: atom
   character(len=*), intent(in) :: out_file, source
   integer :: u, i, k
-  character(len=*), parameter :: ev = '1x,f11.6', g = '1x,f7.1', lam = '1x,f14.3', &
+  character(len=*), parameter :: ev = '1x,f11.6', g = '1x,i4', lam = '1x,f14.3', &
     loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,g16.8', gstk = '1x,g11.3', &
     q = '1x,g13.6', alpha = '1x,es10.3', col = '1x,es11.4'
   !-----------------------------------------------------------------------------
@@ -598,7 +598,7 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
 
   write(u, '(a)') '  ev g ion label'
   do i=1, atom%nlevel
-    write(u, '(i0,'//ev//','//g//',1x,i0,3a)') i-1, atom%ev(i), atom%g(i), atom%ion(i), &
+    write(u, '(i0,'//ev//','//g//',1x,i0,3a)') i-1, atom%ev(i), nint(atom%g(i)), atom%ion(i), &
       " '", trim(atom%label(i)), "'"
   end do
 
