@@ -545,10 +545,10 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   integer :: u, i, k, wl, wk
   ! field widths without the separating blank
   integer, parameter :: w_awgt=8, w_n=6, w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, &
-    w_grad=10, w_gvdw=14, w_gstk=9, w_nq=4, w_q=6, w_alpha=10, w_col=11
+    w_grad=10, w_gvdw=10, w_gstk=9, w_nq=4, w_q=6, w_alpha=10, w_col=11
   character(len=*), parameter :: awgt = '1x,f8.3', ev = '1x,f11.6', g = '1x,i4', ion = '1x,i3', &
-    lam = '1x,f14.3', loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,a14', &
-    gstk = '1x,a9', nq = '1x,i4', q = '1x,f6.1', alpha = '1x,es10.3', col = '1x,es11.4'
+    lam = '1x,f14.3', loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,a', &
+    gstk = '1x,a', nq = '1x,i4', q = '1x,f6.1', alpha = '1x,es10.3', col = '1x,es11.4'
   character(len=8) :: idx, lvl, lvl0, key
   !-----------------------------------------------------------------------------
   open(newunit=u, file=out_file, form='formatted', status='replace', action='write')
@@ -636,16 +636,17 @@ CONTAINS
     s = repeat(' ', w+1-len(name))//name
   END FUNCTION title
   ! x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
-  ! characters: positional for a decimal exponent -4 <= e < p, scientific otherwise,
-  ! without trailing zeros.  The exponent is taken after rounding to p digits.
+  ! characters or wider when it needs more: positional for a decimal exponent
+  ! -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
+  ! after rounding to p digits.
   FUNCTION g_format (x, p, w) result (s)
     real(8), intent(in) :: x
     integer, intent(in) :: p, w
-    character(len=w) :: s
+    character(len=:), allocatable :: s
     character(len=40) :: es, fmt, t
     integer :: e, k
     if (x == 0) then
-      s = '0'
+      t = '0'
     else
       write(fmt, '(a,i0,a)') '(es40.', p-1, 'e3)'
       write(es, fmt) x
@@ -659,9 +660,9 @@ CONTAINS
       else
         write(t, '(2a,sp,i0.2)') trim(strip_zeros(es(1:k-1))), 'e', e
       end if
-      s = t
     end if
-    s = adjustr(s)
+    allocate(character(len=max(w, len_trim(t))) :: s)
+    s = repeat(' ', len(s)-len_trim(t))//trim(t)
   END FUNCTION g_format
   ! a decimal number without the trailing zeros of its fraction, and without the point
   ! when nothing is left after it
