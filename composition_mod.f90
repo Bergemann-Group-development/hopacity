@@ -131,16 +131,33 @@ MODULE composition_mod
     procedure :: write_linelists
   end type
 
+  ! The levels and bound-bound transitions of the model atom a departure set belongs
+  ! to, read from its table-format atom file (departure_atom).  One instance per file
+  ! is shared by every patch and every ray-aligned copy.
+  type, public :: departure_atom_t
+    character(len=512) :: file=''
+    real(8), allocatable :: ev(:)        ! 100*stage + energy above the stage's ground [eV]
+    real(8), allocatable :: level_ev(:)  ! energy above the atom's ground [eV]
+    integer, allocatable :: line_lo(:), line_up(:)  ! level indices of each transition
+    real(8), allocatable :: line_lam(:)  ! vacuum wavelength of each transition [AA]
+    type(departure_atom_t), pointer :: next => null()
+  end type departure_atom_t
+
   type, public :: departure_pointer_t
     character(len=6) :: key=''  ! species key: element symbol ('Mg') or molecule formula ('H2O')
     logical :: is_set=.false.   ! an unset key must never match anything
     real(4), pointer :: mem(:,:,:,:) => null()
-    real(8), allocatable :: ev(:)
+    type(departure_atom_t), pointer :: atom => null()
     integer :: nlevel=0
   contains
     procedure :: set_key => departure_set_key
     procedure :: matches => departure_matches
+    procedure :: assign_levels => departure_assign_levels
+    procedure :: assign_h_levels => departure_assign_h_levels
   end type departure_pointer_t
+
+  type(departure_atom_t), pointer, save :: departure_atoms => null()
+  public :: departure_atom
 
   character(128), public, save :: exclude_elements='', only_elements=''
   ! feed the Hummer-Mihalas occupation-weighted H I partition function into the
@@ -152,7 +169,11 @@ MODULE composition_mod
   real(dp), public :: ref_lam=5000.d0
   character(len=1024), public :: abundances
   logical, public :: relative_abundances=.false.
-  logical, public :: read_departures=.false., departure_indices=.false.
+  logical, public :: read_departures=.false.
+  ! match line-list lines without level indices to the model atom as Turbospectrum's
+  ! line-list conversion does (departure_assign_levels); without it only lines with
+  ! both indices are in NLTE
+  logical, public :: match_nlte_levels=.false.
   logical, public :: sample_linelist=.false.
   ! split LTE line-list opacity into true absorption and scattering with the
   ! stage-correct van Regemorter epsilon (osmet_mod%compute_epsilon_stage);
@@ -196,7 +217,7 @@ contains
   ! '<Sym> <ROMAN>' (H- is 'H -', so it too carries the blank) while molecule ids
   ! never contain a blank, so the token before the first blank is the element
   ! symbol and a blank-free id is a whole molecule.  The match is at species level:
-  ! key 'Mg' covers Mg I, Mg II, ... -- dep%ev spans every stage, tagged 100*stage --
+  ! key 'Mg' covers Mg I, Mg II, ... -- dep%atom%ev spans every stage, tagged 100*stage --
   ! but never MgH or Mn I.
   !-------------------------------------------------------------------------------
   LOGICAL FUNCTION departure_matches(self, ptc) RESULT(hit)
@@ -212,6 +233,195 @@ contains
     if (ib > 0) pid = pid(1:ib-1)
     hit = uppercase(trim(pid)) == uppercase(trim(self%key))
   END FUNCTION departure_matches
+
+  !===============================================================================
+  ! The levels and transitions of the table-format model atom in file, read on the
+  ! first request and shared afterwards.  The format is the one atom_mod%read_pandas
+  ! reads; level and transition indices are 0-based in the file.
+  !-------------------------------------------------------------------------------
+  FUNCTION departure_atom(file) RESULT(atom)
+    character(len=*), intent(in) :: file
+    type(departure_atom_t), pointer :: atom
+    integer :: lunit, nlevel, nline, idx, ion, l
+    integer, allocatable :: stage(:)
+    real(8) :: g, lam_air, ground_ev
+    !---------------------------------------------------------------------------
+    !$omp critical (departure_atom_cache)
+    atom => departure_atoms
+    do while (associated(atom))
+      if (trim(atom%file) == trim(file)) exit
+      atom => atom%next
+    end do
+    if (.not. associated(atom)) then
+      call os%check_file(file)
+      allocate(atom)
+      atom%file = file
+      open(newunit=lunit, file=file, form='formatted', status='old', action='read')
+      call NextEntry(lunit)
+      read(lunit, *)                     ! id
+      call NextEntry(lunit)
+      read(lunit, *)                     ! abundance, atomic weight
+      call NextEntry(lunit)
+      read(lunit, *) nlevel, nline
+      call NextEntry(lunit)
+      read(lunit, *)                     ! level header
+      allocate(atom%ev(nlevel), atom%level_ev(nlevel), stage(nlevel))
+      do l=1, nlevel
+        call NextEntry(lunit)
+        read(lunit, *) idx, atom%level_ev(l), g, stage(l)
+      end do
+      ground_ev = atom%level_ev(1)
+      do l=1, nlevel
+        if (l > 1) ground_ev = merge(atom%level_ev(l), ground_ev, stage(l) > stage(l-1))
+        atom%ev(l) = 100*stage(l) + atom%level_ev(l) - ground_ev
+      end do
+      allocate(atom%line_lo(nline), atom%line_up(nline), atom%line_lam(nline))
+      if (nline > 0) then
+        call NextEntry(lunit)
+        read(lunit, *)                   ! transition header
+      end if
+      do l=1, nline
+        call NextEntry(lunit)
+        read(lunit, *) idx, atom%line_lo(l), atom%line_up(l), lam_air
+        atom%line_lo(l) = atom%line_lo(l) + 1
+        atom%line_up(l) = atom%line_up(l) + 1
+        atom%line_lam(l) = air2vac(lam_air)
+      end do
+      close(lunit)
+      atom%next => departure_atoms
+      departure_atoms => atom
+    end if
+    !$omp end critical (departure_atom_cache)
+  END FUNCTION departure_atom
+
+  !===============================================================================
+  ! The departure-set levels of the H I lines.  As in Turbospectrum (hydropac.f), the
+  ! principal quantum numbers n_lo/n_up, which lev_i/lev_j start as, are the indices of
+  ! the atom's levels, so the atom must have one level per n, in order from n=1.  Each
+  ! index is checked against the line's energy (lower_ev, and lower_ev + h nu0 for the
+  ! upper end) to TS's relative tolerance; a mismatch stops the run.  A line with an n
+  ! beyond the atom's H I levels is set to -1 and stays in LTE.
+  !-------------------------------------------------------------------------------
+  SUBROUTINE departure_assign_h_levels(self, hll)
+    class(departure_pointer_t), intent(in) :: self
+    type(linelist_type), intent(inout) :: hll
+    real(8), parameter :: ts_ev_rel=1d-3
+    integer :: l
+    !---------------------------------------------------------------------------
+    do l = 1, hll%nline
+      if (hll%lev_i(l) < 0) cycle
+      if (.not. (bound(hll%lev_i(l)) .and. bound(hll%lev_j(l)))) then
+        hll%lev_i(l) = -1
+        hll%lev_j(l) = -1
+        cycle
+      end if
+      call check_energy(hll%lev_i(l), real(hll%lower_ev(l), 8))
+      call check_energy(hll%lev_j(l), hll%lower_ev(l) + H_E*hll%nu0(l))
+    end do
+  CONTAINS
+    ! level n is an H I level of the atom
+    LOGICAL FUNCTION bound(n)
+      integer, intent(in) :: n
+      bound = n <= size(self%atom%ev)
+      if (bound) bound = int(self%atom%ev(n)/100) == 1
+    END FUNCTION bound
+
+    SUBROUTINE check_energy(n, e)
+      integer, intent(in) :: n
+      real(8), intent(in) :: e
+      real(8) :: e_atom
+      character(len=160) :: msg
+      e_atom = self%atom%ev(n) - 100
+      if (abs(e_atom - e) > ts_ev_rel*max(e_atom, e)) then
+        write(msg, '(a,i0,a,f9.4,a,i0,a,f9.4,a)') 'H I line level n=', n, ' at ', e, &
+          ' eV does not match atom level ', n, ' at ', e_atom, ' eV'
+        call console_error(trim(msg))
+        error stop 'assign_h_levels: the H atom''s levels are not one per n'
+      end if
+    END SUBROUTINE check_energy
+  END SUBROUTINE departure_assign_h_levels
+
+  !===============================================================================
+  ! Give each line of ptc's line lists the departure-set levels of its two ends.  A
+  ! level index from the line list is kept and must name a level of the line's own
+  ! stage.  Without match_nlte_levels a line is in NLTE only when the list gives both
+  ! indices.  With it, the ends without an index (0) are matched as Turbospectrum's
+  ! convert_lte_to_nlte.py assigns indices: a line without any index first takes both
+  ! levels of the first atom transition of its stage within ts_dlam of its wavelength
+  ! whose lower level agrees with lower_ev to the factor ts_ev_factor.  An end still
+  ! unmatched takes the nearest level of the stage within that factor, the last of
+  ! equally near ones as in TS.  Both tolerances are TS's.  The energies are compared
+  ! above the atom's ground, the line's lower_ev shifted by the atom's energy of the
+  ! stage's first level, so the window is wider for ions.  An end that finds no level
+  ! is set to -1, which leaves the line in LTE, as does an end left at 0.
+  !-------------------------------------------------------------------------------
+  SUBROUTINE departure_assign_levels(self, ptc)
+    class(departure_pointer_t), intent(in) :: self
+    class(particle_type), intent(inout) :: ptc
+    real(8), parameter :: ts_dlam=0.02d0, ts_ev_factor=1.0005d0
+    real(8) :: ground_ev, e_lo, e_up
+    integer :: kiso, l, t, lo
+    !---------------------------------------------------------------------------
+    associate(atom => self%atom)
+    ground_ev = 0
+    lo = findloc(int(atom%ev/100), ptc%j, 1)
+    if (lo > 0) ground_ev = atom%level_ev(lo)
+    do kiso = 0, ubound(ptc%ll, 1)
+      associate(sll => ptc%ll(kiso))
+      do l = 1, sll%nline
+        if (sll%lev_i(l) > 0) call check_level(sll%lev_i(l))
+        if (sll%lev_j(l) > 0) call check_level(sll%lev_j(l))
+        if (.not. match_nlte_levels) cycle
+        e_lo = ground_ev + sll%lower_ev(l)
+        e_up = e_lo + H_E*sll%nu0(l)
+        if (sll%lev_i(l) == 0 .and. sll%lev_j(l) == 0) then
+          do t = 1, size(atom%line_lo)
+            lo = atom%line_lo(t)
+            if (int(atom%ev(lo)/100) /= ptc%j) cycle
+            if (abs(atom%line_lam(t) - exp(sll%llam0(l))) < ts_dlam .and. &
+                within(atom%level_ev(lo), e_lo)) then
+              sll%lev_i(l) = lo
+              sll%lev_j(l) = atom%line_up(t)
+              exit
+            end if
+          end do
+        end if
+        if (sll%lev_i(l) == 0) sll%lev_i(l) = nearest_within(e_lo)
+        if (sll%lev_j(l) == 0) sll%lev_j(l) = nearest_within(e_up)
+      end do
+      end associate
+    end do
+    end associate
+  CONTAINS
+    SUBROUTINE check_level(lev)
+      integer, intent(in) :: lev
+      if (lev > size(self%atom%ev)) &
+        error stop 'assign_levels: a line-list level index exceeds the atom''s levels'
+      if (int(self%atom%ev(lev)/100) /= ptc%j) &
+        error stop 'assign_levels: a line-list level index names a level of another stage'
+    END SUBROUTINE check_level
+
+    ! TS's acceptance window: e lies within the factor ts_ev_factor of level_ev
+    LOGICAL FUNCTION within(level_ev, e)
+      real(8), intent(in) :: level_ev, e
+      within = level_ev*ts_ev_factor >= e .and. e >= level_ev/ts_ev_factor
+    END FUNCTION within
+
+    INTEGER FUNCTION nearest_within(e) RESULT(lev)
+      real(8), intent(in) :: e
+      integer :: k
+      lev = -1
+      do k = 1, size(self%atom%ev)
+        if (int(self%atom%ev(k)/100) /= ptc%j) cycle
+        if (.not. within(self%atom%level_ev(k), e)) cycle
+        if (lev < 0) then
+          lev = k
+        else if (abs(self%atom%level_ev(k) - e) <= abs(self%atom%level_ev(lev) - e)) then
+          lev = k
+        end if
+      end do
+    END FUNCTION nearest_within
+  END SUBROUTINE departure_assign_levels
 
   !===============================================================================
   SUBROUTINE injon(self, absdat_file, abund_file, FeH, &
@@ -1296,7 +1506,8 @@ contains
     !     -- principal quantum numbers i,j are read directly from the file.
     !   hlinedata=.false. (H I block embedded in a metal file):
     !       lam_air, lower_ev, loggf, gvdw, grad, gstk, i, j
-    !     -- i,j are derived from the level energies.
+    !     -- i,j are the principal quantum numbers when both are given, else derived
+    !        from the level energies with the ionisation energy of hydrogen.
     ! The broadening columns are inert: hydrogen_line supplies the widths.
     subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &
                            intervals_arg, use_intervals_arg)
@@ -1342,9 +1553,14 @@ contains
         endif
         nu0 = HZ_TO_AA / lam0v
         if (.not. hlinedata) then
-          upper_ev = lower_ev_h + H_E*nu0
-          i_h = nint(sqrt(RydV / (RydV-lower_ev_h)))
-          j_h = nint(sqrt(RydV / (RydV-upper_ev)))
+          if (r_i > 0 .and. r_j > 0) then
+            i_h = nint(r_i)
+            j_h = nint(r_j)
+          else
+            upper_ev = lower_ev_h + H_E*nu0
+            i_h = nint(sqrt(RYD / (RYD-lower_ev_h)))
+            j_h = nint(sqrt(RYD / (RYD-upper_ev)))
+          endif
         endif
         call append_h_line(particle%ll(0), log(lam0v), nu0, lower_ev_h, loggf_h, &
                            gv_h, ga_h, gq_h, i_h, j_h)
@@ -1484,8 +1700,9 @@ contains
     end where
 
     ! --- hydrogen: Stark profiles (add_h_opacities) on the H I line list ---
-    ! n_lo/n_up select the profile; in NLTE lev_i/lev_j are the matching departure-set
-    ! levels, whose coefficients scale the LTE populations of levels n_lo/n_up.
+    ! n_lo/n_up select the profile; in NLTE lev_i/lev_j are the departure-set levels
+    ! (departure_assign_h_levels), whose coefficients scale the LTE populations of
+    ! levels n_lo/n_up.
     element => self%elements(1)
     ion => element%ions(1)
     call get_departure_coefficients(ion, dep)
@@ -1499,6 +1716,7 @@ contains
         inv_df = element%inverse_doppler_factor(temp, self%vmic(lo:hi,:,:))
       endif
 
+      if (associated(dep)) call dep%assign_h_levels(hll)
       do l=1, hll%nline
         if (.not. hll%active(l)) cycle
         lam0 = exp(hll%llam0(l))
@@ -1512,10 +1730,6 @@ contains
         nu0 = HZ_TO_AA / lam0
         n_lo = hll%n_lo(l)
         n_up = hll%n_up(l)
-        if (associated(dep)) then
-          hll%lev_i(l) = find_closest(dep%ev, 100*ion%j + dble(hll%lower_ev(l)))
-          hll%lev_j(l) = find_closest(dep%ev, 100*ion%j + dble(hll%lower_ev(l)) + H_E*nu0)
-        endif
         ni = ion%levels(n_lo)%n(lo:hi,:,:)
         nj = ion%levels(n_up)%n(lo:hi,:,:)
         call self%set_population(ion%id, set_index, set_n, set_scale)
@@ -1631,7 +1845,6 @@ contains
     ! --------------------------------------------------------------------------
     subroutine particle_add_opacities_soa(ptc)
       class(particle_type), target :: ptc
-      real(8) :: no_ev(1)              ! placeholder dep_ev; unused in the LTE call
       !-------------------------------------------------------------------------
       if (.not. ptc%in_linelist) return
       if (.not. allocated(ptc%n)) error stop 'particle density not allocated'
@@ -1642,25 +1855,26 @@ contains
 
       ! the per-isotope population base / Doppler width construction and the kernel
       ! dispatch now live in linelist_mod (add_particle_opacity); we own only the patch
-      ! work arrays and the departure lookup, and hand the resolved dep arrays in.
+      ! work arrays, the departure lookup and the level assignment, and hand dep%mem in.
       call self%set_population(ptc%id, set_index, set_n, set_scale)
       if (associated(dep)) then
         ! NLTE species: departure-coefficient source, no scattering split
+        call dep%assign_levels(ptc)
         call add_particle_opacity(ptc, temp, vmic_c, llam, chi_l, eta_l, &
-          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%ev, dep%mem, &
+          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dep%mem, &
           .true., sp%equidistant, i0=lo, i1=hi, &
           population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       elseif (present(one_m_eps) .and. present(chi_scat)) then
         ! LTE species with the stage-appropriate scattering fraction
         ! (molecules keep the default j=1 -> neutral p-function)
         call add_particle_opacity(ptc, temp, vmic_c, llam, chi_l, eta_l, &
-          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
+          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dummy_dep, &
           .false., sp%equidistant, &
           one_m_eps=one_m_eps(:,:,:,:, merge(1, 2, ptc%j <= 1)), chi_scat=chi_scat, &
           i0=lo, i1=hi, population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       else
         call add_particle_opacity(ptc, temp, vmic_c, llam, chi_l, eta_l, &
-          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, no_ev, dummy_dep, &
+          all_chi, logref, vpr, e_kT, ne, tothi, stark_pe, dummy_dep, &
           .false., sp%equidistant, i0=lo, i1=hi, &
           population=set_n, population_scale=set_scale, llam_lines=llam_lines)
       endif

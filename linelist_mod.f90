@@ -29,7 +29,7 @@ MODULE linelist_mod
   USE const_mod
   USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: air2vac, vac2air
-  USE op_math_mod, only: find_closest, interval_t
+  USE op_math_mod, only: interval_t
   USE bbtrans_mod, only: f_conv, tol => tolerance, line_reject_frac, &
                          prepare_radiative, prepare_stark, prepare_vanderwaals
   USE line_types_mod, only: linelist_type
@@ -952,8 +952,9 @@ contains
   ! that turns a particle's thermodynamic state into the kernel's population base and
   ! Doppler width, then dispatches to add_opacity[_equi]. This is what lets linelist_mod
   ! consume ion_mod's particle_type directly. The caller (composition_mod) still owns the
-  ! patch thermodynamic arrays and the departure-coefficient lookup, and passes the
-  ! resolved dep_ev/dep_mem in (a size-1 zero dep_mem and do_nlte=.false. in the LTE case).
+  ! patch thermodynamic arrays, the departure-coefficient lookup and the lines' level
+  ! indices (departure_assign_levels), and passes the resolved dep_mem in (a size-1 zero
+  ! dep_mem and do_nlte=.false. in the LTE case).
   !
   !   ptc          : the ion or molecule (polymorphic); its ll(0:niso) are the per-isotope
   !                  SoA line lists (index 0 = main isotope)
@@ -962,11 +963,10 @@ contains
   !   chi, eta     : (nf,m1,m2,m3) accumulated line opacity/emissivity
   !   cont, logref : (nf,m1,m2,m3) continuum + log-space tolerance reference
   !   llam         : (nf) log(lambda) grid
-  !   dep_ev       : level energies of the departure set (used only when do_nlte)
   !   dep_mem      : (m1,m2,m3,nlevel) departure coefficients (dummy (.,.,.,1) when LTE)
   !-------------------------------------------------------------------------------------
   SUBROUTINE add_particle_opacity(ptc, temp, vmic, llam, chi, eta, cont, logref, &
-                                  vproj, e_kT, ne, tothi, stark_pe, dep_ev, dep_mem, &
+                                  vproj, e_kT, ne, tothi, stark_pe, dep_mem, &
                                   do_nlte, equidistant, one_m_eps, chi_scat, i0, i1, &
                                   population, population_scale, llam_lines)
     class(particle_type), intent(inout) :: ptc
@@ -974,7 +974,6 @@ contains
     real(dp), dimension(:),       intent(in)    :: llam
     real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
     real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
-    real(8),  dimension(:),       intent(in)    :: dep_ev
     real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
     logical,  intent(in) :: do_nlte, equidistant
     ! line_scattering: stage-appropriate scattering fraction (already the slice
@@ -1035,25 +1034,6 @@ contains
         lnbase(:,:,:,1) = lnbase(:,:,:,1) - ptc%part(lo:hi,:,:) + log(idf3) &
                         + real(log(iso_frac), 4)
 
-        ! A level index from the line list (or from an earlier energy match) is kept and
-        ! must name a level of the line's own stage; an end without one (0) takes the
-        ! level nearest in energy.
-        if (do_nlte) then
-          do l = 1, ll_n
-            if (sll%lev_i(l) > 0) then
-              call check_level(sll%lev_i(l))
-            else
-              sll%lev_i(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8))
-            end if
-            if (sll%lev_j(l) > 0) then
-              call check_level(sll%lev_j(l))
-            else
-              sll%lev_j(l) = find_closest(dep_ev, 100*ptc%j + real(sll%lower_ev(l), 8) &
-                                                  + H_E*sll%nu0(l))
-            end if
-          end do
-        end if
-
         ! arithmetic kernel on a uniform log(lambda) grid, else the general march
         if (equidistant) then
           if (do_scat) then
@@ -1078,14 +1058,6 @@ contains
         end if
       end associate
     end do
-  CONTAINS
-    SUBROUTINE check_level(lev)
-      integer, intent(in) :: lev
-      if (lev > size(dep_ev)) &
-        error stop 'add_particle_opacity: a line-list level index exceeds the atom''s levels'
-      if (int(dep_ev(lev)/100) /= ptc%j) &
-        error stop 'add_particle_opacity: a line-list level index names a level of another stage'
-    END SUBROUTINE check_level
   END SUBROUTINE add_particle_opacity
 
   !=====================================================================================
