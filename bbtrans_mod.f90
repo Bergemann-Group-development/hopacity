@@ -15,12 +15,6 @@ MODULE bbtrans_mod
     ! transition from the lower to the upper
     ! level
     logical :: active=.true., unsold
-    ! Added to deal with multi component lines
-    ! IO > 1 leads to the following being read from the atom file
-    integer :: io = 0 ! number of components in term (lifted from Multi 2.3)
-    real(8), dimension(:), allocatable :: dq
-    real(8), dimension(:), allocatable :: wt
-    real(8), dimension(:), allocatable :: da
     integer :: i=0 ! lower level
     integer :: j=0 ! upper level
   contains
