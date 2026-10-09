@@ -575,13 +575,17 @@ END SUBROUTINE union_grid
 
 !===============================================================================
 !> Write atom in the table format.  Indices are 0-based, as pandas writes them;
-!> source names the converted file in the header comment.
+!> source names the converted file in the header comment.  Each column has the
+!> precision tumult.atom.Atom.write gives it, so a converted atom and one written
+!> from Python agree; the run that converts a MULTI atom uses the rounded values.
 !===============================================================================
 SUBROUTINE write_pandas_atom (atom, out_file, source)
   type(classic_atom_t), intent(in) :: atom
   character(len=*), intent(in) :: out_file, source
   integer :: u, i, k
-  character(len=*), parameter :: r = '(1x,es24.16e3)'
+  character(len=*), parameter :: ev = '1x,f11.6', g = '1x,f7.1', lam = '1x,f14.3', &
+    loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,g16.8', gstk = '1x,g11.3', &
+    q = '1x,g13.6', alpha = '1x,es10.3', col = '1x,es11.4'
   !-----------------------------------------------------------------------------
   open(newunit=u, file=out_file, form='formatted', status='replace', action='write')
   write(u, '(a)') '* converted from the MULTI-format atom '//trim(source)
@@ -589,19 +593,20 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
     write(u, '(a)') trim(atom%header(i))
   end do
   write(u, '(a)') trim(atom%id)
-  write(u, '(2'//r//')') atom%abnd, atom%awgt
+  write(u, '(f5.2,1x,f0.3)') atom%abnd, atom%awgt
   write(u, '(i0,3(1x,i0))') atom%nlevel, atom%nline, atom%nbf, atom%ncol
 
   write(u, '(a)') '  ev g ion label'
   do i=1, atom%nlevel
-    write(u, '(i0,2'//r//',1x,i0,3a)') i-1, atom%ev(i), atom%g(i), atom%ion(i), &
+    write(u, '(i0,'//ev//','//g//',1x,i0,3a)') i-1, atom%ev(i), atom%g(i), atom%ion(i), &
       " '", trim(atom%label(i)), "'"
   end do
 
   if (atom%nline > 0) then
     write(u, '(a)') '  i j lam_air evi loggf grad gvdw gstk nq qmax q0 profile iso'
     do i=1, atom%nline
-      write(u, '(i0,2(1x,i0),6'//r//',1x,i0,2'//r//',1x,a,a)') i-1, atom%li(i)-1, &
+      write(u, '(i0,2(1x,i0),'//lam//','//ev//','//loggf//','//grad//','//gvdw//','// &
+        gstk//',1x,i0,2('//q//'),1x,a,a)') i-1, atom%li(i)-1, &
         atom%lj(i)-1, vac2air(atom%lam_vac(i)), atom%ev(atom%li(i)), atom%loggf(i), &
         atom%grad(i), atom%gvdw(i), atom%gstk(i), atom%nq(i), atom%qmax(i), atom%q0(i), &
         trim(atom%profile(i)), ' 0'
@@ -614,21 +619,21 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
     if (atom%excited_bf) then
       write(u, '(a)') ' i lam_air alpha j'
       do i=1, atom%nbf
-        write(u, '(i0,2'//r//',1x,i0)') atom%bf_i(i)-1, atom%bf_lam(i), &
+        write(u, '(i0,'//lam//','//alpha//',1x,i0)') atom%bf_i(i)-1, atom%bf_lam(i), &
           atom%bf_alpha(i), atom%bf_j(i)-1
       end do
     else
       write(u, '(a)') ' i lam_air alpha'
       do i=1, atom%nbf
-        write(u, '(i0,2'//r//')') atom%bf_i(i)-1, atom%bf_lam(i), atom%bf_alpha(i)
+        write(u, '(i0,'//lam//','//alpha//')') atom%bf_i(i)-1, atom%bf_lam(i), atom%bf_alpha(i)
       end do
     endif
   endif
 
   if (atom%ncol > 0) then
-    write(u, '(a,*'//r//')') '  key i j', atom%temp
+    write(u, '(a,*('//col//'))') '  key i j', atom%temp
     do i=1, atom%ncol
-      write(u, '(i0,1x,a,2(1x,i0),*'//r//')') i-1, trim(atom%col_key(i)), &
+      write(u, '(i0,1x,a,2(1x,i0),*('//col//'))') i-1, trim(atom%col_key(i)), &
         atom%col_l(i)-1, atom%col_u(i)-1, (atom%col_val(k,i), k=1, size(atom%temp))
     end do
   endif
