@@ -545,10 +545,10 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   integer :: u, i, k, wl, wk
   ! field widths without the separating blank
   integer, parameter :: w_awgt=8, w_n=6, w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, &
-    w_grad=10, w_gvdw=16, w_gstk=11, w_nq=4, w_q=6, w_alpha=10, w_col=11
+    w_grad=10, w_gvdw=14, w_gstk=9, w_nq=4, w_q=6, w_alpha=10, w_col=11
   character(len=*), parameter :: awgt = '1x,f8.3', ev = '1x,f11.6', g = '1x,i4', ion = '1x,i3', &
-    lam = '1x,f14.3', loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,g16.8', &
-    gstk = '1x,g11.3', nq = '1x,i4', q = '1x,f6.1', alpha = '1x,es10.3', col = '1x,es11.4'
+    lam = '1x,f14.3', loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,a14', &
+    gstk = '1x,a9', nq = '1x,i4', q = '1x,f6.1', alpha = '1x,es10.3', col = '1x,es11.4'
   character(len=8) :: idx, lvl, lvl0, key
   !-----------------------------------------------------------------------------
   open(newunit=u, file=out_file, form='formatted', status='replace', action='write')
@@ -577,13 +577,14 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
     call set_index(atom%nline)
     write(u, '(a)') repeat(' ', ndigits(atom%nline-1))//title('i', wl)//title('j', wl)// &
       title('lam_air', w_lam)//title('evi', w_ev)//title('loggf', w_loggf)// &
-      title('grad', w_grad)//title('gvdw', w_gvdw, 4)//title('gstk', w_gstk, 4)// &
+      title('grad', w_grad)//title('gvdw', w_gvdw)//title('gstk', w_gstk)// &
       title('nq', w_nq)//title('qmax', w_q)//title('q0', w_q)//' iso'
     do i=1, atom%nline
       write(u, '('//trim(idx)//',2('//trim(lvl)//'),'//lam//','//ev//','//loggf//','// &
         grad//','//gvdw//','//gstk//','//nq//',2('//q//'),a)') i-1, &
         atom%li(i)-1, atom%lj(i)-1, vac2air(atom%lam_vac(i)), atom%ev(atom%li(i)), &
-        atom%loggf(i), atom%grad(i), atom%gvdw(i), atom%gstk(i), atom%nq(i), &
+        atom%loggf(i), atom%grad(i), g_format(atom%gvdw(i), 8, w_gvdw), &
+        g_format(atom%gstk(i), 3, w_gstk), atom%nq(i), &
         atom%qmax(i), atom%q0(i), '   0'
     end do
   endif
@@ -627,18 +628,56 @@ CONTAINS
     integer, intent(in) :: n
     write(idx, '(a,i0)') 'i', ndigits(n-1)
   END SUBROUTINE set_index
-  ! name right-aligned over a field of width w after its separating blank; a G edit
-  ! leaves trail blanks after a fixed-point value
-  FUNCTION title (name, w, trail) result (s)
+  ! name right-aligned over a field of width w after its separating blank
+  FUNCTION title (name, w) result (s)
     character(len=*), intent(in) :: name
     integer, intent(in) :: w
-    integer, intent(in), optional :: trail
     character(len=w+1) :: s
-    integer :: t
-    t = 0
-    if (present(trail)) t = trail
-    s = repeat(' ', w+1-t-len(name))//name
+    s = repeat(' ', w+1-len(name))//name
   END FUNCTION title
+  ! x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
+  ! characters: positional for a decimal exponent -4 <= e < p, scientific otherwise,
+  ! without trailing zeros.  The exponent is taken after rounding to p digits.
+  FUNCTION g_format (x, p, w) result (s)
+    real(8), intent(in) :: x
+    integer, intent(in) :: p, w
+    character(len=w) :: s
+    character(len=40) :: es, fmt, t
+    integer :: e, k
+    if (x == 0) then
+      s = '0'
+    else
+      write(fmt, '(a,i0,a)') '(es40.', p-1, 'e3)'
+      write(es, fmt) x
+      es = adjustl(es)
+      k = index(es, 'E')
+      read(es(k+1:), *) e
+      if (e >= -4 .and. e < p) then
+        write(fmt, '(a,i0,a)') '(f40.', p-1-e, ')'
+        write(t, fmt) x
+        t = strip_zeros(adjustl(t))
+      else
+        write(t, '(2a,sp,i0.2)') trim(strip_zeros(es(1:k-1))), 'e', e
+      end if
+      s = t
+    end if
+    s = adjustr(s)
+  END FUNCTION g_format
+  ! a decimal number without the trailing zeros of its fraction, and without the point
+  ! when nothing is left after it
+  FUNCTION strip_zeros (t) result (u)
+    character(len=*), intent(in) :: t
+    character(len=len(t)) :: u
+    integer :: n
+    u = t
+    if (index(u, '.') == 0) return
+    n = len_trim(u)
+    do while (u(n:n) == '0')
+      u(n:n) = ' '
+      n = n-1
+    end do
+    if (u(n:n) == '.') u(n:n) = ' '
+  END FUNCTION strip_zeros
   INTEGER FUNCTION ndigits (n)
     integer, intent(in) :: n
     integer :: m
