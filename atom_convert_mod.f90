@@ -39,7 +39,6 @@ MODULE atom_convert_mod
 
   type, public :: classic_atom_t
     character(len=20) :: id = ''
-    character(len=512), allocatable :: header(:)   ! comment lines ahead of the levels
     real(8) :: abnd = 0, awgt = 0
     integer :: nlevel = 0, nline = 0, nbf = 0, ncol = 0
     real(8), allocatable :: ev(:), g(:)               ! [eV]
@@ -48,7 +47,6 @@ MODULE atom_convert_mod
     ! bound-bound records as written, components already split
     integer, allocatable :: li(:), lj(:), nq(:), parent(:)
     real(8), allocatable :: lam_vac(:), loggf(:), grad(:), gvdw(:), gstk(:), qmax(:), q0(:)
-    character(len=72), allocatable :: profile(:)
     ! bound-free nodes, each continuum from its threshold to shorter wavelengths
     integer, allocatable :: bf_i(:), bf_j(:)
     real(8), allocatable :: bf_lam(:), bf_alpha(:)  ! [AA], [cm^2]
@@ -63,7 +61,6 @@ MODULE atom_convert_mod
   type :: line_rec_t
     integer :: i, j, nq, io
     real(8) :: f, qmax, q0, grad, gvdw, gstk
-    character(len=72) :: profile
     real(8), allocatable :: dq(:), wt(:), da(:)
   end type line_rec_t
 
@@ -104,7 +101,6 @@ SUBROUTINE read_classic_atom (atom_file, atom)
   endif
   open(newunit=latom, file=atom_file, form='formatted', status='old', action='read')
   abort = .false.
-  call read_header_comments(latom, atom)
 
   call NextEntry(latom)
   read(latom, fmt='(a)') atom%id
@@ -149,43 +145,6 @@ SUBROUTINE read_classic_atom (atom_file, atom)
 END SUBROUTINE read_classic_atom
 
 !===============================================================================
-!> The comment lines ahead of the first level record: the atom's provenance notes
-!> and MULTI's column headings, which the conversion keeps.  Rewinds the file.
-!===============================================================================
-SUBROUTINE read_header_comments (latom, atom)
-  integer, intent(in) :: latom
-  type(classic_atom_t), intent(inout) :: atom
-  character(len=512) :: line
-  character(len=512), allocatable :: tmp(:)
-  integer :: ios, entries, n, k
-  !-----------------------------------------------------------------------------
-  allocate(atom%header(16))
-  n = 0
-  entries = 0
-  do while (entries < 4)
-    read(latom, '(a)', iostat=ios) line
-    if (ios /= 0) exit
-    if (len_trim(line) == 0) cycle
-    k = verify(line, ' ')
-    if (line(k:k) /= '*') then
-      entries = entries + 1
-      cycle
-    endif
-    if (n == size(atom%header)) then
-      allocate(tmp(2*n))
-      tmp(1:n) = atom%header
-      call move_alloc(tmp, atom%header)
-    endif
-    n = n + 1
-    atom%header(n) = line
-  end do
-  allocate(tmp(n))
-  tmp = atom%header(1:n)
-  call move_alloc(tmp, atom%header)
-  rewind(latom)
-END SUBROUTINE read_header_comments
-
-!===============================================================================
 !> The bound-bound records and their components.
 !===============================================================================
 SUBROUTINE read_lines (latom, atom, lines, abort)
@@ -201,8 +160,10 @@ SUBROUTINE read_lines (latom, atom, lines, abort)
   do i=1, size(lines)
     associate (lin => lines(i))
       call NextEntry(latom)
+      ! the closing PROFILE word is not read: every line has a Voigt profile, and a
+      ! hydrogen atom takes the Stark profiles
       read(latom, *, iostat=ios) jj, ii, lin%f, lin%nq, lin%qmax, lin%q0, lin%io, &
-        lin%grad, lin%gvdw, lin%gstk, lin%profile
+        lin%grad, lin%gvdw, lin%gstk
       call print_failed_line(latom, ios)
       lin%i = min(ii, jj)
       lin%j = max(ii, jj)
@@ -241,7 +202,7 @@ SUBROUTINE split_components (atom, lines, abort)
   atom%nline = n
   allocate(atom%li(n), atom%lj(n), atom%nq(n), atom%parent(n), atom%lam_vac(n), &
            atom%loggf(n), atom%grad(n), atom%gvdw(n), atom%gstk(n), atom%qmax(n), &
-           atom%q0(n), atom%profile(n))
+           atom%q0(n))
 
   nextra = size(lines)
   do i=1, size(lines)
@@ -285,7 +246,6 @@ CONTAINS
     atom%nq(l)      = lines(m)%nq
     atom%qmax(l)    = lines(m)%qmax
     atom%q0(l)      = lines(m)%q0
-    atom%profile(l) = lines(m)%profile
   END SUBROUTINE set_line
 END SUBROUTINE split_components
 
@@ -582,23 +542,23 @@ END SUBROUTINE union_grid
 SUBROUTINE write_pandas_atom (atom, out_file, source)
   type(classic_atom_t), intent(in) :: atom
   character(len=*), intent(in) :: out_file, source
-  integer :: u, i, k, wl, wp, wk
+  integer :: u, i, k, wl, wk
   ! field widths without the separating blank
-  integer, parameter :: w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, w_grad=10, &
-    w_gvdw=16, w_gstk=11, w_nq=4, w_q=13, w_alpha=10, w_col=11
-  character(len=*), parameter :: ev = '1x,f11.6', g = '1x,i4', ion = '1x,i3', &
+  integer, parameter :: w_awgt=8, w_n=6, w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, &
+    w_grad=10, w_gvdw=16, w_gstk=11, w_nq=4, w_q=6, w_alpha=10, w_col=11
+  character(len=*), parameter :: awgt = '1x,f8.3', ev = '1x,f11.6', g = '1x,i4', ion = '1x,i3', &
     lam = '1x,f14.3', loggf = '1x,f8.3', grad = '1x,es10.3', gvdw = '1x,g16.8', &
-    gstk = '1x,g11.3', nq = '1x,i4', q = '1x,g13.6', alpha = '1x,es10.3', col = '1x,es11.4'
-  character(len=8) :: idx, lvl, lvl0, prof, key
+    gstk = '1x,g11.3', nq = '1x,i4', q = '1x,f6.1', alpha = '1x,es10.3', col = '1x,es11.4'
+  character(len=8) :: idx, lvl, lvl0, key
   !-----------------------------------------------------------------------------
   open(newunit=u, file=out_file, form='formatted', status='replace', action='write')
+  ! the MULTI comments are not copied: they describe the MULTI layout and units
   write(u, '(a)') '* converted from the MULTI-format atom '//trim(source)
-  do i=1, size(atom%header)
-    write(u, '(a)') trim(atom%header(i))
-  end do
   write(u, '(a)') trim(atom%id)
-  write(u, '(f5.2,1x,f0.3)') atom%abnd, atom%awgt
-  write(u, '(i0,3(1x,i0))') atom%nlevel, atom%nline, atom%nbf, atom%ncol
+  write(u, '(a)') title('abnd', 5)//title('awgt', w_awgt)
+  write(u, '(f6.2,'//awgt//')') atom%abnd, atom%awgt
+  write(u, '(a)') title('nlevel', 5)//title('nline', w_n)//title('nbf', w_n)//title('ncol', w_n)
+  write(u, '(i6,3(1x,i6))') atom%nlevel, atom%nline, atom%nbf, atom%ncol
 
   ! the level indices i and j share one width; idx is the table's own index
   wl = ndigits(atom%nlevel-1)
@@ -614,20 +574,17 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   end do
 
   if (atom%nline > 0) then
-    wp = max(len('profile'), maxval(len_trim(atom%profile)))
-    write(prof, '(a,i0)') '1x,a', wp
     call set_index(atom%nline)
     write(u, '(a)') repeat(' ', ndigits(atom%nline-1))//title('i', wl)//title('j', wl)// &
       title('lam_air', w_lam)//title('evi', w_ev)//title('loggf', w_loggf)// &
       title('grad', w_grad)//title('gvdw', w_gvdw, 4)//title('gstk', w_gstk, 4)// &
-      title('nq', w_nq)//title('qmax', w_q, 4)//title('q0', w_q, 4)//title('profile', wp)// &
-      ' iso'
+      title('nq', w_nq)//title('qmax', w_q)//title('q0', w_q)//' iso'
     do i=1, atom%nline
       write(u, '('//trim(idx)//',2('//trim(lvl)//'),'//lam//','//ev//','//loggf//','// &
-        grad//','//gvdw//','//gstk//','//nq//',2('//q//'),'//trim(prof)//',a)') i-1, &
+        grad//','//gvdw//','//gstk//','//nq//',2('//q//'),a)') i-1, &
         atom%li(i)-1, atom%lj(i)-1, vac2air(atom%lam_vac(i)), atom%ev(atom%li(i)), &
         atom%loggf(i), atom%grad(i), atom%gvdw(i), atom%gstk(i), atom%nq(i), &
-        atom%qmax(i), atom%q0(i), adjustr(atom%profile(i)(1:wp)), '   0'
+        atom%qmax(i), atom%q0(i), '   0'
     end do
   endif
 

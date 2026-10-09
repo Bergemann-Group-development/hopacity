@@ -36,10 +36,6 @@ MODULE trans_mod
 
   type, extends(transition_type) :: line_type
 
-    character(len=72) :: profile_type ! what kind of profile to use,
-    ! for now only 'voigt' or
-    ! 'hlinop' for hydrogen
-
     logical :: hydrogen
     real(4), dimension(:), pointer, contiguous :: q => null()  ! frequencies [Doppler units]
     real(8), dimension(:), pointer, contiguous :: wq => null() ! frequency quadrature weight [Doppler units]

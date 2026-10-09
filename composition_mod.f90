@@ -260,7 +260,11 @@ contains
       call NextEntry(lunit)
       read(lunit, *)                     ! id
       call NextEntry(lunit)
+      read(lunit, *)                     ! abnd awgt titles
+      call NextEntry(lunit)
       read(lunit, *)                     ! abundance, atomic weight
+      call NextEntry(lunit)
+      read(lunit, *)                     ! nlevel nline nbf ncol titles
       call NextEntry(lunit)
       read(lunit, *) nlevel, nline
       call NextEntry(lunit)
