@@ -608,13 +608,13 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
     endif
   endif
 
-  ! the temperatures are the titles of the rate columns
+  ! the temperatures [K] are the titles of the rate columns, to six significant digits
   if (atom%ncol > 0) then
     wk = max(len('key'), maxval(len_trim(atom%col_key)))
     write(key, '(a,i0)') '1x,a', wk
     call set_index(atom%ncol)
-    write(u, '(a,*('//col//'))') repeat(' ', ndigits(atom%ncol-1))//title('key', wk)// &
-      title('i', wl)//title('j', wl), atom%temp
+    write(u, '(a,*(1x,a))') repeat(' ', ndigits(atom%ncol-1))//title('key', wk)// &
+      title('i', wl)//title('j', wl), (g_format(atom%temp(k), 6, w_col), k=1, size(atom%temp))
     do i=1, atom%ncol
       write(u, '('//trim(idx)//','//trim(key)//',2('//trim(lvl)//'),*('//col//'))') i-1, &
         adjustr(atom%col_key(i)(1:wk)), atom%col_l(i)-1, atom%col_u(i)-1, &
