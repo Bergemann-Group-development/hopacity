@@ -251,6 +251,8 @@ contains
     integer, save :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin('optab_mod%sample_interpolate', itimer=itimer)
+    ! the wavelength bracket below needs two nodes; one would be read out of bounds
+    if (self%nnu < 2) error stop 'sample_interpolate: a sampled opacity table needs at least two wavelengths'
     nx = size(chi500,1); ny = size(chi500,2); nz = size(chi500,3)
     rd1   = 1.d0 / self%pca%dc(1)
     rd2   = 1.d0 / self%pca%dc(2)
@@ -366,6 +368,8 @@ contains
     integer, save :: itimer=0
     !---------------------------------------------------------------------------
     call trace%begin('optab_mod%sample_interpolate_ll', itimer=itimer)
+    ! the wavelength bracket below needs two nodes; one would be read out of bounds
+    if (self%nnu < 2) error stop 'sample_interpolate_ll: a sampled opacity table needs at least two wavelengths'
     nx = size(chi500,1); ny = size(chi500,2); nz = size(chi500,3)
     do_scat = present(chi_scat) .and. allocated(self%scat)
     rd1   = 1.d0 / self%pca%dc(1)
