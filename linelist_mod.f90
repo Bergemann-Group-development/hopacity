@@ -1169,7 +1169,8 @@ contains
   !=====================================================================================
   ! Accumulate the used/strength/reach diagnostics of src into dst, two copies of the
   ! same linelist (a composition and one of its per-patch copies), so dst ends up with
-  ! the maximum over every copy merged into it.
+  ! the maximum over every copy merged into it, and take over the departure levels the
+  ! copies assigned.
   !-------------------------------------------------------------------------------------
   SUBROUTINE merge_ll_diag(dst, src)
     type(linelist_type), intent(inout) :: dst
@@ -1182,6 +1183,10 @@ contains
     dst%used(1:n)     = dst%used(1:n) .or. src%used(1:n)
     dst%strength(1:n) = max(dst%strength(1:n), src%strength(1:n))
     dst%reach(1:n)    = max(dst%reach(1:n), src%reach(1:n))
+    ! the departure levels are assigned on the patch copies (departure_assign_levels),
+    ! identically on each; 0 means a copy never assigned them
+    where (dst%lev_i(1:n) == 0) dst%lev_i(1:n) = src%lev_i(1:n)
+    where (dst%lev_j(1:n) == 0) dst%lev_j(1:n) = src%lev_j(1:n)
   END SUBROUTINE merge_ll_diag
 
   !=====================================================================================
