@@ -61,7 +61,8 @@ def parse_declarations(lines):
         m = DECL.match(line)
         if not m:
             continue
-        key = f"{m.group(1).lower()}({re.sub(r'\s+', '', m.group(2)).lower()})"
+        kind = re.sub(r"\s+", "", m.group(2)).lower()
+        key = f"{m.group(1).lower()}({kind})"
         if key not in C_TYPES:
             continue                      # a local variable of a non-interoperable kind
         attrs = {a.strip().lower() for a in m.group(3).strip(", ").split(",") if a.strip()}
@@ -77,7 +78,7 @@ def prototype(name, args, result, decls, c_name):
         try:
             ctype, attrs, is_array = decls[arg]
         except KeyError:
-            raise ValueError(f"{c_name}: no interoperable declaration for argument {arg}")
+            raise ValueError(f"{c_name}: no interoperable declaration for argument {arg}") from None
         if "value" in attrs:
             if is_array:
                 raise ValueError(f"{c_name}: {arg} is an array passed by value")
@@ -88,7 +89,7 @@ def prototype(name, args, result, decls, c_name):
     try:
         rtype, rattrs, rarray = decls[result]
     except KeyError:
-        raise ValueError(f"{c_name}: result {result} has no interoperable declaration")
+        raise ValueError(f"{c_name}: result {result} has no interoperable declaration") from None
     if rarray or rtype == "char":
         raise ValueError(f"{c_name}: result {result} is not a C scalar")
     return f"{rtype} {c_name} ({', '.join(parts)});"
