@@ -2523,7 +2523,7 @@ contains
     !---------------------------------------------------------------------------
     call trace%begin ('composition_type%compute_occupation_weights', itimer=itimer)
     call self%ion_by_id('H I', HI)
-    if (.not. allocated(HI%levels)) allocate(HI%levels(HI%nk))
+    call size_H_levels(HI)
     call self%compute_shield()
 
     part = 0.
@@ -2559,6 +2559,40 @@ contains
   END SUBROUTINE Hoccupation_partition
 
   !===============================================================================
+  ! Give H I the HI%nk hydrogenic levels n=1..HI%nk that Hoccupation_partition
+  ! fills.  A legacy-format absdat gives H I its partition-function terms as
+  ! levels instead (four in input/absdat), and a line list with higher upper
+  ! levels raises HI%nk after the levels exist, so any other count is replaced.
+  !-------------------------------------------------------------------------------
+  SUBROUTINE size_H_levels(HI)
+    class(ion_type), pointer :: HI
+    !---------------------------------------------------------------------------
+    if (allocated(HI%levels)) then
+      if (size(HI%levels) == HI%nk) return
+      call release_H_levels(HI)
+    endif
+    allocate(HI%levels(HI%nk))
+  END SUBROUTINE size_H_levels
+
+  !===============================================================================
+  ! Free the H I levels.  Their per-cell arrays (f and w of
+  ! Hoccupation_partition, n of init_H_levels) leave the memory registry with them.
+  !-------------------------------------------------------------------------------
+  SUBROUTINE release_H_levels(HI)
+    class(ion_type), pointer :: HI
+    class(level_type), pointer :: lvl
+    integer :: i
+    !---------------------------------------------------------------------------
+    do i=1, size(HI%levels)
+      lvl => HI%levels(i)
+      if (allocated(lvl%f)) call os%mem_register(storage_size(lvl%f), -size(lvl%f), 'lvl%f')
+      if (allocated(lvl%w)) call os%mem_register(storage_size(lvl%w), -size(lvl%w), 'lvl%w')
+      if (allocated(lvl%n)) call os%mem_register(storage_size(lvl%n), -size(lvl%n), 'lvl%n')
+    end do
+    deallocate(HI%levels)
+  END SUBROUTINE release_H_levels
+
+  !===============================================================================
   SUBROUTINE init_H_levels(self)
     class(composition_type), target :: self
     class(ion_type), pointer :: HI, HeI
@@ -2573,18 +2607,7 @@ contains
 
     call self%compute_shield()
 
-    !HI%nk = 15
-    ! the levels of Hoccupation_partition (f, w) are freed with HI%levels, so
-    ! they leave the memory registry here as well
-    if (allocated(HI%levels)) then
-      do i=1, size(HI%levels)
-        lvl => HI%levels(i)
-        if (allocated(lvl%f)) call os%mem_register(storage_size(lvl%f), -size(lvl%f), 'lvl%f')
-        if (allocated(lvl%w)) call os%mem_register(storage_size(lvl%w), -size(lvl%w), 'lvl%w')
-        if (allocated(lvl%n)) call os%mem_register(storage_size(lvl%n), -size(lvl%n), 'lvl%n')
-      end do
-      deallocate(HI%levels)
-    endif
+    if (allocated(HI%levels)) call release_H_levels(HI)
     allocate(HI%levels(HI%nk))
     allocate(part, mold=self%temp)
 
