@@ -87,6 +87,7 @@ MODULE hop_c_api
   ! it can size its buffers, and everything it then reads describes that same walk.
   real(8), allocatable, save :: ll_lam(:), ll_evi(:), ll_loggf(:), ll_strength(:)
   integer, allocatable, save :: ll_ispec(:)
+  character(len=:), allocatable, save :: absmet_loaded   ! the file osmet holds
   character(len=8), allocatable, save :: ll_species(:)
   integer, save :: ll_nspecies = 0
 
@@ -94,7 +95,7 @@ MODULE hop_c_api
   !> Kept adjacent to the select case below -- the two must agree, and
   !> tests/test_hop_abi.py checks that they do.
   character(len=*), parameter :: option_names = &
-    'abundances exclude_elements only_elements vcs_data_dir anstee_file ' // &
+    'abundances exclude_elements only_elements vcs_data_dir anstee_file absmet_file ' // &
     'ref_lam debug_opac tolerance line_reject_frac opac_table_vmic eosmet lam_tolerance ' // &
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
@@ -599,6 +600,22 @@ CONTAINS
       vcs_data_dir = val
     case ('anstee_file')
       anstee_file = val
+    case ('absmet_file')
+      ! The sampled metal-line table (dispatch's &opac_table_params absmet_file), read
+      ! at once.  osmet is process-wide and outlives hop_free, so later calls may
+      ! repeat the loaded file but cannot replace it.
+      if (osmet%initialised) then
+        if (val /= absmet_loaded) call fail("absmet_file: '" // absmet_loaded // &
+          "' is already loaded and cannot be replaced", 1, status)
+      else
+        inquire(file=val, exist=lv)
+        if (lv) then
+          call osmet%init(val)
+          allocate(absmet_loaded, source=val)
+        else
+          call fail("absmet_file: '" // val // "' not found", 1, status)
+        end if
+      end if
     ! --- reals --------------------------------------------------------------
     case ('ref_lam')
       call parse_real(val, rv, status); if (status == 0) ref_lam = rv
