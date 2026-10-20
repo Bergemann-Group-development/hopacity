@@ -6,7 +6,7 @@
 !> modules directly.  When compiled with -DHOP_STANDALONE (see
 !> HOP/standalone/Makefile) it instead provides minimal replacements covering
 !> exactly the surface HOP uses -- os%check_file, os%mem_register,
-!> trace%begin/end, io%run_dir, io%lock, io%namelist_warning, io%warning --
+!> trace%begin/end, io%run_dir, io%lock, io%warning --
 !> which makes HOP compilable as a standalone library with no framework
 !> dependencies.
 !===============================================================================
@@ -49,7 +49,6 @@ MODULE hop_env_mod
     character(len=512):: run_dir='./'
     type(lock_t):: lock
   contains
-    procedure:: namelist_warning
     procedure, nopass:: warning
   end type
 
@@ -109,26 +108,6 @@ CONTAINS
     !---------------------------------------------------------------------------
     call omp_unset_lock (self%lock)
   END SUBROUTINE lock_unset
-
-  !> Same contract as io_mod: silent on iostat 0, a missing group (iostat < 0) is
-  !> reported only when error is present, a malformed one always.
-  SUBROUTINE namelist_warning (self, namelist, iostat, error)
-    class(io_t):: self
-    character(len=*):: namelist
-    integer, optional:: iostat
-    logical, optional:: error
-    integer:: iostat_l
-    !---------------------------------------------------------------------------
-    iostat_l = 0
-    if (present(iostat)) iostat_l = iostat
-    if (iostat_l == 0) return
-    if (iostat_l < 0 .and. .not. present(error)) return
-    if (iostat_l < 0) then
-      call console_warn (ch_hop, 'namelist '//trim(namelist)//' missing')
-    else
-      call console_warn (ch_hop, 'problem reading namelist '//trim(namelist))
-    end if
-  END SUBROUTINE namelist_warning
 
   SUBROUTINE warning (text)
     character(len=*), optional:: text

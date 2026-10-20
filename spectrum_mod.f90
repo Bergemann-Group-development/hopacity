@@ -1,6 +1,8 @@
+#include "read_namelist.inc"
 !---------------------------------------------------------------------
 MODULE spectrum_mod 
     USE hop_env_mod, only: io, os
+    USE namelist_check_mod, only: namelist_error
     USE console_mod
     USE const_mod
     USE handyfuncs_mod, only: air2vac, remove_close_entries, sort_asc
@@ -255,13 +257,7 @@ MODULE spectrum_mod
       namelist /sp_wavelengths/ lam
       !-----------------------------------------------------------------------------
       grid_in_vac = .false.
-      rewind (io%input)
-      read (io%input, spectrum_params, iostat=iostat)
-      if (iostat > 0) then
-        rewind (io%input)
-        read (io%input, spectrum_params)
-      end if
-      call io%namelist_warning ('spectrum_params', iostat)
+      READ_NAMELIST(spectrum_params)
       write (io%namelist, spectrum_params)
 
       ! No explicit sampling grid (daa/nnu/R_sampling/lam_file/window_file). If a bare window is given, request
@@ -297,13 +293,7 @@ MODULE spectrum_mod
       endif
       if (give_lam .and. nnu>0) then
         allocate(lam(nnu))
-        rewind (io%input)
-        read (io%input, sp_wavelengths, iostat=iostat)
-        if (iostat > 0) then
-          rewind (io%input)
-          read (io%input, sp_wavelengths)
-        end if
-        call io%namelist_warning ('spectrum_params', iostat)
+        READ_NAMELIST(sp_wavelengths)
         write (io%namelist, sp_wavelengths)
       elseif (window_file /= '') then
         call build_segmented_grid(window_file, in_air, R_sampling, lam, nnu, self)

@@ -55,6 +55,7 @@ PROGRAM hop_prune
   USE const_mod, only: bk
   USE handyfuncs_mod, only: lowercase
   USE console_mod
+  USE namelist_check_mod, only: namelist_error
   implicit none
 
   ! --- &atmos_params, the read_external_mod list; only the named few are used ----
@@ -257,31 +258,44 @@ CONTAINS
 
   !-----------------------------------------------------------------------------
   !> Read one namelist group from the input; a missing optional group keeps the
-  !> defaults, a malformed one is an error.
+  !> defaults, a malformed one stops with a report of its unknown keys.
   !-----------------------------------------------------------------------------
   SUBROUTINE read_group(name, required)
     character(len=*), intent(in) :: name
     logical, intent(in), optional :: required
-    integer :: ios
+    integer :: ios, scratch
+    character(len=512) :: msg
     !---------------------------------------------------------------------------
     rewind(nml_unit)
     select case (name)
-    case ('console_params');      read(nml_unit, nml=console_params, iostat=ios)
-    case ('atmos_params');        read(nml_unit, nml=atmos_params, iostat=ios)
-    case ('composition_params');  call read_composition(ios)
-    case ('opac_table_params');   read(nml_unit, nml=opac_table_params, iostat=ios)
-    case ('linelist_params');     read(nml_unit, nml=linelist_params, iostat=ios)
-    case ('prune_params');        read(nml_unit, nml=prune_params, iostat=ios)
+    case ('console_params');      read(nml_unit, nml=console_params, iostat=ios, iomsg=msg)
+    case ('atmos_params');        read(nml_unit, nml=atmos_params, iostat=ios, iomsg=msg)
+    case ('composition_params');  call read_composition(ios, msg=msg)
+    case ('opac_table_params');   read(nml_unit, nml=opac_table_params, iostat=ios, iomsg=msg)
+    case ('linelist_params');     read(nml_unit, nml=linelist_params, iostat=ios, iomsg=msg)
+    case ('prune_params');        read(nml_unit, nml=prune_params, iostat=ios, iomsg=msg)
     end select
-    if (ios > 0) call die('cannot read &' // name // ' from ' // trim(nml_file))
+    if (ios > 0) then
+      open(newunit=scratch, status='scratch', form='formatted')
+      select case (name)
+      case ('console_params');      write(scratch, nml=console_params, delim='quote')
+      case ('atmos_params');        write(scratch, nml=atmos_params, delim='quote')
+      case ('composition_params');  call read_composition(echo_unit=scratch)
+      case ('opac_table_params');   write(scratch, nml=opac_table_params, delim='quote')
+      case ('linelist_params');     write(scratch, nml=linelist_params, delim='quote')
+      case ('prune_params');        write(scratch, nml=prune_params, delim='quote')
+      end select
+      call namelist_error(nml_unit, scratch, msg)
+    end if
     if (ios < 0 .and. present(required)) then
       if (required) call die('&' // name // ' is missing from ' // trim(nml_file))
     end if
   END SUBROUTINE read_group
 
-  SUBROUTINE read_composition(ios, echo_unit)
+  SUBROUTINE read_composition(ios, echo_unit, msg)
     integer, intent(out), optional :: ios
     integer, intent(in), optional :: echo_unit
+    character(len=*), intent(out), optional :: msg
     integer :: verbose
     namelist /composition_params/ verbose, absdat_file, abund_file, &
       isotope_file, molec_file, H_occupation_probability, mhd_eos, debye_shield, &
@@ -294,7 +308,7 @@ CONTAINS
       write(echo_unit, nml=composition_params)
       return
     end if
-    read(nml_unit, nml=composition_params, iostat=ios)
+    read(nml_unit, nml=composition_params, iostat=ios, iomsg=msg)
     comp_verbose = verbose
   END SUBROUTINE read_composition
 
