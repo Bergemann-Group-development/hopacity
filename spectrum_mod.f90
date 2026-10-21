@@ -43,40 +43,29 @@ MODULE spectrum_mod
     character(len=256) :: lam_file='', window_file=''
     ! window_file (A1/A2): Path to file with multi-window specification. One window per
     ! non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
-    ! Requires R_sampling > 0 for constant-R grid construction. Windows are validated, sorted,
-    ! merged (overlapping/touching), then each generates a constant-R segment. Segment
-    ! metadata is stored in spectrum_type%segment_* arrays (A2).
-    ! Mutually exclusive with lam_file and give_lam; incompatible with R_sampling=0.
+    ! Windows are validated, sorted and merged (overlapping/touching). With R_sampling > 0
+    ! each generates a constant-R segment, whose metadata is stored in the
+    ! spectrum_type%segment_* arrays (A2). Mutually exclusive with lam_file and give_lam.
     !
-    ! A bare aa_red/aa_blue (no daa/nnu/R_sampling/lam_file) requests the atom-native output grid
-    ! cropped to this vacuum window instead of a fresh uniform grid -- see init / crop.
+    ! Without an explicit sampling grid (no daa/nnu/R_sampling/lam_file), the window_file
+    ! windows or a bare aa_red/aa_blue crop the atom-native output grid instead of making a
+    ! grid of their own -- see init / crop.
     logical, public :: crop_output=.false.
-    real(8), public :: crop_blue=0, crop_red=0
+    real(8), dimension(:,:), allocatable :: crop_windows    ! (n, 2) vacuum [AA]
 
   contains
     !===============================================================================
-    ! Read and validate window_file, build segmented constant-R grid.
-    ! Input: window_file path, in_air flag, R_sampling (resolving power lambda/dlambda of the grid spacing, not an
-    ! instrumental broadening)
-    ! Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
+    ! Read and validate window_file: its windows, sorted and merged where they overlap
+    ! or touch, as (n, 2) vacuum wavelengths [AA].
     !===============================================================================
-    SUBROUTINE build_segmented_grid(wfile, in_air_flag, R_val, lam, nnu_out, self)
+    SUBROUTINE read_windows(wfile, in_air_flag, windows)
       character(len=*), intent(in) :: wfile
       logical, intent(in) :: in_air_flag
-      real(8), intent(in) :: R_val
-      real(8), dimension(:), allocatable, intent(out) :: lam
-      integer, intent(out) :: nnu_out
-      class(spectrum_type), intent(inout) :: self
-
-      real(8), dimension(:,:), allocatable :: windows
+      real(8), dimension(:,:), allocatable, intent(out) :: windows
       type(interval_t), allocatable :: merged(:)
-      integer :: n_merged
-      integer :: i, j, n_windows, nnu_seg, lunit, iostat
-      real(8) :: blue, red, fac, blue_vac, red_vac
-      real(8), dimension(:), allocatable :: lam_seg, all_lam
-      integer, dimension(:), allocatable :: seg_first, seg_last
-      real(8), dimension(:), allocatable :: seg_blue, seg_red
-      character(len=256) :: line, msg
+      integer :: i, n_windows, n_merged, lunit, iostat
+      real(8) :: blue, red
+      character(len=256) :: line
 
       ! Read window file
       call os%check_file(wfile)
@@ -127,19 +116,45 @@ MODULE spectrum_mod
 
       ! Sort and merge overlapping or touching windows
       call merge_intervals(windows, n_windows, 0d0, merged, n_merged)
-      n_windows = n_merged
-      windows(1:n_windows, 1) = merged%blue_vac
-      windows(1:n_windows, 2) = merged%red_vac
-
-      if (n_windows == 0) then
+      if (n_merged == 0) then
         error stop 'window_file: all windows were rejected during merging'
       endif
+      deallocate(windows)
+      allocate(windows(n_merged, 2))
+      windows(:, 1) = merged%blue_vac
+      windows(:, 2) = merged%red_vac
 
       ! Convert endpoints to vacuum if needed
       if (in_air_flag) then
         windows(:, 1) = air2vac(windows(:, 1))
         windows(:, 2) = air2vac(windows(:, 2))
       endif
+    END SUBROUTINE read_windows
+
+    !===============================================================================
+    ! Build the segmented constant-R grid of window_file.
+    ! Input: window_file path, in_air flag, R_sampling (resolving power lambda/dlambda of the grid spacing, not an
+    ! instrumental broadening)
+    ! Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
+    !===============================================================================
+    SUBROUTINE build_segmented_grid(wfile, in_air_flag, R_val, lam, nnu_out, self)
+      character(len=*), intent(in) :: wfile
+      logical, intent(in) :: in_air_flag
+      real(8), intent(in) :: R_val
+      real(8), dimension(:), allocatable, intent(out) :: lam
+      integer, intent(out) :: nnu_out
+      class(spectrum_type), intent(inout) :: self
+
+      real(8), dimension(:,:), allocatable :: windows
+      integer :: i, j, n_windows, nnu_seg
+      real(8) :: fac, blue_vac, red_vac
+      real(8), dimension(:), allocatable :: lam_seg, all_lam
+      integer, dimension(:), allocatable :: seg_first, seg_last
+      real(8), dimension(:), allocatable :: seg_blue, seg_red
+      character(len=256) :: msg
+
+      call read_windows(wfile, in_air_flag, windows)
+      n_windows = size(windows, 1)
 
       ! Allocate storage for segment metadata
       allocate(seg_first(n_windows))
@@ -260,27 +275,23 @@ MODULE spectrum_mod
       READ_NAMELIST(spectrum_params)
       write (io%namelist, spectrum_params)
 
-      ! No explicit sampling grid (daa/nnu/R_sampling/lam_file/window_file). If a bare window is given, request
-      ! cropping the atom-native output grid (built later from the model atom's transitions)
-      ! to [aa_blue, aa_red]; otherwise the output grid spans the atom's full range.
-      if (daa==0 .and. nnu==0 .and. R_sampling==0 .and. lam_file=='' .and. window_file=='') then
-        crop_output = aa_red /= 0 .and. aa_blue /= 0
-        if (crop_output) then
-          crop_blue = aa_blue
-          crop_red  = aa_red
-          if (in_air) then
-            crop_blue = air2vac(aa_blue)
-            crop_red  = air2vac(aa_red)
-          endif
+      ! No explicit sampling grid (daa/nnu/R_sampling/lam_file). The windows of window_file,
+      ! or else a bare [aa_blue, aa_red], crop the atom-native output grid (built later from
+      ! the model atom's transitions); without either it spans the atom's full range.
+      if (daa==0 .and. nnu==0 .and. R_sampling==0 .and. lam_file=='') then
+        if (window_file /= '') then
+          call read_windows(window_file, in_air, crop_windows)
+        elseif (aa_red /= 0 .and. aa_blue /= 0) then
+          allocate(crop_windows(1, 2))
+          crop_windows(1, :) = [aa_blue, aa_red]
+          if (in_air) crop_windows = air2vac(crop_windows)
         endif
+        crop_output = allocated(crop_windows)
         return
       endif
 
       ! Validate that window_file is not used with incompatible options
       if (window_file /= '') then
-        if (R_sampling <= 0) then
-          error stop 'window_file requires R_sampling > 0 for constant-R grid construction'
-        endif
         if (lam_file /= '') then
           error stop 'window_file and lam_file are mutually exclusive'
         endif
@@ -512,9 +523,8 @@ MODULE spectrum_mod
     END SUBROUTINE
 
     !===============================================================================
-    ! Restrict an atom-native output grid to the [crop_blue, crop_red] vacuum window
-    ! requested via a bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is
-    ! set, so the internal (bb/bf/all) solve grids -- which need full coverage -- are
+    ! Restrict an atom-native output grid to the crop_windows requested via window_file or a
+    ! bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is set, so the internal (bb/bf/all) solve grids -- which need full coverage -- are
     ! left untouched; only the emitted output spectrum is trimmed. Call after the grid
     ! is assembled/sorted but before the per-transition [iblue,ired] windows are set,
     ! since those are recomputed against the (now smaller) grid.
@@ -523,15 +533,19 @@ MODULE spectrum_mod
       class(spectrum_type) :: self
       real(8), allocatable :: lam(:)
       logical, allocatable :: keep(:)
+      integer :: i
       !-----------------------------------------------------------------------------
       if (.not. crop_output) return
       if (.not. allocated(self%lam)) return
       allocate(keep(self%nnu))
-      keep = self%lam >= crop_blue .and. self%lam <= crop_red
-      if (count(keep) == self%nnu) return          ! nothing outside the window
+      keep = .false.
+      do i=1, size(crop_windows, 1)
+        keep = keep .or. (self%lam >= crop_windows(i,1) .and. self%lam <= crop_windows(i,2))
+      end do
+      if (count(keep) == self%nnu) return          ! nothing outside the windows
       allocate(lam, source=pack(self%lam, keep))
       if (size(lam) == 0) then
-        call io%warning('spectrum_type%crop: [aa_blue, aa_red] excludes the whole model '// &
+        call io%warning('spectrum_type%crop: the output windows exclude the whole model '// &
                         'atom grid -- output spectrum will be empty')
         return
       endif
