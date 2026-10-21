@@ -362,15 +362,16 @@ contains
     ! fine-structure superposition as the analytic path. Broadening the table
     ! lacks is added as one Lorentzian of half width hwadd outside
     ! hfwid = max(Doppler width, hwadd): radiative damping for series tabulated
-    ! without it (Stehle & Hutcheon), and the broadening by neutral hydrogen of a
-    ! BPO line or of a line without an N(HI) axis. Tables with that axis carry Ali &
+    ! without it (Stehle & Hutcheon), broadening by neutral helium, which no table
+    ! has, and the broadening by neutral hydrogen of a BPO line or of a line
+    ! without an N(HI) axis. Tables with that axis carry Ali &
     ! Griem resonance broadening; a BPO line reads them at the lowest node
     ! (N(HI) = 1e12 cm^-3, where that width is below 1e-7 AA). Without broadening
     ! by neutral hydrogen (disable_vdw) resont is zero and the lowest node is used.
     c%use_vcs = vcs_supported(h%n, h%m)
     if (c%use_vcs) then
-      c%hwadd = 0
-      if (.not. vcs_radiative(h%n)) c%hwadd = real(h%grad, 4)
+      c%hwadd = c%vdw
+      if (.not. vcs_radiative(h%n)) c%hwadd = c%hwadd + real(h%grad, 4)
       if (h%bpo .or. .not. vcs_resonance(h%n, h%m)) c%hwadd = c%hwadd + c%resont
       nh_table = tothi
       if (h%bpo .or. disable_vdw) nh_table = 0
