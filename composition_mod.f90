@@ -11,7 +11,7 @@ MODULE composition_mod
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
   USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
   USE hprofl_mod, only:hline_t, hydrogen_line, add_h_opacities
-  USE hvcs_mod, only:hydrogen_vcs_table, ensure_vcs_loaded
+  USE hvcs_mod, only:ensure_vcs_loaded
   USE anstee_mod, only:ensure_anstee_loaded
   USE line_types_mod, only: linelist_type
   USE linelist_reader_mod, only: ll_file_t, ll_block_t, ll_open, ll_close, &
@@ -1529,7 +1529,7 @@ contains
       !-------------------------------------------------------------------------
       use_intervals_local = .false.
       if (present(use_intervals_arg)) use_intervals_local = use_intervals_arg
-      if (hydrogen_vcs_table) call ensure_vcs_loaded()
+      call ensure_vcs_loaded()
 
       do ii=1, n
         gv_h = 0; ga_h = 0; gq_h = 0; r_i = 0; r_j = 0

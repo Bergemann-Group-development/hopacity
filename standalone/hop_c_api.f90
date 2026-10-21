@@ -27,7 +27,7 @@ MODULE hop_c_api
   USE ion_mod,      only: debye_shield, particle_type
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod,   only: hydrogen_BPO
-  USE hvcs_mod,     only: hydrogen_vcs_table, vcs_data_dir
+  USE hvcs_mod,     only: hydrogen_profiles, vcs_data_dir
   USE anstee_mod,   only: anstee_file
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE op_math_mod,  only: interval_t, merge_intervals
@@ -100,7 +100,7 @@ MODULE hop_c_api
     'mhd_eos helium_scattering relative_abundances ' // &
     'line_scattering sample_linelist h_occupation_probability debye_shield ' // &
     'irwin_dis disable_rad disable_stk disable_vdw molecule_damping_estimates hydrogen_bpo ' // &
-    'hydrogen_vcs_table ll_profile voigt_kernel verbose'
+    'hydrogen_profiles ll_profile voigt_kernel verbose'
 
 CONTAINS
 
@@ -598,6 +598,8 @@ CONTAINS
       only_elements = val
     case ('vcs_data_dir')
       vcs_data_dir = val
+    case ('hydrogen_profiles')
+      hydrogen_profiles = lowercase(val)
     case ('anstee_file')
       anstee_file = val
     case ('absmet_file')
@@ -658,8 +660,6 @@ CONTAINS
       call parse_logical(val, lv, status); if (status == 0) molecule_damping_estimates = lv
     case ('hydrogen_bpo')
       call parse_logical(val, lv, status); if (status == 0) hydrogen_BPO = lv
-    case ('hydrogen_vcs_table')
-      call parse_logical(val, lv, status); if (status == 0) hydrogen_vcs_table = lv
     case ('ll_profile')
       call parse_logical(val, lv, status); if (status == 0) ll_profile = lv
     ! --- integers -----------------------------------------------------------
