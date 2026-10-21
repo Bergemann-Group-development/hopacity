@@ -53,6 +53,9 @@ MODULE hvcs_mod
   real(4), save :: nt_vcs(NNHT,NSER) = 0.0   ! log10 T
   real(4), save :: ne_vcs(NNHE,NSER) = 0.0   ! log10 Ne
   real(4), save :: nh_vcs(NNHH,NSER) = 0.0   ! log10 N(HI)
+  !  Node slopes along the T axis (qpol4's) of the lines without an N(HI) axis,
+  !  where the T interpolation reads the grid directly.
+  real(4), save :: tslope_vcs(NNHW,NNHT,NNHE,NNHMAX,NSER) = 0.0
   !  Derived from nw_vcs at load time, so the frequency scan never pays for them:
   !  the delta-lambda nodes in linear AA, and the reciprocal of the (uniform)
   !  log10 node spacing used to bracket without a search.
@@ -80,7 +83,8 @@ MODULE hvcs_mod
   !  point) -- keeping it off module scope is what keeps the inner loop clear of
   !  threadprivate/TLS lookups, which on macOS gfortran cost a
   !  pthread_getspecific per reference. The (line, cell) stamp makes prepare
-  !  idempotent, so it doubles as the per-cell memo it replaces.
+  !  idempotent, so a caller that keeps one per cell and line (rt_patch's hvcs)
+  !  builds each only once.
   type, public :: vcs_profile_t
     real(4) :: lp(NNHW) = 0.0     ! log10 profile on the delta-lambda grid
     real(8) :: lognorm  = 0.d0    ! log10 of its area in delta-lambda
@@ -135,6 +139,7 @@ contains
     character(len=*), intent(in) :: fname
     integer :: lunit, ios, k, i, j, kk, l
     real(4) :: dw0,ddw,ne0,dne,nh0,dnh,lgt0,dlgt
+    real(4) :: dx(NNHT), dy(NNHT)
     !------------------------------------------------------------------
     open(newunit=lunit, file=fname, status='old', form='formatted', iostat=ios)
     if (ios /= 0) then
@@ -179,6 +184,16 @@ contains
     dw_first(s) = 10.d0**nw_vcs(1,s)
     dw_last(s)  = 10.d0**nw_vcs(NNHW,s)
     nw_invdx(s) = 1.0/ddw
+
+    do k=1, nlines(s)
+      if (nhhnr(k,s) > 1) cycle
+      do l=1,NNHE
+        do i=1,NNHW
+          call pchip_slopes(nt_vcs(:,s), grid_vcs(i,1,:,l,k,s), 1, NNHT, &
+                            dx(1:NNHT-1), dy(1:NNHT-1), tslope_vcs(i,:,l,k,s))
+        enddo
+      enddo
+    enddo
   END SUBROUTINE read_vcs_grid
 
   !====================================================================
@@ -314,9 +329,9 @@ contains
     real(4), intent(in)  :: temp, ne, nh
     real(4), intent(out) :: lp(NNHW), lognorm
     logical, intent(out) :: ok
-    integer :: s, r, i, kk, l, nn
-    real(4) :: tlog, nelog, nhlog, area, dl, plin, plin_next
-    real(4) :: vt(NNHT), ve(NNHE), vh(NNHH)
+    integer :: s, r, i, kk, l, nn, jt, je, le0, le1, ns
+    real(4) :: tlog, nelog, nhlog, area, dl, plin, plin_next, ht, tt, he, te
+    real(4) :: vt(NNHT), ve(NNHE), vh(NNHH), dx(4), dy(4), dydx(4)
     !------------------------------------------------------------------
     ok = .false.
     lp = 0.0 ; lognorm = 0.0
@@ -335,21 +350,38 @@ contains
     tlog  = min(max(tlog,  nt_vcs(1,s)), nt_vcs(NNHT,s))
     if (nn > 1) nhlog = min(max(nhlog, nh_vcs(1,s)), nh_vcs(nn,s))
 
+    !  qpol4's bracketing and Hermite parameters on the T and Ne axes, the same
+    !  for every wavelength. The Ne interpolation reads the node slopes at je and
+    !  je+1, which depend on the nodes le0..le1 only, so only those columns are
+    !  interpolated in T. Without an N(HI) axis that interpolation uses the T
+    !  slopes stored at load time.
+    jt = bracket(tlog, nt_vcs(:,s))
+    ht = nt_vcs(jt+1,s) - nt_vcs(jt,s)
+    tt = (tlog - nt_vcs(jt,s)) / ht
+    je = bracket(nelog, ne_vcs(:,s))
+    he = ne_vcs(je+1,s) - ne_vcs(je,s)
+    te = (nelog - ne_vcs(je,s)) / he
+    le0 = max(1, je-1)
+    le1 = min(NNHE, je+2)
+    ns = le1 - le0 + 1
     do i=1, NNHW
-      do l=1, NNHE
-        do kk=1, NNHT
-          if (nn > 1) then
+      do l=le0, le1
+        if (nn > 1) then
+          do kk=1, NNHT
             !  Ali & Griem resonance broadening (NH axis, dim 2) present. Copy the
             !  slice to a contiguous buffer: dim 2 is not contiguous from (i,1,...).
             vh(1:nn) = grid_vcs(i,1:nn,kk,l,r,s)
             vt(kk) = qpol4(nhlog, nh_vcs(1,s), vh, nn)
-          else
-            vt(kk) = grid_vcs(i,1,kk,l,r,s)
-          endif
-        enddo
-        ve(l) = qpol4(tlog, nt_vcs(1,s), vt, NNHT)
+          enddo
+          ve(l) = qpol4(tlog, nt_vcs(1,s), vt, NNHT)
+        else
+          ve(l) = hermite_value(tt, ht, grid_vcs(i,1,jt,l,r,s), grid_vcs(i,1,jt+1,l,r,s), &
+                                tslope_vcs(i,jt,l,r,s), tslope_vcs(i,jt+1,l,r,s))
+        endif
       enddo
-      lp(i) = qpol4(nelog, ne_vcs(1,s), ve, NNHE)
+      call pchip_slopes(ne_vcs(le0:le1,s), ve(le0:le1), je-le0+1, je-le0+2, &
+                        dx(1:ns-1), dy(1:ns-1), dydx(1:ns))
+      lp(i) = hermite_value(te, he, ve(je), ve(je+1), dydx(je-le0+1), dydx(je-le0+2))
     enddo
 
     !  Area under the (symmetric) profile in delta-lambda [AA]. The nodes in
@@ -444,6 +476,19 @@ contains
       res = f(k) + u * (y + v*(y-z)/(w-u))
     endif
   END FUNCTION qpol_w
+
+  !====================================================================
+  !  qpol4's bracketing interval [a(j),a(j+1)]: the largest j in [1,size(a)-1]
+  !  with a(j) <= x, or 1.
+  PURE INTEGER FUNCTION bracket(x, a) result(j)
+    real(4), intent(in) :: x, a(:)
+    integer :: kk
+    !------------------------------------------------------------------
+    j = 1
+    do kk = 1, size(a)-1
+      if (x >= a(kk)) j = kk
+    enddo
+  END FUNCTION bracket
 
   !====================================================================
   !  Piecewise cubic HERMITE interpolation, C1 continuous. Used for the grid
