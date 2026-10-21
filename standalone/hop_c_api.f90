@@ -31,6 +31,7 @@ MODULE hop_c_api
   USE anstee_mod,   only: anstee_file
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE op_math_mod,  only: interval_t, merge_intervals
+  USE interpol_mod, only: optical_depth, pchip_integral
   USE qlg,          only: qlg_init
   USE osmet_mod,    only: osmet, eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase, vac2air
@@ -49,7 +50,7 @@ MODULE hop_c_api
   public :: hop_init, hop_free, hop_set_option, hop_set_external_abundances, &
             hop_init_linelist_windows, hop_load_state, hop_set_vmic, hop_opacity, &
             hop_write_linelist, hop_linelist_count, hop_last_error
-  public :: hop_atmos_read, hop_atmos_get, hop_atmos_free
+  public :: hop_atmos_read, hop_atmos_get, hop_atmos_free, hop_optical_depth, hop_pchip_integral
 
   ! master is the initialized-but-never-loaded composition; each hop_load_state
   ! solves in a fresh copy of it (comp), mirroring the dispatch pattern
@@ -1296,5 +1297,55 @@ CONTAINS
     status = 0
     if (allocated(atmos_file_data)) deallocate(atmos_file_data)
   END FUNCTION hop_atmos_free
+
+  !=============================================================================
+  ! Optical depth of ncol columns of nz cells, each top first and depth fastest
+  ! (C order (ncol, nz)), with the integrator and top rule of dispatch.x
+  ! (interpol_mod optical_depth): chi [1/cm], ln rho and the height z [cm].
+  ! Needs no hop_init.
+  !=============================================================================
+  FUNCTION hop_optical_depth(ncol, nz, chi, lnrho, z, tau) RESULT(status) &
+           BIND(c, name='hop_optical_depth')
+    integer(c_int), value :: ncol, nz
+    real(c_double), intent(in) :: chi(*), lnrho(*), z(*)
+    real(c_double), intent(out) :: tau(*)
+    integer(c_int) :: status
+    integer :: j, i0
+    !---------------------------------------------------------------------------
+    status = 0
+    if (nz < 2) then
+      call fail('hop_optical_depth: a column needs two cells or more', 3, status)
+      return
+    end if
+    do j=1, ncol
+      i0 = (j-1) * nz
+      call optical_depth(chi(i0+1:i0+nz), lnrho(i0+1:i0+nz), z(i0+1:i0+nz), &
+                         tau(i0+1:i0+nz))
+    end do
+  END FUNCTION hop_optical_depth
+
+  !=============================================================================
+  ! Cumulative PCHIP integrals of y over x from the first point, for ncol series
+  ! of n points, each contiguous (C order (ncol, n)) -- the quadrature of
+  ! optical_depth (interpol_mod pchip_integral).  Needs no hop_init.
+  !=============================================================================
+  FUNCTION hop_pchip_integral(ncol, n, x, y, cum) RESULT(status) &
+           BIND(c, name='hop_pchip_integral')
+    integer(c_int), value :: ncol, n
+    real(c_double), intent(in) :: x(*), y(*)
+    real(c_double), intent(out) :: cum(*)
+    integer(c_int) :: status
+    integer :: j, i0
+    !---------------------------------------------------------------------------
+    status = 0
+    if (n < 2) then
+      call fail('hop_pchip_integral: a series needs two points or more', 3, status)
+      return
+    end if
+    do j=1, ncol
+      i0 = (j-1) * n
+      call pchip_integral(x(i0+1:i0+n), y(i0+1:i0+n), cum(i0+1:i0+n))
+    end do
+  END FUNCTION hop_pchip_integral
 
 END MODULE hop_c_api

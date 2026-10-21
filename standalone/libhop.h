@@ -18,7 +18,9 @@ int hop_load_state (int n, const double *temp, double *ne, const double *rho, fl
 int hop_omp_release ();
 int hop_opacity (int nlam, const double *lam, float *chi, float *scat, int include_absmet, int include_llist, double dlam, int line_scat);
 int hop_opacity_omp (int nlam, const double *lam, float *chi, float *scat, int include_absmet, int include_llist, double dlam, int line_scat, int nthreads);
+int hop_optical_depth (int ncol, int nz, const double *chi, const double *lnrho, const double *z, double *tau);
 int hop_option_names (char *buf, int buflen);
+int hop_pchip_integral (int ncol, int n, const double *x, const double *y, double *cum);
 int hop_scattering (int nlam, const double *lam, float *sig);
 int hop_set_external_abundances (int n, const double *abund);
 int hop_set_option (const char *name, const char *value);

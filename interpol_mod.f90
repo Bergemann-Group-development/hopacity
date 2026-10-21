@@ -23,6 +23,7 @@ MODULE interpol_mod
   public :: hermite_interpolation, hermite_derivative, hermite_coefs, hermite_value
   public :: interp1d_sorted, interp1d_reg_period
   public :: linterpolate_3d, linterpolate_3d_rotated
+  public :: pchip_integral, optical_depth, heights_from_tau
 
   interface pchip_mono
     module procedure pchip_mono4, pchip_mono8
@@ -43,6 +44,59 @@ MODULE interpol_mod
   end interface hermite_value
 
 contains
+
+  !===============================================================================
+  ! The cumulative integral of y over x from x(1), exact for the monotone PCHIP
+  ! interpolant of y: h (y_i + y_i+1)/2 + h^2 (s_i - s_i+1)/12 per interval of
+  ! width h, with s the pchip_slopes8 node slopes.  It has the sign of the x steps.
+  !===============================================================================
+  PURE SUBROUTINE pchip_integral (x, y, cum)
+    real(8), intent(in) :: x(:), y(:)
+    real(8), intent(out) :: cum(:)
+    real(8) :: dx(size(x)-1), dy(size(x)-1), slope(size(x))
+    integer :: i
+    !-----------------------------------------------------------------------------
+    call pchip_slopes8(x, y, 1, size(x), dx, dy, slope)
+    cum(1) = 0d0
+    do i=2, size(x)
+      cum(i) = cum(i-1) + dx(i-1) * (0.5d0 * (y(i-1) + y(i)) &
+                                     + dx(i-1) * (slope(i-1) - slope(i)) / 12d0)
+    end do
+  END SUBROUTINE pchip_integral
+
+  !===============================================================================
+  ! Optical depth down one column, index 1 at the top: the PCHIP integral of chi
+  ! in the height z (cm, either sign convention).  The top cell gets tau = chi H,
+  ! the depth of an atmosphere above the column in which chi falls off with the
+  ! scale height H.  H is the smaller of the density and extinction scale heights
+  ! between the two top cells: chi falls faster than rho where H- dominates
+  ! (chi ~ rho n_e), and in a temperature inversion, where chi can grow outward,
+  ! the density scale height keeps H finite.  The floor of 0.01 on the log step
+  ! does the same in a density inversion.
+  !===============================================================================
+  PURE SUBROUTINE optical_depth (chi, lnrho, z, tau)
+    real(8), intent(in) :: chi(:), lnrho(:), z(:)
+    real(8), intent(out) :: tau(:)
+    !-----------------------------------------------------------------------------
+    call pchip_integral(z, chi, tau)
+    tau = chi(1) * abs(z(2) - z(1)) / max(lnrho(2) - lnrho(1), log(chi(2) / chi(1)), 1d-2) &
+        + abs(tau)
+  END SUBROUTINE optical_depth
+
+  !===============================================================================
+  ! The heights (cm, z(1) = 0 at the top, negative below) of a column given on an
+  ! optical depth scale, index 1 at the top: dz = (tau/chi) d ln tau, the scale
+  ! height tau/chi integrated as a PCHIP in ln tau, which is exact for an
+  ! exponential atmosphere.  Only the differences of tau enter, so the depth of
+  ! the top cell is not kept; optical_depth assigns it chi H again.
+  !===============================================================================
+  PURE SUBROUTINE heights_from_tau (tau, chi, z)
+    real(8), intent(in) :: tau(:), chi(:)
+    real(8), intent(out) :: z(:)
+    !-----------------------------------------------------------------------------
+    call pchip_integral(log(tau), tau / chi, z)
+    z = -z
+  END SUBROUTINE heights_from_tau
 
   !===============================================================================
   !  Shared cubic-Hermite basis kernel (the "eval half"). Value form on an
