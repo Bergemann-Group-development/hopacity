@@ -3,7 +3,7 @@ MODULE hprofl_mod
   USE qlg, only: qlg_bot_coef_t, qlg_bot_coef, qlg_bot_eval   ! the one Voigt kernel; see linelist_mod's kernel note
   USE prec_mod, only: RYD, dp
   USE const_mod
-  USE hvcs_mod, only: hydrogen_vcs_table, vcs_supported, ensure_vcs_loaded, &
+  USE hvcs_mod, only: vcs_supported, vcs_resonance, vcs_radiative, ensure_vcs_loaded, &
                       vcs_profile_t, vcs_prepare, vcs_eval, vcs_tail
   implicit none
 
@@ -162,7 +162,7 @@ MODULE hprofl_mod
   ! One hydrogen line in one cell, prepared by hcell_prepare for hprofile
   type, public :: hcell_t
     real(4) :: idf, ne, tothi, resont, vdw, hwstk, hwlor, hfwid
-    real(4) :: hwbpo = 0                  ! table path: BPO half width added to the table
+    real(4) :: hwadd = 0                  ! table path: Lorentzian half width added to the table
     logical :: use_vcs = .false., lymanalf = .false.
     type(stark_cell_t)   :: st
     type(qlg_bot_coef_t) :: vcore, vwing   ! Voigt coefficients inside / outside hfwid
@@ -306,7 +306,7 @@ contains
         if (f > f_hi .or. f < f_lo) call extend(f)
         r = vp*invd(f)
         phi = real(vcs_tail(hc%vcs, lnd(f) - r*(1.d0 + 0.5d0*r)), 4)
-        if (hc%hwbpo > 0) phi = phi + bpo_wing(hc, q - h%dqbar)
+        if (hc%hwadd > 0) phi = phi + added_wing(hc, q - h%dqbar)
       else
         phi = hprofile(h, hc, q)
       endif
@@ -358,20 +358,23 @@ contains
     c%hwlor = h%grad + c%resont + c%vdw
     c%hfwid = max(1/idf, c%hwlor, c%hwstk) ! defines where we switch from Voigt to adding
 
-    ! Optional tabulated VCS (Lemke 1997) profile: whole-profile replacement,
-    ! with the same fine-structure superposition as the analytic path. The table
-    ! carries Ali & Griem resonance broadening along its N(HI) axis. A BPO line
-    ! reads it at the lowest node instead (N(HI) = 1e12 cm^-3, where that width is
-    ! below 1e-7 AA), and vcs_fine adds the BPO Lorentzian outside the Doppler core;
-    ! radiative damping is already in the table. Without broadening by neutral
-    ! hydrogen (disable_vdw) the lowest node is used and nothing is added.
+    ! Tabulated profile (hvcs_mod): whole-profile replacement, with the same
+    ! fine-structure superposition as the analytic path. Broadening the table
+    ! lacks is added as one Lorentzian of half width hwadd outside
+    ! hfwid = max(Doppler width, hwadd): radiative damping for series tabulated
+    ! without it (Stehle & Hutcheon), and the broadening by neutral hydrogen of a
+    ! BPO line or of a line without an N(HI) axis. Tables with that axis carry Ali &
+    ! Griem resonance broadening; a BPO line reads them at the lowest node
+    ! (N(HI) = 1e12 cm^-3, where that width is below 1e-7 AA). Without broadening
+    ! by neutral hydrogen (disable_vdw) resont is zero and the lowest node is used.
     c%use_vcs = vcs_supported(h%n, h%m)
     if (c%use_vcs) then
+      c%hwadd = 0
+      if (.not. vcs_radiative(h%n)) c%hwadd = real(h%grad, 4)
+      if (h%bpo .or. .not. vcs_resonance(h%n, h%m)) c%hwadd = c%hwadd + c%resont
       nh_table = tothi
       if (h%bpo .or. disable_vdw) nh_table = 0
-      c%hwbpo = 0
-      if (h%bpo) c%hwbpo = c%resont
-      c%hfwid = max(1/idf, c%hwbpo)
+      c%hfwid = max(1/idf, c%hwadd)
       call vcs_prepare(h%n, h%m, h%nu0, temp, ne, nh_table, c%vcs)
       return
     endif
@@ -435,8 +438,9 @@ contains
   !  component dq(i) and weighted by wt(i). The weights sum to one, so the
   !  normalisation is preserved; lines with a single component reduce to
   !  vcs_eval at q. Mirrors SIU's HYDL_AG_CON_FS, with HOP's component pattern.
-  !  A BPO line adds its Lorentzian to each component (bpo_wing), as SIU's
-  !  HYDL_BPO_CON_FS and the adding method of Barklem's HLINPROF do.
+  !  Broadening the table lacks is added to each component as a Lorentzian
+  !  (added_wing), as SIU's HYDL_BPO_CON_FS and the adding method of Barklem's
+  !  HLINPROF do for BPO.
   !
   !  Once every component lies beyond the table's outer edge, the profile is the
   !  power law A*|q|**s, and the weighted sum equals one evaluation at the mean
@@ -453,39 +457,39 @@ contains
     !----------------------------------------------------------------------------------
     if (abs(q) - h%dqmax > c%vcs%q_tail) then
       phi = real(vcs_tail(c%vcs, log(abs(q - h%dqbar))), 4)
-      if (c%hwbpo > 0) phi = phi + bpo_wing(c, q - h%dqbar)
+      if (c%hwadd > 0) phi = phi + added_wing(c, q - h%dqbar)
       return
     endif
     phi = 0.0
     do i=1, h%io
       phi = phi + h%wt(i)*real(vcs_eval(c%vcs, q - h%dq(i)), 4)
     end do
-    if (c%hwbpo > 0) then
+    if (c%hwadd > 0) then
       do i=1, h%io
-        phi = phi + h%wt(i)*bpo_wing(c, q - h%dq(i))
+        phi = phi + h%wt(i)*added_wing(c, q - h%dq(i))
       end do
     endif
   END FUNCTION
 
   !====================================================================================
-  !  The BPO Lorentzian (unit area in q) at detuning d from a component, added to
-  !  the table profile beyond hfwid = max(Doppler width, BPO width), the same
+  !  The added Lorentzian (unit area in q) at detuning d from a component, added
+  !  to the table profile beyond hfwid = max(Doppler width, hwadd), the same
   !  switch between core and adding as in hvoigt. Inside it the Doppler core
   !  dominates, and leaving the Lorentzian out there keeps the summed area close
-  !  to one; the excess, about 2/pi * hwbpo/hfwid, is what the analytic path's
+  !  to one; the excess, about 2/pi * hwadd/hfwid, is what the analytic path's
   !  adding also carries.
   !====================================================================================
-  PURE FUNCTION bpo_wing (c, d) result(phi)
+  PURE FUNCTION added_wing (c, d) result(phi)
     type(hcell_t), intent(in) :: c
     real(8), intent(in) :: d
     real(4) :: phi
     !----------------------------------------------------------------------------------
     if (abs(d) > c%hfwid) then
-      phi = real(c%hwbpo / (PI * (d*d + c%hwbpo*c%hwbpo)), 4)
+      phi = real(c%hwadd / (PI * (d*d + c%hwadd*c%hwadd)), 4)
     else
       phi = 0.0
     endif
-  END FUNCTION bpo_wing
+  END FUNCTION added_wing
 
   !====================================================================================
   SUBROUTINE lyman_voigt (h, c, q, phi)
@@ -715,7 +719,7 @@ contains
     class(bbtrans_type), intent(inout) :: self
     type(hline_t) :: h
     !----------------------------------------------------------------------------------
-    if (hydrogen_vcs_table) call ensure_vcs_loaded()
+    call ensure_vcs_loaded()
     h = hydrogen_line(self%i, self%j, self%nu0)
     self%grad  = h%grad
     self%gstk  = h%gstk

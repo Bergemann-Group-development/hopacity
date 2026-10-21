@@ -48,7 +48,7 @@ PROGRAM hop_prune
   USE ion_mod, only: debye_shield
   USE molecule_mod, only: irwin_dis
   USE hprofl_mod, only: hydrogen_BPO
-  USE hvcs_mod, only: hydrogen_vcs_table, vcs_data_dir
+  USE hvcs_mod, only: hydrogen_profiles, vcs_data_dir
   USE anstee_mod, only: anstee_file
   USE linelist_mod, only: ll_profile, voigt_kernel
   USE osmet_mod, only: eosmet
@@ -301,7 +301,7 @@ CONTAINS
       isotope_file, molec_file, H_occupation_probability, mhd_eos, debye_shield, &
       tmolim, irwin_dis, save_species, ref_lam, debug_opac, abundances, relative_abundances, &
       alpha_enhancement, r_process_enhancement, disable_rad, disable_stk, disable_vdw, &
-      molecule_damping_estimates, helium_scattering, hydrogen_BPO, hydrogen_vcs_table, vcs_data_dir, eosmet
+      molecule_damping_estimates, helium_scattering, hydrogen_BPO, hydrogen_profiles, vcs_data_dir, eosmet
     !---------------------------------------------------------------------------
     verbose = comp_verbose
     if (present(echo_unit)) then
