@@ -5,7 +5,7 @@ MODULE optab_mod
   USE const_mod
   USE spectrum_mod, only: spectrum_type
   USE op_math_mod, only: searchsorted, pca_grid_2d
-  USE interpol_mod, only: hermite_coefs, pchip_mono
+  USE interpol_mod, only: hermite_coefs, pchip_mono, pchip_slopes
   implicit none
 
   !=============================================================================
@@ -194,31 +194,50 @@ contains
   !===============================================================================
   ! Precompute monotone node slopes of the 3D sampling table along wavelength
   ! (dl, irregular), temperature (dt, regular) and log ne (de, regular).
+  ! The wavelength slopes are taken on the real(8) nodes: the spectrum keeps its
+  ! nodes lam_tolerance apart, but in real(4) two nodes 0.002 A apart at 3.8 um
+  ! (the continua of two nearly degenerate levels) coincide. The PC axes are
+  ! centred on the data and spaced dc apart, which real(4) resolves.
   !===============================================================================
   SUBROUTINE sample_build_derivatives (self)
     class(sample_optab_type) :: self
-    real(4), dimension(:), allocatable :: lam4, taxis, eaxis
+    real(4), dimension(:), allocatable :: taxis, eaxis
     integer :: i
     !---------------------------------------------------------------------------
     allocate(self%dl, self%dt, self%de, mold=self%val)
     call os%mem_register(storage_size(self%dl), 3*product(shape(self%dl)), 'opac_slopes')
 
-    allocate(lam4(self%nnu), taxis(self%ntemp), eaxis(self%nne))
-    lam4  = real(self%lam)
+    allocate(taxis(self%ntemp), eaxis(self%nne))
     taxis = [(real(self%pca%c0(1) + (i-1)*self%pca%dc(1)), i=1, self%ntemp)]
     eaxis = [(real(self%pca%c0(2) + (i-1)*self%pca%dc(2)), i=1, self%nne)]
 
-    call node_slopes_dim(lam4 , self%val, 1, self%dl)
+    call lam_slopes(self%val, self%dl)
     call node_slopes_dim(taxis, self%val, 2, self%dt)
     call node_slopes_dim(eaxis, self%val, 3, self%de)
 
     if (allocated(self%scat)) then
       allocate(self%sl, self%st, self%se, mold=self%scat)
       call os%mem_register(storage_size(self%sl), 3*product(shape(self%sl)), 'opac_slopes')
-      call node_slopes_dim(lam4 , self%scat, 1, self%sl)
+      call lam_slopes(self%scat, self%sl)
       call node_slopes_dim(taxis, self%scat, 2, self%st)
       call node_slopes_dim(eaxis, self%scat, 3, self%se)
     endif
+  contains
+    subroutine lam_slopes (f, slope)
+      real(4), dimension(:,:,:), intent(in) :: f
+      real(4), dimension(:,:,:), intent(out) :: slope
+      real(8), dimension(:), allocatable :: f8, dx, dy, dydx
+      integer :: n, a, b
+      n = self%nnu
+      allocate(f8(n), dx(n-1), dy(n-1), dydx(n))
+      do b=1, size(f,3)
+        do a=1, size(f,2)
+          f8 = f(:,a,b)
+          call pchip_slopes(self%lam, f8, 1, n, dx, dy, dydx)
+          slope(:,a,b) = real(dydx)
+        end do
+      end do
+    end subroutine lam_slopes
   END SUBROUTINE sample_build_derivatives
 
   !===============================================================================
