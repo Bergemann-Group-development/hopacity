@@ -21,7 +21,7 @@
 !===============================================================================
 MODULE atmos_reader_mod
   USE const_mod, only: bk
-  USE handyfuncs_mod, only: nextentry, count_words, lowercase, endswith
+  USE handyfuncs_mod, only: nextentry, count_words, lowercase, endswith, replace_char
   implicit none
   private
 
@@ -266,9 +266,11 @@ CONTAINS
   END SUBROUTINE read_marcs_file
 
   !=============================================================================
-  !> Text 1D: name, "nz [FeH]", then one "z T Pe rho vmic" row per depth.  A
+  !> Text 1D: name, "nz [FeH]", then one "z T Pe rho vmic [vz]" row per depth.  A
   !> column of zeros marks Pe or rho as absent, and the logarithms are taken only
-  !> where the value is positive, as read_atmos_mod always has.
+  !> where the value is positive, as read_atmos_mod always has.  The first row
+  !> decides whether the rows carry the vertical velocity vz [km/s], positive
+  !> outward whatever the orientation of the depth column; it is stored in cm/s.
   !=============================================================================
   SUBROUTINE read_text_1d_file(atmos_file, atmos, ierr, msg)
     character(len=*), intent(in) :: atmos_file
@@ -277,6 +279,8 @@ CONTAINS
     character(len=*), intent(out) :: msg
     integer :: nwords, nz, lunit, i, iostat
     character(128) :: text
+    character(256) :: row
+    logical :: has_vz
     real(4), dimension(:), allocatable :: temp, pe, rho
     !---------------------------------------------------------------------------
     call open_existing(atmos_file, lunit, ierr, msg)
@@ -306,7 +310,20 @@ CONTAINS
 
     do i=1, nz
       call nextentry(lunit)
-      read(lunit, *, iostat=iostat) atmos%zz(i), temp(i), pe(i), rho(i), atmos%vmic(1,1,i)
+      read(lunit, '(A)', iostat=iostat) row
+      if (iostat == 0) then
+        if (i == 1) then
+          call replace_char(row, achar(9), ' ')
+          call count_words(row, nwords)
+          has_vz = nwords >= 6
+        endif
+        if (has_vz) then
+          read(row, *, iostat=iostat) atmos%zz(i), temp(i), pe(i), rho(i), atmos%vmic(1,1,i), &
+                                      atmos%vz(1,1,i)
+        else
+          read(row, *, iostat=iostat) atmos%zz(i), temp(i), pe(i), rho(i), atmos%vmic(1,1,i)
+        endif
+      endif
       if (iostat /= 0) then
         close(lunit)
         ierr = 3
@@ -316,6 +333,7 @@ CONTAINS
     end do
     close(lunit)
 
+    atmos%vz = atmos%vz * 1e5
     atmos%has_pe = pe(1) /= 0
     atmos%has_rho = rho(1) /= 0
     where (temp > 0) atmos%ltemp(1,1,:) = log(temp)
@@ -326,7 +344,8 @@ CONTAINS
   !=============================================================================
   !> MULTI 1D atmos.* : name, scale name, log g, nz, then "z T ne vz vmic" rows.
   !> The file carries electron density, stored here as ln P_e = ln(n_e k T); there
-  !> is no mass density.
+  !> is no mass density.  vz [km/s] is positive outward, as in MULTI, and is
+  !> stored in cm/s.
   !=============================================================================
   SUBROUTINE read_multi_1d_file(atmos_file, atmos, ierr, msg)
     character(len=*), intent(in) :: atmos_file
@@ -378,6 +397,7 @@ CONTAINS
     end do
     close(lunit)
 
+    atmos%vz = atmos%vz * 1e5
     atmos%ltemp(1,1,:) = log(temp)
     atmos%lpe  (1,1,:) = log(ne * BK * temp)
     atmos%has_pe = .true.
