@@ -120,13 +120,15 @@ contains
   END SUBROUTINE wcalc
 
   !===============================================================================
-  SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl)
+  SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl, beyond_limit)
     class(level_type), target :: self
     real(4), intent(inout), dimension(:,:,:,:) :: chi
     real(dp), intent(in), dimension(:) :: lam
     real(4), intent(in), dimension(:) :: ab
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
     real(dp), intent(in), dimension(:,:,:), optional, target :: wocc, nlvl
+    ! .false. leaves out the wavelengths beyond the series limit (default .true.)
+    logical, intent(in), optional :: beyond_limit
     real(dp), dimension(:,:,:), pointer :: wp, np
     real(dp), dimension(:), allocatable :: kd
     real(4), dimension(:), allocatable :: x1, x2, kk, g
@@ -187,6 +189,9 @@ contains
         endif
       endif
     end do
+    if (present(beyond_limit)) then
+      if (.not. beyond_limit) n0 = 0
+    endif
 
     do k=1, m(3)
       do j=1, m(2)

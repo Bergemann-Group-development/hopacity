@@ -26,6 +26,10 @@ MODULE bftrans_mod
     logical :: peach=.false., regular=.false., molecular=.false.
     logical :: lam3=.false.
     logical :: active=.true.
+    ! an 'H BF' continuum of a level that an NLTE model atom carries: with the
+    ! occupation probability formalism only its dissolved-level part redward of the
+    ! series limit is added, which the atom's own continuum does not have
+    logical :: dissolved_only=.false.
     character(len=5) :: key
     character(len=20) :: label
 
@@ -385,7 +389,8 @@ contains
         call wcalc2(lvl, chi(fs:fe, xlo-mem_offset:xhi-mem_offset, :, :), &
                     lam(fs:fe), ab*real(self%xkap_scale, 4), self%ion%n(xlo:xhi,:,:), &
                     nhe(xlo:xhi,:,:), ne(xlo:xhi,:,:), shield(xlo:xhi,:,:), &
-                    wocc=lvl%w(xlo:xhi,:,:), nlvl=lvl%n(xlo:xhi,:,:))
+                    wocc=lvl%w(xlo:xhi,:,:), nlvl=lvl%n(xlo:xhi,:,:), &
+                    beyond_limit=.not. self%dissolved_only)
         call trace%end(itimer3)
       else
         do z=1, nz
