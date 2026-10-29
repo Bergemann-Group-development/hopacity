@@ -9,10 +9,14 @@
 # with its own COMPILER and OPTS, and the objects here (compiled with
 # -DHOP_STANDALONE) never mix with the framework-enabled ones linked into dispatch.x.
 #
+# The default target also copies libhop.so into ../hopacity, where the Python package
+# loads it; the wheel build (../setup.py) makes $(BUILD)/libhop.so alone instead.
+#
 # Usage:  make [-j N] [COMPILER=ifort] [OPT=-O2] [BUILD=dir]   # libhop.so, hop_prune.x, atom_convert.x
 #         make bindings                                        # rewrite libhop.h after an API change
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
+PKGLIB := ../hopacity/libhop.so
 HDR   := libhop.h
 PRUNE := $(BUILD)/hop_prune.x
 CONVERT := $(BUILD)/atom_convert.x
@@ -63,7 +67,7 @@ PRUNE_OBJS = $(addprefix $(BUILD)/,$(notdir $(PRUNE_SRCS:.f90=.o)))
 
 vpath %.f90 . ..
 
-all: $(LIB) $(PRUNE) $(CONVERT)
+all: $(LIB) $(PKGLIB) $(PRUNE) $(CONVERT)
 	@:
 
 # The header is the C prototypes of the BIND(C) functions, written by gen_bindings.py
@@ -82,6 +86,10 @@ $(foreach o,$(OBJS),$(eval $(o): $(prev))$(eval prev := $(o)))
 $(LIB): $(OBJS)
 	@if [ "x$(E)" == "x@" ] ; then echo " [ LD ]" $(notdir $@) ; fi
 	$(E)$(FC) -shared $(LDFLAGS) -o $@ $(OBJS)
+
+# Copied by rename, so a process that has the old library loaded keeps a valid file
+$(PKGLIB): $(LIB)
+	$(E)cp $< $@.tmp && mv -f $@.tmp $@
 
 # Fortran INCLUDE files are not in the chain above; name their includers
 $(BUILD)/level_mod.o $(BUILD)/bftrans_mod.o: ../exp_neg.inc
@@ -115,7 +123,7 @@ $(BUILD):
 # into the source directory on purpose, so clean removes any that a stray compiler run
 # has dropped.
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) $(PKGLIB)
 	rm -f *.mod
 
 .PHONY: all clean bindings hop_prune.x atom_convert.x

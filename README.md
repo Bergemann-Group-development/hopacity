@@ -1,29 +1,33 @@
-# Standalone HOP: EOS and opacity from Python, and line-list pruning
+# hopacity: HOP's EOS and opacities from Python
 
-`libhop.so` is the HOP opacity/EOS engine built without the DISPATCH framework, driven
-from Python through `tumult.hop`. It computes the same EOS state and the same opacities a
-`make_eos=.true.` run of `dispatch.x` tabulates — without launching dispatch at all.
-`hop_prune.x` is a program on the same objects that selects the transitions a synthesis
-needs (see [Line-list pruning](#line-list-pruning)).
+HOP is the equation-of-state and opacity engine of OpenMULTI3D. `hopacity` is its Python package: it loads `libhop.so`, HOP built without the DISPATCH framework, and computes the same EOS state and the same opacities that a `make_eos=.true.` run of `dispatch.x` tabulates, without DISPATCH or OpenMULTI3D. `hop_prune.x` is a program on the same objects that selects the transitions a synthesis needs (see [Line-list pruning](#line-list-pruning)).
 
-## Build
+## Install
+
+A wheel carries `libhop.so`, its header and HOP's default input files (abundances, continuum and molecular data, hydrogen Stark-profile tables and ABO cross sections), about 9 MB. Build one in this directory with a Fortran compiler (gfortran; `COMPILER=ifort` or `COMPILER=ifx` in the environment selects the Intel compilers) and install it into any Python environment:
 
 ```bash
-make -C HOP/standalone -j8            # -> build/libhop.so, libhop.h, build/hop_prune.x
-make -C HOP/standalone clean          # rebuild from scratch after editing HOP/*.f90
+pip wheel --no-deps -w dist .
+pip install dist/hopacity-*.whl
 ```
 
-The top-level `make` builds all of it alongside `dispatch.x`, with the same `COMPILER`
-(gfortran, ifort or ifx) and option group; invoked here, `COMPILER=ifort` selects ifort
-and `OPT=-O2` overrides the option group's optimisation. `libhop.h` is committed; `make bindings`
-rewrites it from the `BIND(C)` declarations with `gen_bindings.py` after an interface
-change, and `tests/test_hop_abi.py` fails on a stale one. The wrapper
-finds the library at `HOP/standalone/build/libhop.so`, or wherever `$HOP_LIB` points.
+The library links the compiler's Fortran and OpenMP runtimes dynamically, so the wheel runs on machines where that compiler is installed. Line lists and sampled metal-line (absmet) tables are not included; pass their paths.
+
+In an OpenMULTI3D checkout, `pip install -e .` in the experiment directory provides `hopacity` together with `tumult`, which re-exports `HopEOS`, and the top-level `make` builds the library.
+
+## Build the library
+
+```bash
+make -C standalone -j8      # -> standalone/build/libhop.so (copied to hopacity/), hop_prune.x, atom_convert.x
+make -C standalone clean    # rebuild from scratch after editing *.f90
+```
+
+The top-level OpenMULTI3D `make` builds all of it alongside `dispatch.x`, with the same `COMPILER` (gfortran, ifort or ifx) and option group; invoked here, `COMPILER=ifort` selects ifort and `OPT=-O2` overrides the option group's optimisation. `standalone/libhop.h` is committed; `make bindings` rewrites it from the `BIND(C)` declarations with `gen_bindings.py` after an interface change, and `tests/native/test_hop_abi.py` fails on a stale one. The package loads `hopacity/libhop.so`, or the library `$HOP_LIB` points to.
 
 Check it loads:
 
 ```bash
-python -c "import tumult; print(tumult.HopEOS(feh=0.0).load_state([5777.], rho=[2.5e-7]).ne)"
+python -c "from hopacity import HopEOS; print(HopEOS(feh=0.0).load_state([5777.], rho=[2.5e-7]).ne)"
 ```
 
 ## The EOS
@@ -36,7 +40,7 @@ you passed in.
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
-from tumult.hop import HopEOS, logstep
+from hopacity import HopEOS, logstep
 
 fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), constrained_layout=True)
 
@@ -76,7 +80,7 @@ Divide by `hop.rho[..., None]` for the per-gram opacity a dispatch `opa`/`scat` 
 holds.
 
 ```python
-from tumult.hop import wavelength_grid
+from hopacity import wavelength_grid
 
 def main():
     lam = wavelength_grid(3000.0, 3100.0, R_sampling=1000)   # &spectrum_params; air -> vacuum

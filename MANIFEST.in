@@ -1,0 +1,4 @@
+include *.f90 *.inc
+include standalone/Makefile standalone/*.f90 standalone/libhop.h standalone/gen_bindings.py
+include hopacity/libhop.h
+recursive-include hopacity/input *

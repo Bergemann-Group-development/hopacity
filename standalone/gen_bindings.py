@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the C prototypes of the BIND(C) functions in hop_c_api.f90.
 
-The prototypes are what ``tumult.hop`` hands to ``cffi.cdef``; the Makefile's
+The prototypes are what ``hopacity`` hands to ``cffi.cdef``; the Makefile's
 ``bindings`` target commits them as ``libhop.h``. The mapping is the C interoperability
 of Fortran 2003 for the small vocabulary the shim uses: ``integer(c_int)``,
 ``real(c_float)``, ``real(c_double)`` and ``character(kind=c_char)`` dummies that are
