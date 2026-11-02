@@ -32,6 +32,8 @@ heavy numpy use or set MKL_THREADING_LAYER=GNU in case of runtime clashes.
 """
 import multiprocessing
 import os
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 # Set before libhop.so (built -fopenmp) is dlopen'd, so it has to sit at import
@@ -640,17 +642,17 @@ class HopEOS:
 
         if nprocs > 1:
             # spawn, not fork: a forked child would inherit the parent's Fortran
-            # globals (and its live instance, which HopEOS allows only one of)
+            # globals (and its live instance, which HopEOS allows only one of).
+            # The executor's shutdown lets the workers exit normally, so the Fortran
+            # side flushes what it wrote, and a worker that HOP's error stop kills
+            # breaks the pool instead of leaving map() waiting for its result.
             ctx = multiprocessing.get_context('spawn')
-            pool = ctx.Pool(nprocs)
             try:
-                results = pool.map(_opacity_chunk, jobs, chunksize=1)
-                # close/join, not the with-block's terminate(): the workers have
-                # to exit normally for the Fortran side to flush what it wrote
-                pool.close()
-                pool.join()
-            finally:
-                pool.terminate()
+                with ProcessPoolExecutor(nprocs, mp_context=ctx) as pool:
+                    results = list(pool.map(_opacity_chunk, jobs))
+            except BrokenProcessPool:
+                raise HopError('an opacity worker process died; HOP printed the '
+                               'reason to stderr') from None
         else:
             if linelist is not None:
                 self._load_linelist(linelist, dlam, lam, windows)

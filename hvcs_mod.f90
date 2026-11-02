@@ -72,7 +72,7 @@ MODULE hvcs_mod
 
   !  Runtime controls (exposed in the composition_params namelist).
   character(len=16), public :: hydrogen_profiles = 'stehle'
-  character(len=256), public :: vcs_data_dir = './input/vcs'
+  character(len=4096), public :: vcs_data_dir = './input/vcs'
 
   real(8), parameter :: AA_PER_S = cc*1.d8   ! speed of light [AA/s]
   real(8), parameter :: LN10 = 2.30258509299404568402d0
@@ -107,7 +107,7 @@ contains
   !  (serial) setup, before any profile evaluation.
   SUBROUTINE ensure_vcs_loaded(dir)
     character(len=*), intent(in), optional :: dir
-    character(len=256) :: d
+    character(len=len(vcs_data_dir)) :: d
     !------------------------------------------------------------------
     if (vcs_loaded) return
     d = vcs_data_dir

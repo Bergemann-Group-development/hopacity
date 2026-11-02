@@ -32,7 +32,7 @@ MODULE anstee_mod
   implicit none
   private
 
-  character(len=256), public :: anstee_file = './input/Anstee-1802-2014.dat'
+  character(len=4096), public :: anstee_file = './input/Anstee-1802-2014.dat'
   public :: ensure_anstee_loaded, anstee_cross_section
 
   !> Rydberg energy and the wavelength-energy product, as anstee.f uses them
