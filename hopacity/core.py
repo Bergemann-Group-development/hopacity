@@ -18,9 +18,11 @@ same composition_type solves that dispatch.x uses:
   dispatch EOS/opacity table can be reproduced without running dispatch.x.
 - :func:`air2vac` / :func:`vac2air` convert wavelengths between standard air and vacuum.
 
-The library, its header and HOP's default input files sit in this package directory.
-In a source checkout ``libhop.h`` is a link to ``standalone/libhop.h``, and ``make -C
-standalone`` copies the library here and unpacks the ABO table in ``input/``; an
+The library and its header sit in this package directory and HOP's default data files in
+its ``data/`` folder, one subfolder per kind (``absdat/``, ``abund/``, ``molec/``,
+``isotopes/``, ``vcs/``).  In a source checkout ``libhop.h`` is a link to
+``standalone/libhop.h``, and ``make -C standalone`` copies the library here and unpacks
+the ABO table in ``data/``; an
 installed wheel carries all of them as files.
 
 Limitations: one instance per process (HOP keeps configuration in module-level
@@ -57,7 +59,7 @@ __all__ = ['HopEOS', 'HopError', 'AtmosphereFile', 'read_atmosphere', 'optical_d
            'find_library', 'find_header', 'open_library']
 
 _PKG_DIR = Path(__file__).resolve().parent
-_INPUT_DIR = _PKG_DIR / 'input'
+_DATA_DIR = _PKG_DIR / 'data'
 
 
 class HopError(RuntimeError):
@@ -172,7 +174,7 @@ class HopEOS:
     """The HOP composition_type, driven from Python.
 
     Parameters mirror the &composition_params namelist; data-file paths default
-    to the standard files in this package's ``input/`` directory.  ``options`` is a dict of
+    to the standard files in this package's ``data/`` directory.  ``options`` is a dict of
     HOP module-level settings applied *before* the Fortran init (required for
     init-time options such as ``abundances`` or ``exclude_elements``); the
     recognized names are exactly what ``option_names()`` reports; the value is
@@ -202,10 +204,10 @@ class HopEOS:
             raise HopError('another HopEOS instance is already open in this '
                            'process (HOP holds global state); close() it first')
 
-        absdat_file = Path(absdat_file or _INPUT_DIR / 'TS_absdat.dat')
-        abund_file = Path(abund_file or _INPUT_DIR / 'abund_magg22')
-        isotope_file = Path(isotope_file or _INPUT_DIR / 'isotopes_blp')
-        molec_file = Path(molec_file or _INPUT_DIR / 'molec_data_BC.txt')
+        absdat_file = Path(absdat_file or _DATA_DIR / 'absdat' / 'TS_absdat.txt')
+        abund_file = Path(abund_file or _DATA_DIR / 'abund' / 'abund_magg22.txt')
+        isotope_file = Path(isotope_file or _DATA_DIR / 'isotopes' / 'isotopes_blp.txt')
+        molec_file = Path(molec_file or _DATA_DIR / 'molec' / 'molec_data_BC.txt')
         for p in (absdat_file, abund_file, isotope_file, molec_file):
             if not p.is_file():
                 raise HopError(f'data file not found: {p}')
@@ -217,10 +219,10 @@ class HopEOS:
                 raise HopError(f'absmet file not found: {absmet}')
             options['absmet_file'] = str(absmet)
         # the VCS hydrogen-profile tables and the ABO cross-section tables of
-        # Turbospectrum lists sit next to the other input data, but HOP's default
+        # Turbospectrum lists sit in data/ as well, but HOP's default
         # paths are cwd-relative -- make them absolute unless overridden
-        options.setdefault('vcs_data_dir', str(_INPUT_DIR / 'vcs'))
-        options.setdefault('anstee_file', str(_INPUT_DIR / 'Anstee-1802-2014.dat'))
+        options.setdefault('vcs_data_dir', str(_DATA_DIR / 'vcs'))
+        options.setdefault('anstee_file', str(_DATA_DIR / 'Anstee-1802-2014.dat'))
 
         # everything needed to build an identical instance elsewhere: opacity()
         # hands this to its spawned workers, and uses it to rebuild this instance

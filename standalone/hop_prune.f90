@@ -74,10 +74,10 @@ PROGRAM hop_prune
 
   ! --- &composition_params, the composition_patch_mod list (group in read_composition,
   !     whose 'verbose' would otherwise clash with the atmos_params one) -------------
-  character(len=256) :: absdat_file='./input/TS_absdat.dat'
-  character(len=256) :: abund_file='./input/abund/abund_magg22'
-  character(len=256) :: isotope_file='./input/isotopes_blp'
-  character(len=256) :: molec_file='./input/molec_data_BC.txt'
+  character(len=256) :: absdat_file='./input/absdat/TS_absdat.txt'
+  character(len=256) :: abund_file='./input/abund/abund_magg22.txt'
+  character(len=256) :: isotope_file='./input/isotopes/isotopes_blp.txt'
+  character(len=256) :: molec_file='./input/molec/molec_data_BC.txt'
   character(len=256) :: save_species=''
   real(4) :: tmolim=-99, alpha_enhancement=0.0, r_process_enhancement=0.0
   integer :: comp_verbose=console_inherit

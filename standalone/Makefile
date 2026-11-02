@@ -10,7 +10,7 @@
 # -DHOP_STANDALONE) never mix with the framework-enabled ones linked into dispatch.x.
 #
 # The default target also copies libhop.so into ../hopacity, where the Python package
-# loads it, and unpacks the ABO table that HOP reads from ../hopacity/input; the wheel
+# loads it, and unpacks the ABO table that HOP reads from ../hopacity/data; the wheel
 # build (../setup.py) makes $(BUILD)/libhop.so alone instead.
 #
 # Usage:  make [-j N] [COMPILER=ifort] [OPT=-O2] [BUILD=dir]   # libhop.so, hop_prune.x, atom_convert.x
@@ -18,7 +18,7 @@
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 PKGLIB := ../hopacity/libhop.so
-ANSTEE := ../hopacity/input/Anstee-1802-2014.dat
+ANSTEE := ../hopacity/data/Anstee-1802-2014.dat
 HDR   := libhop.h
 PRUNE := $(BUILD)/hop_prune.x
 CONVERT := $(BUILD)/atom_convert.x

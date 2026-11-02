@@ -2561,7 +2561,7 @@ contains
   !===============================================================================
   ! Give H I the HI%nk hydrogenic levels n=1..HI%nk that Hoccupation_partition
   ! fills.  A legacy-format absdat gives H I its partition-function terms as
-  ! levels instead (four in input/absdat), and a line list with higher upper
+  ! levels instead (four in input/absdat/MULTI_absdat.txt), and a line list with higher upper
   ! levels raises HI%nk after the levels exist, so any other count is replaced.
   !-------------------------------------------------------------------------------
   SUBROUTINE size_H_levels(HI)

@@ -1,4 +1,4 @@
-"""Checks that an installed hopacity loads its library and bundled input files: an EOS
+"""Checks that an installed hopacity loads its library and bundled data files: an EOS
 solve, then continuum and line opacity on a short window of a two-line list."""
 import tempfile
 from pathlib import Path
