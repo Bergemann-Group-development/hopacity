@@ -46,10 +46,14 @@ MODULE hop_c_api
   private
   ! The C symbols are what Python binds; the same entry points are also USEd by the
   ! hop_prune.x program in this directory, so it goes through exactly the calls the
-  ! Python wrapper makes.
+  ! Python wrapper makes.  Every BIND(C) procedure is public: gfortran 16 gives a
+  ! private one local linkage, which drops it from the library's exports.
   public :: hop_init, hop_free, hop_set_option, hop_set_external_abundances, &
-            hop_init_linelist_windows, hop_load_state, hop_set_vmic, hop_opacity, &
-            hop_write_linelist, hop_linelist_count, hop_last_error
+            hop_option_names, hop_last_error, hop_omp_release
+  public :: hop_init_linelist, hop_init_linelist_windows, hop_keep_species, &
+            hop_linelist_count, hop_get_linelist, hop_linelist_species, hop_write_linelist
+  public :: hop_load_state, hop_set_vmic, hop_get_n, hop_get_field, hop_get_species, &
+            hop_get_grph, hop_opacity, hop_opacity_omp, hop_scattering
   public :: hop_atmos_read, hop_atmos_get, hop_atmos_free, hop_optical_depth, hop_pchip_integral
 
   ! master is the initialized-but-never-loaded composition; each hop_load_state
