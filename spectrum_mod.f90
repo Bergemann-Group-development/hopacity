@@ -40,7 +40,7 @@ MODULE spectrum_mod
     logical :: in_log=.false.
     real(8) :: daa=0, aa_red=0, aa_blue=0, R_sampling=0
     integer :: nnu=0
-    character(len=256) :: lam_file='', window_file=''
+    character(len=4096) :: lam_file='', window_file=''
     ! window_file (A1/A2): Path to file with multi-window specification. One window per
     ! non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
     ! Windows are validated, sorted and merged (overlapping/touching). With R_sampling > 0

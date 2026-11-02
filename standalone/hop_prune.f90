@@ -59,7 +59,7 @@ PROGRAM hop_prune
   implicit none
 
   ! --- &atmos_params, the read_external_mod list; only the named few are used ----
-  character(len=512) :: atmos_file='', atmos_root=''
+  character(len=4096) :: atmos_file='', atmos_root=''
   character(len=64) :: atmos_format='unknown', amr=''
   integer :: dims=1, verbose=console_inherit, patches_per_mpi=1, nx=-1, ny=-1, nz=96, snap=0
   real(8) :: FeH=-99.9
@@ -74,16 +74,16 @@ PROGRAM hop_prune
 
   ! --- &composition_params, the composition_patch_mod list (group in read_composition,
   !     whose 'verbose' would otherwise clash with the atmos_params one) -------------
-  character(len=256) :: absdat_file='./input/absdat/TS_absdat.txt'
-  character(len=256) :: abund_file='./input/abund/abund_magg22.txt'
-  character(len=256) :: isotope_file='./input/isotopes/isotopes_blp.txt'
-  character(len=256) :: molec_file='./input/molec/molec_data_BC.txt'
+  character(len=4096) :: absdat_file='./input/absdat/TS_absdat.txt'
+  character(len=4096) :: abund_file='./input/abund/abund_magg22.txt'
+  character(len=4096) :: isotope_file='./input/isotopes/isotopes_blp.txt'
+  character(len=4096) :: molec_file='./input/molec/molec_data_BC.txt'
   character(len=256) :: save_species=''
   real(4) :: tmolim=-99, alpha_enhancement=0.0, r_process_enhancement=0.0
   integer :: comp_verbose=console_inherit
 
   ! --- &opac_table_params: only opac_table_vmic influences the selection ------------
-  character(len=256) :: opac_table='', absmet_file=''
+  character(len=4096) :: opac_table='', absmet_file=''
   logical :: pca_opac=.true.
   real(8) :: ldne=0.25, ldrho=0.25, ldtemp=0.05
   namelist /opac_table_params/ opac_table, opac_table_vmic, pca_opac, &
@@ -91,8 +91,8 @@ PROGRAM hop_prune
 
   ! --- &linelist_params ---------------------------------------------------------------
   real(8) :: dlam=100.
-  character(len=512) :: linelist_folder=''
-  character(len=256) :: linelist_file(128)
+  character(len=4096) :: linelist_folder=''
+  character(len=4096) :: linelist_file(128)
   namelist /linelist_params/ dlam, exclude_elements, linelist_file, linelist_folder, &
     tolerance, only_elements, line_scattering, ll_profile, voigt_kernel, anstee_file, &
     match_nlte_levels
@@ -106,7 +106,7 @@ PROGRAM hop_prune
   ! extent of lines centred outside an output patch, and on the api_profile dwarf and
   ! giant (R=1e5, 4000-9000 A) the reaches from 8 samples changed spectra by at most
   ! 5e-5 relative to all-depth reaches, below the 1e-4 tolerance.
-  character(len=512) :: output_file=''
+  character(len=4096) :: output_file=''
   integer :: sample_count=8
   namelist /prune_params/ output_file, sample_count
 
@@ -116,7 +116,8 @@ PROGRAM hop_prune
 
   type(atmos_data_t) :: atmos
   type(spectrum_type) :: sp
-  character(len=512) :: nml_file, msg, tmp_file
+  character(len=4096) :: nml_file, tmp_file
+  character(len=512) :: msg
   character(len=1024) :: abundances_in
   character(len=16) :: fmt
   integer :: nml_unit, echo_unit, iostat, ierr, i, nfiles, nsample, nwin, nkept
