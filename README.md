@@ -244,3 +244,7 @@ and elsewhere by less than 1e-4.
 
 `tumult.prune` drives the program from the synthesis workflows: one child per uncached
 atmosphere node on the workflow's CPU budget, killed on cancellation.
+
+## License
+
+hopacity and HOP are free software: you can redistribute them and/or modify them under the terms of the GNU General Public License version 3 as published by the Free Software Foundation (`LICENSE`). They are distributed in the hope that they will be useful, but without any warranty; without even the implied warranty of merchantability or fitness for a particular purpose. The copyright holders are listed in `AUTHORS`.

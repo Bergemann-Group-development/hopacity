@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=70.1"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "HOP equation of state and opacities (continuum, sampled metal lines, line lists) from Python, without DISPATCH"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE", "AUTHORS"]
 dependencies = [
     "numpy>=2.0",
     "cffi>=1.16",       # binds libhop.so against the bundled libhop.h
