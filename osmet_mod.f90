@@ -175,8 +175,10 @@ contains
             abcd1 = exp(ln10*((cd1 - ab1) * dy + ab1))
             abcd2 = exp(ln10*((cd2 - ab2) * dy + ab2))
 
-            ! last interpolation along frequencies is done on linear opacities
-            os = (abcd2 - abcd1) * dz + abcd1
+            ! last interpolation along frequencies is done on linear opacities;
+            ! the convex form keeps fp32 precision where neighbouring nodes
+            ! differ by orders of magnitude, which the form a+(b-a)*dz loses
+            os = abcd1 * (1.0 - dz) + abcd2 * dz
             chi(f,i,j,k) = chi(f,i,j,k) + os*r
           end do
         end do
