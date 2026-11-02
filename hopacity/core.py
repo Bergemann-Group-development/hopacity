@@ -21,8 +21,7 @@ same composition_type solves that dispatch.x uses:
 The library and its header sit in this package directory and HOP's default data files in
 its ``data/`` folder, one subfolder per kind (``absdat/``, ``abund/``, ``molec/``,
 ``isotopes/``, ``vcs/``).  In a source checkout ``libhop.h`` is a link to
-``standalone/libhop.h``, and ``make -C standalone`` copies the library here and unpacks
-the ABO table in ``data/``; an
+``standalone/libhop.h``, and ``make -C standalone`` copies the library here; an
 installed wheel carries all of them as files.
 
 Limitations: one instance per process (HOP keeps configuration in module-level

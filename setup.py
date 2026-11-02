@@ -3,12 +3,10 @@
 Compiles libhop.so with standalone/Makefile (gfortran by default; COMPILER=ifort or ifx
 in the environment selects those) and places it in the package next to the header and
 HOP's default data files.  The header is a link to standalone/libhop.h in the source
-tree and a file in the wheel; the ABO table is tracked compressed and is unpacked into
-the wheel.  The library links the compiler's Fortran and
+tree and a file in the wheel.  The library links the compiler's Fortran and
 OpenMP runtimes dynamically, so a wheel for other machines has to bundle them
 (delocate on macOS, auditwheel on Linux).
 """
-import gzip
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,7 +16,6 @@ from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.command.build_py import build_py
 
 HERE = Path(__file__).resolve().parent
-ANSTEE = 'Anstee-1802-2014.txt'
 
 
 class BuildWithLibrary(build_py):
@@ -32,9 +29,7 @@ class BuildWithLibrary(build_py):
         shutil.copyfile(lib, pkg / 'libhop.so')
         shutil.copyfile(HERE / 'hopacity' / 'libhop.h', pkg / 'libhop.h')
         src, dst = HERE / 'hopacity' / 'data', pkg / 'data'
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns('Anstee-*'), dirs_exist_ok=True)
-        with gzip.open(src / f'{ANSTEE}.gz', 'rb') as fin, open(dst / ANSTEE, 'wb') as fout:
-            shutil.copyfileobj(fin, fout)
+        shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
 class BinaryDistribution(Distribution):
