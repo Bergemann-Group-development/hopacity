@@ -1,0 +1,9 @@
+# Build products of the standalone Makefile and of the wheel build
+standalone/build/
+hopacity/libhop.so
+hopacity/input/Anstee-1802-2014.dat
+*.mod
+build/
+dist/
+*.egg-info/
+__pycache__/
