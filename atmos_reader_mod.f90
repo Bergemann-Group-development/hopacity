@@ -200,7 +200,7 @@ CONTAINS
     real(4) :: xx, yy, zz, palfa, pny, py, pbeta
     real(4) :: lgTauR, lgTau5, pg, prad, pturb, xkapr, emu, vconv, fconv, rhox
     real(4), dimension(:), allocatable :: temp, pe, rho
-    character(512) :: fileID
+    character(4096) :: fileID
     !---------------------------------------------------------------------------
     call open_existing(atmos_file, lunit, ierr, msg)
     if (ierr /= 0) return
@@ -452,7 +452,7 @@ CONTAINS
     type(atmos_data_t), intent(out) :: atmos
     integer, intent(out) :: ierr
     character(len=*), intent(out) :: msg
-    character(len=512) :: mesh_file, snap_file, data_file, aux_file
+    character(len=4096) :: mesh_file, snap_file, data_file, aux_file
     real(4), allocatable, dimension(:) :: xdn, dxidxup, dxidxdn, dx, dxdn
     real(4), allocatable, dimension(:) :: ydn, dyidyup, dyidydn, dy, dydn
     real(4), allocatable, dimension(:) :: zdn, dzidzup, dzidzdn, dz, dzdn

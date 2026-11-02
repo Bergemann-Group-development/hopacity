@@ -46,7 +46,7 @@ MODULE hop_env_mod
   type:: io_t
     integer:: input=-1                      ! namelist input unit (unused standalone)
     integer:: namelist=-1                   ! namelist echo unit (unused standalone)
-    character(len=512):: run_dir='./'
+    character(len=4096):: run_dir='./'
     type(lock_t):: lock
   contains
     procedure, nopass:: warning

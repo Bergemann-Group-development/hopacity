@@ -135,7 +135,7 @@ MODULE composition_mod
   ! to, read from its table-format atom file (departure_atom).  One instance per file
   ! is shared by every patch and every ray-aligned copy.
   type, public :: departure_atom_t
-    character(len=512) :: file=''
+    character(len=4096) :: file=''
     real(8), allocatable :: ev(:)        ! 100*stage + energy above the stage's ground [eV]
     real(8), allocatable :: level_ev(:)  ! energy above the atom's ground [eV]
     integer, allocatable :: line_lo(:), line_up(:)  ! level indices of each transition

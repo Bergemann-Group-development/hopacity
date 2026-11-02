@@ -564,7 +564,7 @@ MODULE spectrum_mod
     SUBROUTINE save (self, label)
       class(spectrum_type), intent(inout):: self
       character(len=*), intent(in) :: label
-      character(len=256) :: filename
+      character(len=4096) :: filename
       integer :: lunit, i
       logical :: exists
       !-----------------------------------------------------------------------------

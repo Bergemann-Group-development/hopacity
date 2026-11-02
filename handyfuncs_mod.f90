@@ -19,7 +19,8 @@ contains
   !====================================================================================
   SUBROUTINE print_failed_line(lunit, iostat, text)
     integer, intent(in) :: lunit, iostat
-    character(len=512) :: line_text, filename
+    character(len=512) :: line_text
+    character(len=4096) :: filename
     character(len=*), intent(in), optional :: text
     ! ----------------------------------------------------------------------
     if (iostat > 0) then
