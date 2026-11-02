@@ -97,25 +97,27 @@ end
 
 standalone_dir() = joinpath(_HOP_DIR, "standalone")
 
-# Own build dir, so the Makefile's -O1 default (what other users get) and these
-# flags never share objects.
+# A library tuned to this host in its own build dir, so its objects never mix with the
+# portable build the Python package loads.  -mprefer-vector-width exists on x86 only.
 const BUILD_DIR = "build-opt"
-const BUILD_OPT = "-O3 -march=native -mprefer-vector-width=256"
+const BUILD_OPT = Sys.ARCH === :x86_64 ? "-O3 -march=native -mprefer-vector-width=256" :
+                                         "-O3 -mcpu=native"
+const BUILD_LIB = joinpath(BUILD_DIR, "libhop.so")
 
 function __init__()
     dir = standalone_dir()
     isdir(dir) || return nothing
     mkpidlock(joinpath(dir, "build.lock"); stale_age=600) do
-        run(`make -s -C $dir -j$(min(Sys.CPU_THREADS, 8)) BUILD=$BUILD_DIR OPT=$BUILD_OPT`)
+        run(`make -s -C $dir -j$(min(Sys.CPU_THREADS, 8)) BUILD=$BUILD_DIR OPT=$BUILD_OPT HW= $BUILD_LIB`)
     end
     nothing
 end
 
 function find_library()
     lib = get(ENV, "HOP_LIB", "")
-    path = isempty(lib) ? joinpath(standalone_dir(), BUILD_DIR, "libhop.so") : lib
+    path = isempty(lib) ? joinpath(standalone_dir(), BUILD_LIB) : lib
     isfile(path) || error("libhop.so not found at $path; build it with " *
-                          "`make -C $(standalone_dir()) BUILD=$BUILD_DIR OPT=\"$BUILD_OPT\"` " *
+                          "`make -C $(standalone_dir()) BUILD=$BUILD_DIR OPT=\"$BUILD_OPT\" HW= $BUILD_LIB` " *
                           "or set \$HOP_LIB")
     path
 end

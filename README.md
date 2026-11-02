@@ -263,7 +263,7 @@ Invoked here, `COMPILER=ifort` or `COMPILER=ifx` selects the Intel compilers and
 
 `python -m pytest tests` in this folder tests the source package, after `make -C standalone`; `python -m pytest <path>/tests` from another folder tests the installed one. `test_hop.py` compares the equation of state and opacity with the references in `tests/golden/`; its docstring states their inputs and tolerance, and `python tests/hop_reference.py` reviews or rewrites them.
 
-`HOP.jl/` is a Julia binding of the same library, with the threaded entry points the Python package does not use. It builds its own library in `standalone/build-opt` with x86 vector flags when it is loaded.
+`HOP.jl/` is a Julia binding of the same library, with the threaded entry points the Python package does not use. It builds its own library, tuned to the host CPU, in `standalone/build-opt` when it is loaded.
 
 ## License
 
