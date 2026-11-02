@@ -4,14 +4,22 @@ HOP is the equation-of-state and opacity engine of OpenMULTI3D. `hopacity` is it
 
 ## Install
 
-A wheel carries `libhop.so`, its header and HOP's default input files (abundances, continuum and molecular data, hydrogen Stark-profile tables and ABO cross sections), about 9 MB. Build one in this directory with a Fortran compiler (gfortran; `COMPILER=ifort` or `COMPILER=ifx` in the environment selects the Intel compilers) and install it into any Python environment:
+A wheel carries `libhop.so`, its header and HOP's default input files (abundances, continuum and molecular data, hydrogen Stark-profile tables and ABO cross sections), about 9 MB. Line lists and sampled metal-line (absmet) tables are not included; pass their paths.
+
+The releases of the [hopacity repository](https://github.com/Bergemann-Group-development/hopacity/releases) carry wheels for Linux x86_64 and macOS arm64 (macOS 14 and later), which bundle the compiler's Fortran and OpenMP runtimes and need no compiler:
+
+```bash
+pip install hopacity-<version>-py3-none-<platform>.whl
+```
+
+On other platforms, build a wheel in this directory with a Fortran compiler (gfortran; `COMPILER=ifort` or `COMPILER=ifx` in the environment selects the Intel compilers) and install it:
 
 ```bash
 pip wheel --no-deps -w dist .
 pip install dist/hopacity-*.whl
 ```
 
-The library links the compiler's Fortran and OpenMP runtimes dynamically, so the wheel runs on machines where that compiler is installed. Line lists and sampled metal-line (absmet) tables are not included; pass their paths.
+Such a wheel links the compiler's runtimes dynamically and runs where that compiler is installed; `delocate-wheel` (macOS) or `auditwheel repair` (Linux) bundles them, as the release build does. The release build runs `tests/smoke.py` against each wheel it makes.
 
 In an OpenMULTI3D checkout, `pip install -e .` in the experiment directory provides `hopacity` together with `tumult`, which re-exports `HopEOS`, and the top-level `make` builds the library.
 

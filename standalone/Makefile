@@ -10,23 +10,26 @@
 # -DHOP_STANDALONE) never mix with the framework-enabled ones linked into dispatch.x.
 #
 # The default target also copies libhop.so into ../hopacity, where the Python package
-# loads it; the wheel build (../setup.py) makes $(BUILD)/libhop.so alone instead.
+# loads it, and unpacks the ABO table that HOP reads from ../hopacity/input; the wheel
+# build (../setup.py) makes $(BUILD)/libhop.so alone instead.
 #
 # Usage:  make [-j N] [COMPILER=ifort] [OPT=-O2] [BUILD=dir]   # libhop.so, hop_prune.x, atom_convert.x
 #         make bindings                                        # rewrite libhop.h after an API change
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 PKGLIB := ../hopacity/libhop.so
+ANSTEE := ../hopacity/input/Anstee-1802-2014.dat
 HDR   := libhop.h
 PRUNE := $(BUILD)/hop_prune.x
 CONVERT := $(BUILD)/atom_convert.x
 DISPATCH_TOP ?= ../../../..
 COMPILER ?= gfortran
 OPTS ?= hoppe
-# Match the application build's optimisation and architecture flags.  The fallbacks keep
-# this standalone Makefile usable when HOP is copied outside a Dispatch checkout.
+# Match the application build's optimisation and architecture flags.  Outside a Dispatch
+# checkout (the hopacity repository) the fallbacks take its optimisation without
+# -ffast-math and no architecture flags, so the library runs on any host of the ISA.
 -include $(DISPATCH_TOP)/config/compiler/$(COMPILER)/$(OPTS).mkf
-OPT   ?= -O1
+OPT   ?= -O3
 HW    ?=
 # Hide the compiler lines as the DISPATCH build does; `make E=` shows them.
 E = @
@@ -67,7 +70,7 @@ PRUNE_OBJS = $(addprefix $(BUILD)/,$(notdir $(PRUNE_SRCS:.f90=.o)))
 
 vpath %.f90 . ..
 
-all: $(LIB) $(PKGLIB) $(PRUNE) $(CONVERT)
+all: $(LIB) $(PKGLIB) $(ANSTEE) $(PRUNE) $(CONVERT)
 	@:
 
 # The header is the C prototypes of the BIND(C) functions, written by gen_bindings.py
@@ -90,6 +93,10 @@ $(LIB): $(OBJS)
 # Copied by rename, so a process that has the old library loaded keeps a valid file
 $(PKGLIB): $(LIB)
 	$(E)cp $< $@.tmp && mv -f $@.tmp $@
+
+# Tracked compressed
+$(ANSTEE): $(ANSTEE).gz
+	$(E)gunzip -c $< > $@
 
 # Fortran INCLUDE files are not in the chain above; name their includers
 $(BUILD)/level_mod.o $(BUILD)/bftrans_mod.o: ../exp_neg.inc

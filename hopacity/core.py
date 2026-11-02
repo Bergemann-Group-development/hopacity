@@ -18,10 +18,10 @@ same composition_type solves that dispatch.x uses:
   dispatch EOS/opacity table can be reproduced without running dispatch.x.
 - :func:`air2vac` / :func:`vac2air` convert wavelengths between standard air and vacuum.
 
-The library, its header and HOP's default input files sit in this package directory:
-an installed wheel carries them as files, and in a source checkout ``libhop.h`` and
-``input/`` are links into the HOP and OpenMULTI3D trees, and ``make -C HOP/standalone``
-copies the library here.
+The library, its header and HOP's default input files sit in this package directory.
+In a source checkout ``libhop.h`` is a link to ``standalone/libhop.h``, and ``make -C
+standalone`` copies the library here and unpacks the ABO table in ``input/``; an
+installed wheel carries all of them as files.
 
 Limitations: one instance per process (HOP keeps configuration in module-level
 globals); hard failures inside the Fortran (missing data files, solver

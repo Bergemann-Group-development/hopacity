@@ -20,3 +20,22 @@ dependencies = [
 [tool.setuptools]
 packages = ["hopacity"]
 include-package-data = false
+
+# Release wheels (.github/workflows/wheels.yml).  The wheel is py3-none, so one
+# interpreter builds it for all; the repair step bundles the compiler's Fortran and
+# OpenMP runtimes.  HW takes the architecture baselines of the Dispatch production build
+# (config/compiler/gfortran/hoppe.mkf).
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = "*-musllinux*"
+test-command = "python {project}/tests/smoke.py"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+environment = { OPT = "-O3", HW = "-march=sandybridge -mtune=generic" }
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+# Homebrew's gcc provides gfortran and its runtimes, built for the runner's macOS
+before-all = "brew install gcc"
+environment = { OPT = "-O3", HW = "-mcpu=apple-m1", MACOSX_DEPLOYMENT_TARGET = "14.0" }

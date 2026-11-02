@@ -2,9 +2,9 @@
 
 Compiles libhop.so with standalone/Makefile (gfortran by default; COMPILER=ifort or ifx
 in the environment selects those) and places it in the package next to the header and
-HOP's default input files.  In a source checkout those two are links into the HOP and
-OpenMULTI3D trees; the wheel carries them as files.  The ABO table is tracked
-compressed and is unpacked into the wheel.  The library links the compiler's Fortran and
+HOP's default input files.  The header is a link to standalone/libhop.h in the source
+tree and a file in the wheel; the ABO table is tracked compressed and is unpacked into
+the wheel.  The library links the compiler's Fortran and
 OpenMP runtimes dynamically, so a wheel for other machines has to bundle them
 (delocate on macOS, auditwheel on Linux).
 """

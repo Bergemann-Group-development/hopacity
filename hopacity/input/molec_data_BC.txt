@@ -1,1 +1,150 @@
-../../../input/molec_data_BC.txt
+! MOLECULE ID,  constant dissociation energy, number of terms in partition function,
+!               optional total nuclear spin weight of the partition function (default 1),
+!               optional lowest temperature the polynomial is fitted over (default 1000)
+! Dissociation energy, optional polynomial for vib-rot energies
+! Dissociation constants, always 5 numbers
+! Barklem & Collet (2016) partition function
+!
+! The 4th header field is prod (2I+1) over the constituent nuclei, and marks the
+! partition function below as counting nuclear spin states. Set it only when the
+! tabulated Q actually carries that factor, as the BT2/Barber H2O Q does (4 = 2*2*1
+! for H,H,O-16) to match the 3:1 ortho/para weights in its line list g column.
+! get_dis divides it back out; the line-opacity path uses Q as tabulated.
+!
+! The 5th field is where the polynomial stops being a fit and starts being an
+! extrapolation. Below it irwin_partf continues Q as a power law through the
+! polynomial's values at that limit and 1.5x it, which is faithful for the atomic
+! and diatomic Irwin fits (all of which start at 1000 K) but not for a polyatomic,
+! whose Q curves so strongly that the power law undershoots by a factor of several
+! at 300 K. The polyatomic entries below are therefore fitted from 100 K up.
+!
+! H2O is the BT2/Barber Q rather than a B&C one, because it is the only entry that
+! matches the convention of the BT2 line list used for H2O opacity.
+!
+! CO2, CH4 and NH3 are fits to the partition function of their ExoMol line list
+! (UCL-4000, MM, CoYuTe), spliced above 4000/2000/1800 K -- where each list stops
+! being complete -- onto the Irwin polynomial they replace, times the nuclear spin
+! weight. The ExoMol degeneracies count nuclear spin states, so their line opacity
+! needs a Q that does too.
+! The optional 6th header field is the molecule's first ionisation energy in eV (NIST
+! Chemistry WebBook), which needs the 4th and 5th fields written out. It is the limit
+! the line-list damping estimates take n* from (bbtrans_mod prepare_stark); a molecule
+! without it gets no Cowley Stark estimate for lines with no tabulated Stark width.
+!
+!-----------------------------------------------------
+H2       0   6    1 1000  15.426
+4.478        0.00975     -0.12427      0.60602     -1.4772     2.6757
+0 0 0 0 0
+2.229160e+02 -1.704030e+02 5.032209e+01 -7.236008e+00 5.102960e-01 -1.411587e-02
+H2+   0   6
+2.651        0.15253     -0.82685      1.7231      -2.0036     2.9216
+0 0 0 0 0
+5.914109e+01 -5.076654e+01 1.655659e+01 -2.582089e+00 1.963543e-01 -5.802110e-03
+H2O      1   6    4 1000  12.621
+9.512
+0 0 0 0 0
+-2.613011e+03 1.540337e+03 -3.592844e+02 4.144443e+01 -2.357878e+00 5.287149e-02
+OH       1   6    1 1000  13.017
+4.4171
+0 0 0 0 0
+1.456523e+01 -4.658948e+00 5.118971e-01 2.766319e-02 -7.322196e-03 3.699777e-04
+CH       1   6    1 1000  10.64
+3.4696
+0 0 0 0 0
+5.498478e+02 -3.427496e+02 8.606578e+01 -1.080757e+01 6.790784e-01 -1.700719e-02
+CO       1   6    1 1000  14.014
+11.117
+0 0 0 0 0
+-7.206118e+02 4.515109e+02 -1.123259e+02 1.393729e+01 -8.608622e-01 2.121022e-02
+CN       1   6    1 1000  13.598
+7.737
+0 0 0 0 0
+-3.661878e+02 2.197184e+02 -5.195057e+01 6.127717e+00 -3.595749e-01 8.450197e-03
+C2       1   6    1 1000  11.4
+6.371
+0 0 0 0 0
+-6.257868e+02 3.738332e+02 -8.897590e+01 1.060687e+01 -6.309275e-01 1.501299e-02
+N2       1   6    1 1000  15.581
+9.75394
+0 0 0 0 0
+-5.822032e+02 3.641881e+02 -9.040882e+01 1.118908e+01 -6.888011e-01 1.690806e-02
+O2       1   6    1 1000  12.070
+5.116
+0 0 0 0 0
+-6.004294e+02 3.738430e+02 -9.243023e+01 1.142635e+01 -7.048883e-01 1.741080e-02
+NO       1   6    3 1000  9.264
+6.50771
+0 0 0 0 0
+-8.628969e+02 5.434873e+02 -1.358107e+02 1.694477e+01 -1.053666e+00 2.615592e-02
+NH       1   6    1 1000  13.49
+3.419
+0 0 0 0 0
+1.123471e+03 -6.848031e+02 1.668429e+02 -2.024547e+01 1.223874e+00 -2.942073e-02
+MgH   1   6
+1.271
+0 0 0 0 0
+1.058473e+01 -4.135048e+01 1.942009e+01 -3.538637e+00 2.896946e-01 -8.851725e-03
+SiH   1   6
+3.04
+0 0 0 0 0
+1.565378e+03 -9.544852e+02 2.327878e+02 -2.831384e+01 1.718525e+00 -4.158705e-02
+CaH   1   6
+2.281
+0 0 0 0 0
+3.521128e+03 -2.167742e+03 5.328115e+02 -6.528170e+01 3.987954e+00 -9.710136e-02
+SiO   1   6
+8.183
+0 0 0 0 0
+-4.980411e+03 3.123445e+03 -7.821663e+02 9.784323e+01 -6.111818e+00 1.525440e-01
+TiO      1   6    1 1000  6.819
+6.869
+0 0 0 0 0
+1.649573e+03 -1.001246e+03 2.427082e+02 -2.925141e+01 1.754358e+00 -4.183934e-02
+VO       1   6    1 1000  7.239
+6.566
+0 0 0 0 0
+1.837833e+03 -1.130146e+03 2.778553e+02 -3.402108e+01 2.075972e+00 -5.045062e-02
+SiS      1   6    1 1000  10.53
+6.358
+0 0 0 0 0
+-3.000034e+03 1.898163e+03 -4.794223e+02 6.051723e+01 -3.815023e+00 9.611011e-02
+CrH   1   6
+1.93
+0 0 0 0 0
+3.580419e+03 -2.260876e+03 5.703014e+02 -7.173237e+01 4.499175e+00 -1.124876e-01
+FeH   1   6
+1.497
+0 0 0 0 0
+1.031399e+03 -6.307044e+02 1.543642e+02 -1.886681e+01 1.155593e+00 -2.835397e-02
+ZrO   1   6
+7.901
+0 0 0 0 0
+1.435692e+03 -8.860289e+02 2.177448e+02 -2.656344e+01 1.612316e+00 -3.893111e-02
+AlH   1   6
+2.949
+0 0 0 0 0
+1.500907e+03 -9.441299e+02 2.375972e+02 -2.985264e+01 1.874054e+00 -4.697131e-02
+MgO   1   6
+2.567
+0 0 0 0 0
+1.387013e+03 -8.145512e+02 1.898851e+02 -2.192178e+01 1.257850e+00 -2.870682e-02
+AlO   1   6
+5.165
+0 0 0 0 0
+-1.655092e+03 1.031265e+03 -2.549231e+02 3.134055e+01 -1.914340e+00 4.653463e-02
+CaO   1   6
+3.986
+0 0 0 0 0
+-8.423885e+03 5.080002e+03 -1.219558e+03 1.457623e+02 -8.671467e+00 2.054908e-01
+CO2      1   8    1  100  13.777
+16.561
+0 0 0 0 0
+ 3.74518344D+02 -3.98083757D+02  1.78216266D+02 -4.31528841D+01  6.11090615D+00 -5.06408230D-01  2.28153556D-02 -4.32488251D-04
+CH4      1   8   16  100  12.61
+17.021
+0 0 0 0 0
+-4.37085228D+02  5.47713970D+02 -2.86860643D+02  8.16335473D+01 -1.35813529D+01  1.31933104D+00 -6.92409615D-02  1.51689535D-03
+NH3      1   8   24  100  10.070
+12.000
+0 0 0 0 0
+-3.32759635D+02  3.94078376D+02 -1.95802661D+02  5.32419496D+01 -8.50338151D+00  7.95453353D-01 -4.02545246D-02  8.49928075D-04
