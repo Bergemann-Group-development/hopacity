@@ -1,0 +1,15 @@
+name = "HOP"
+uuid = "850cc89c-680e-4b76-9699-c4c70d269ddc"
+version = "1.0.0"
+authors = ["Philipp Eitner"]
+
+[deps]
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+FileWatching = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
+Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+
+[compat]
+Distributed = "1.11.0"
+FileWatching = "1.11.0"
+Mmap = "1.11.0"

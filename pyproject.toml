@@ -29,7 +29,8 @@ include-package-data = false
 [tool.cibuildwheel]
 build = "cp312-*"
 skip = "*-musllinux*"
-test-command = "python {project}/tests/smoke.py"
+test-requires = ["pytest"]
+test-command = "python {project}/tests/smoke.py && python -m pytest {project}/tests"
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
