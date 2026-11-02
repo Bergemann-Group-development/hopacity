@@ -18,7 +18,7 @@
 BUILD ?= build
 LIB   := $(BUILD)/libhop.so
 PKGLIB := ../hopacity/libhop.so
-ANSTEE := ../hopacity/data/Anstee-1802-2014.dat
+ANSTEE := ../hopacity/data/Anstee-1802-2014.txt
 HDR   := libhop.h
 PRUNE := $(BUILD)/hop_prune.x
 CONVERT := $(BUILD)/atom_convert.x

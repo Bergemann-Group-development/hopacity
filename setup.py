@@ -18,7 +18,7 @@ from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.command.build_py import build_py
 
 HERE = Path(__file__).resolve().parent
-ANSTEE = 'Anstee-1802-2014.dat'
+ANSTEE = 'Anstee-1802-2014.txt'
 
 
 class BuildWithLibrary(build_py):

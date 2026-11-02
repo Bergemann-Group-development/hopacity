@@ -116,14 +116,14 @@ contains
     case ('analytic')
       return
     case ('stehle')
-      call read_vcs_grid(1, trim(d)//'/stehle_balmer.dat')
-      call read_vcs_grid(2, trim(d)//'/stehle_paschen.dat')
-      call read_vcs_grid(3, trim(d)//'/vcs_bracket.dat')
+      call read_vcs_grid(1, trim(d)//'/stehle_balmer.txt')
+      call read_vcs_grid(2, trim(d)//'/stehle_paschen.txt')
+      call read_vcs_grid(3, trim(d)//'/vcs_bracket.txt')
       radiative = [.false., .false., .true.]
     case ('lemke')
-      call read_vcs_grid(1, trim(d)//'/vcs_balmer.dat')
-      call read_vcs_grid(2, trim(d)//'/vcs_paschen.dat')
-      call read_vcs_grid(3, trim(d)//'/vcs_bracket.dat')
+      call read_vcs_grid(1, trim(d)//'/vcs_balmer.txt')
+      call read_vcs_grid(2, trim(d)//'/vcs_paschen.txt')
+      call read_vcs_grid(3, trim(d)//'/vcs_bracket.txt')
       radiative = .true.
     case default
       call console_error ("hvcs_mod: hydrogen_profiles must be 'stehle', 'lemke' or 'analytic', not '" &

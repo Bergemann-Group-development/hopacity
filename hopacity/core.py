@@ -222,7 +222,7 @@ class HopEOS:
         # Turbospectrum lists sit in data/ as well, but HOP's default
         # paths are cwd-relative -- make them absolute unless overridden
         options.setdefault('vcs_data_dir', str(_DATA_DIR / 'vcs'))
-        options.setdefault('anstee_file', str(_DATA_DIR / 'Anstee-1802-2014.dat'))
+        options.setdefault('anstee_file', str(_DATA_DIR / 'Anstee-1802-2014.txt'))
 
         # everything needed to build an identical instance elsewhere: opacity()
         # hands this to its spawned workers, and uses it to rebuild this instance
