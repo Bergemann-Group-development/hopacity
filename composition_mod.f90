@@ -107,6 +107,7 @@ MODULE composition_mod
     procedure :: boltzmann_factor
     procedure :: continuum_opacities
     procedure :: add_absmet_opacities
+    procedure :: add_absmet_extinction
     procedure :: opacity
     procedure :: add_hrest
     procedure :: electron_scattering
@@ -2930,6 +2931,50 @@ contains
     deallocate(chi_met)
     call trace%end(itimer)
   END SUBROUTINE add_absmet_opacities
+
+  !=============================================================================
+  ! Add the sampled metal-line (absmet) opacity to a physical total extinction
+  ! chi and its scattering part sigma, the form the sampled background table
+  ! returns:
+  !
+  !   chi += chi_met                sigma += (1-eps)*chi_met
+  !
+  ! with eps = 1 unless line_scattering, as in add_absmet_opacities.  The sampled
+  ! path evaluates absmet here at the patch's own frequencies, from the osmet
+  ! table all patches share, instead of resampling it into every patch's table.
+  !=============================================================================
+  SUBROUTINE add_absmet_extinction(self, sp, chi, sigma)
+    class(composition_type), target :: self
+    class(spectrum_type), intent(in) :: sp
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi, sigma
+    real(4), dimension(:,:,:,:), allocatable :: chi_met, epsln
+    integer :: i, j, k, f, nf, m(3)
+    integer, save :: itimer=0
+    !---------------------------------------------------------------------------
+    if (.not. osmet%initialised) return
+    call trace%begin ('composition_type%add_absmet_extinction', itimer=itimer)
+    if (.not. line_scattering) then
+      call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi)
+    else
+      m = shape(self%temp)
+      nf = size(chi, 1)
+      allocate(chi_met, epsln, mold=chi)
+      chi_met = 0
+      call osmet%add_line_opacities(sp%lam, self%p6, self%temp, self%rho, chi_met)
+      call osmet%compute_epsilon(sp%nu, self%temp, self%ne, epsln)
+      do k=1, m(3)
+        do j=1, m(2)
+          do i=1, m(1)
+            do f=1, nf
+              chi  (f,i,j,k) = chi  (f,i,j,k) + chi_met(f,i,j,k)
+              sigma(f,i,j,k) = sigma(f,i,j,k) + (1 - epsln(f,i,j,k))*chi_met(f,i,j,k)
+            end do
+          end do
+        end do
+      end do
+    endif
+    call trace%end(itimer)
+  END SUBROUTINE add_absmet_extinction
 
   !=============================================================================
   ! One call over the whole pipeline, for the callers that want the finished
