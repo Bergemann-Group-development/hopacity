@@ -1,209 +1,234 @@
 # hopacity: HOP's EOS and opacities from Python
 
-HOP is the equation-of-state and opacity engine of OpenMULTI3D. `hopacity` is its Python package: it loads `libhop.so`, HOP built without the DISPATCH framework, and computes the same EOS state and the same opacities that a `make_eos=.true.` run of `dispatch.x` tabulates, without DISPATCH or OpenMULTI3D. `hop_prune.x` is a program on the same objects that selects the transitions a synthesis needs (see [Line-list pruning](#line-list-pruning)).
+HOP is the equation-of-state and opacity code of OpenMULTI3D. `hopacity` is its Python package. For any set of temperatures and densities it solves the equation of state (electron density, pressures, internal energy, number densities of atoms, ions and molecules) and computes the extinction coefficient at the wavelengths you choose: the continuum with Thomson and Rayleigh scattering, sampled metal-line opacity, and line opacity from a line list in Turbospectrum format. It needs neither DISPATCH nor OpenMULTI3D, and returns numpy arrays, so you can write opacity tables in whatever format your own code reads.
 
 ## Install
 
-A wheel carries `libhop.so`, its header and HOP's default input files (abundances, continuum and molecular data, hydrogen Stark-profile tables and ABO cross sections), about 9 MB. Line lists and sampled metal-line (absmet) tables are not included; pass their paths.
-
-The releases of the [hopacity repository](https://github.com/Bergemann-Group-development/hopacity/releases) carry wheels for Linux x86_64 and macOS arm64 (macOS 14 and later), which bundle the compiler's Fortran and OpenMP runtimes and need no compiler:
+hopacity needs Python 3.11 or later. Install it into a virtual environment of its own, so it does not interfere with other Python projects:
 
 ```bash
-pip install hopacity-<version>-py3-none-<platform>.whl
+python3 -m venv ~/hopacity-env
+source ~/hopacity-env/bin/activate        # once in every new terminal
+python -m pip install --upgrade pip
 ```
 
-On other platforms, build a wheel in this directory with a Fortran compiler (gfortran; `COMPILER=ifort` or `COMPILER=ifx` in the environment selects the Intel compilers) and install it:
+### From a release wheel
+
+The [releases](https://github.com/Bergemann-Group-development/hopacity/releases) of this repository carry ready-built wheels for Linux x86_64 and macOS on Apple silicon (macOS 14 and later). They contain the compiled library, its Fortran and OpenMP runtimes and HOP's default input data, so no compiler is needed. Download the one for your platform and install it:
 
 ```bash
-pip wheel --no-deps -w dist .
-pip install dist/hopacity-*.whl
+pip install hopacity-0.1.0-py3-none-macosx_14_0_arm64.whl     # the file you downloaded
 ```
 
-Such a wheel links the compiler's runtimes dynamically and runs where that compiler is installed; `delocate-wheel` (macOS) or `auditwheel repair` (Linux) bundles them, as the release build does. The release build runs `tests/smoke.py` against each wheel it makes.
+### From the source code
 
-In an OpenMULTI3D checkout, `pip install -e .` in the experiment directory provides `hopacity` together with `tumult`, which re-exports `HopEOS`, and the top-level `make` builds the library.
-
-## Build the library
+On other platforms, or to build from a clone, you need a Fortran compiler and `make`: gfortran (`brew install gcc` on macOS, `sudo apt install gfortran make` on Debian or Ubuntu), or the Intel compilers with `COMPILER=ifort` or `COMPILER=ifx` set in the environment. In the activated environment:
 
 ```bash
-make -C standalone -j8      # -> standalone/build/libhop.so (copied to hopacity/), hop_prune.x, atom_convert.x
-make -C standalone clean    # rebuild from scratch after editing *.f90
+git clone https://github.com/Bergemann-Group-development/hopacity.git
+pip install ./hopacity
 ```
 
-The top-level OpenMULTI3D `make` builds all of it alongside `dispatch.x`, with the same `COMPILER` (gfortran, ifort or ifx) and option group; invoked here, `COMPILER=ifort` selects ifort and `OPT=-O2` overrides the option group's optimisation. `standalone/libhop.h` is committed; `make bindings` rewrites it from the `BIND(C)` declarations with `gen_bindings.py` after an interface change, and `tests/native/test_hop_abi.py` fails on a stale one. The package loads `hopacity/libhop.so`, or the library `$HOP_LIB` points to.
+`pip` compiles the library (under a minute) and installs the package. A package built this way uses the compiler's runtime libraries, so it runs on machines where that compiler is installed.
 
-Check it loads:
+pip installs numpy, cffi and pandas with hopacity. The plotting examples below also use matplotlib: `pip install matplotlib`.
+
+### Check that it works
+
+Run this from any directory except the clone. In the clone, Python imports its `hopacity/` source folder, which has no compiled library, instead of the installed package.
 
 ```bash
 python -c "from hopacity import HopEOS; print(HopEOS(feh=0.0).load_state([5777.], rho=[2.5e-7]).ne)"
 ```
 
-## The EOS
+It prints the electron density of a solar-photosphere state, `[2.02576419e+13]` (cm⁻³).
 
-`load_state` solves the EOS on a set of `(T, rho)` points — any shape, as long as they
-share it, since the cells are independent — and the state is then readable as the
-properties `temp`, `rho`, `ne`, `pe`, `pg`, `energy`, `eh` and `chi500`, each in the shape
-you passed in.
+## Equation of state
+
+`load_state` solves the EOS for temperatures `temp` [K] and densities `rho` [g/cm³]. The arrays can have any shape, as long as both have the same one: each point (a "cell") is solved independently. The results are properties of the same shape:
+
+| Property | Quantity | Unit |
+|---|---|---|
+| `temp`, `rho` | temperature and mass density | K, g cm⁻³ |
+| `ne` | electron number density | cm⁻³ |
+| `pe`, `pg` | electron and gas pressure | dyn cm⁻² |
+| `energy` | internal energy | erg g⁻¹ |
+| `chi500` | extinction at 5000 Å (air) | cm⁻¹ |
+
+`species_density('Fe I')` returns the number density [cm⁻³] of one atom, ion or molecule; pass `species=['Fe I', 'CO']` to `load_state` to keep the ones you will ask for. Instead of `rho` you can give `ne`, and `rho` is then solved for.
+
+This example solves the EOS on a table of 56 temperatures from 2500 to 40000 K and 65 densities from 10⁻¹² to 10⁻⁵ g cm⁻³. `logstep(start, stop, step)` makes nodes evenly spaced in the natural logarithm, `step` apart.
 
 ```python
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from hopacity import HopEOS, logstep
 
-fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), constrained_layout=True)
+tab_temp = logstep(2500.0, 40000.0, 0.05)      # K
+tab_rho = logstep(1e-12, 1e-5, 0.25)           # g/cm^3
+temp, rho = np.meshgrid(tab_temp, tab_rho, indexing='ij')   # both (56, 65)
 
-tab_temp = logstep(2500.0, 40000.0, 0.05)  # ln-space node spacing
-tab_rho = logstep(1e-12, 1e-5, 0.25)  # ln-space node spacing
-temp, rho = np.meshgrid(tab_temp, tab_rho, indexing='ij')         # both (ntemp, nrho)
+with HopEOS(feh=0.0) as hop:
+    hop.load_state(temp, rho=rho)
+    planes = {r'$\log_{10} n_e$ [cm$^{-3}$]': hop.ne,
+              r'$\log_{10} P_{\rm g}$ [dyn cm$^{-2}$]': hop.pg,
+              r'$\log_{10} \chi_{500}$ [cm$^{-1}$]': hop.chi500}
 
-with HopEOS(feh=0.0) as hop:                     # one instance per process
-    hop.load_state(temp, rho)
-
-    for ax, plane, label in zip(axes, (hop.ne, hop.pg, hop.chi500),
-                                (r'$\log n_e$ [cm$^{-3}$]', r'$\log P_g$ [dyn cm$^{-2}$]',
-                                r'$\log \chi_{500}$ [cm$^{-1}$]')):
-        m = ax.pcolormesh(np.log10(tab_temp), np.log10(tab_rho), np.log10(plane).T,
-                          shading='nearest', cmap='magma', edgecolors='face')
-        fig.colorbar(m, ax=ax, label=label)
-        ax.set(xlabel=r'$\log T$ [K]', ylabel=r'$\log \rho$ [g cm$^{-3}$]')
+fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), layout='constrained')
+for ax, (label, plane) in zip(axes, planes.items()):
+    mesh = ax.pcolormesh(np.log10(tab_temp), np.log10(tab_rho), np.log10(plane).T,
+                         shading='nearest', cmap='magma')
+    fig.colorbar(mesh, ax=ax, label=label)
+    ax.set(xlabel=r'$\log_{10} T$ [K]', ylabel=r'$\log_{10} \rho$ [g cm$^{-3}$]')
+fig.savefig('eos.pdf')
 ```
 
-`HopEOS(...)` takes the `&composition_params` settings: `feh`, `abund_file`,
-`absdat_file`, `molec_file`, `tmolim`, `alpha_enhancement`, and any module option as a
-keyword (`mhd_eos=False`, `ref_lam=5000.0`, `abundances='Fe 7.5'`, ...).
+It takes about a second.
+
+### Composition and options
+
+`HopEOS` sets the chemical composition. `feh` scales the solar abundances (Magg et al. 2022 by default) of all elements heavier than Li to a metallicity [Fe/H]; `alpha_enhancement` is added to the α elements O, Ne, Mg, Si, S, Ar, Ca and Ti; `abundances='Mg=7.70 Fe=7.40'` sets single elements to absolute abundances log ε (on the scale log ε(H) = 12), or adds the values to the scaled ones if you also pass `relative_abundances=True`. `abund_file`, `absdat_file`, `isotope_file` and `molec_file` replace the bundled abundance, continuum, isotope and molecular data. Any other HOP setting is a keyword argument too, and `hop.option_names()` lists them.
+
+HOP keeps its state in the process, so only one `HopEOS` can be open at a time. Use it in a `with` block, as here, or call `close()` before opening the next.
 
 ## Opacity
 
-`opacity` is the one entry point for all of it — continuum, sampled metal-line background
-and line list — and returns two float32 arrays of shape `<state shape> + (nlam,)`, in
-1/cm:
+`opacity(lam)` computes the extinction at the vacuum wavelengths `lam` [Å] for every cell of the loaded state. It returns two float32 arrays of shape `<state shape> + (len(lam),)`, in cm⁻¹:
 
-- `chi`, the total extinction: continuum with Thomson + Rayleigh scattering folded in,
-  plus the absmet background with `include_absmet`, plus the LTE line list with
-  `linelist`;
-- `scat`, the scattering part of it: Thomson + Rayleigh, and with `line_scattering=True`
-  also the (1-eps)-weighted absmet and line-list opacity (the van Regemorter split).
+- `chi`, the total extinction: the continuum including Thomson and Rayleigh scattering, plus the lines of `linelist` if you give one, plus the sampled metal-line opacity with `include_absmet=True`;
+- `scat`, its scattering part: Thomson and Rayleigh scattering, and with `line_scattering=True` also the scattering part of the line opacity (from the van Regemorter approximation of the photon destruction probability).
 
-Divide by `hop.rho[..., None]` for the per-gram opacity a dispatch `opa`/`scat` table
-holds.
+Divide by `hop.rho[..., None]` for the opacity per gram, in cm² g⁻¹.
+
+`wavelength_grid(blue, red, R_sampling=R)` gives wavelengths at constant resolving power `R`. It takes the end points as air wavelengths, as line lists and spectra usually quote them, and returns vacuum wavelengths; with `in_air=False` the end points are vacuum wavelengths. `air2vac` and `vac2air` convert single wavelengths.
+
+### Continuum
 
 ```python
-from hopacity import wavelength_grid
+import matplotlib.pyplot as plt
+import numpy as np
+from hopacity import HopEOS, logstep, wavelength_grid
+
 
 def main():
-    lam = wavelength_grid(3000.0, 3100.0, R_sampling=1000)   # &spectrum_params; air -> vacuum
+    tab_temp = logstep(2500.0, 40000.0, 0.05)
+    tab_rho = logstep(1e-12, 1e-5, 0.25)
+    temp, rho = np.meshgrid(tab_temp, tab_rho, indexing='ij')
+    lam = wavelength_grid(1500.0, 25000.0, R_sampling=200)     # 566 wavelengths
 
     with HopEOS(feh=0.0) as hop:
-        hop.load_state(temp, rho)
-        chi, scat = hop.opacity(lam, linelist='input/linelists/master_line.txt',
-                                nchunks=8, nprocs=8, line_scattering=True)
-        over_rho = 1 / hop.rho[..., None]
-        opa = chi * over_rho # (nlam, ntemp, nrho), cm^2/g
-        sca = scat * over_rho
+        hop.load_state(temp, rho=rho)
+        chi, scat = hop.opacity(lam, nprocs=4)       # cm^-1, shape (56, 65, 566)
+        kappa = chi / hop.rho[..., None]             # cm^2/g
 
-    fig, ax = plt.subplots(figsize=(7, 4.2), constrained_layout=True)
-    i = 20
-    j = 0
-    ax.loglog(lam, opa[i, j], label=f'absorption')
-    ax.loglog(lam, sca[i, j], label=f'scattering')
-    ax.set(xlabel=r'$\lambda_{\rm vac}$ [AA]', ylabel=r'$\chi/\rho$ [cm$^2$ g$^{-1}$]',
-            title=rf'T = {tab_temp[i]:.0f} K, $\rho$ = {tab_rho[j]:.1e} g cm$^{{-3}}$')
-    ax.legend()
+    j = np.searchsorted(tab_rho, 1e-8)
+    fig, ax = plt.subplots(layout='constrained')
+    for t in (4500.0, 6000.0, 9000.0, 12000.0):
+        i = np.searchsorted(tab_temp, t)
+        ax.loglog(lam, kappa[i, j], label=f'{tab_temp[i]:.0f} K')
+    ax.set(xlabel=r'$\lambda_{\rm vac}$ [$\rm\AA$]', ylabel=r'$\chi/\rho$ [cm$^2$ g$^{-1}$]',
+           title=rf'$\rho$ = {tab_rho[j]:.1e} g cm$^{{-3}}$')
+    ax.legend(handlelength=1.5)
+    fig.savefig('continuum.pdf')
 
-if __name__ == '__main__':       # required: the workers are spawned, see below
+
+if __name__ == '__main__':      # needed with nprocs > 1, see "Parallel runs"
     main()
 ```
 
-The plot shows the Balmer jump at 3646 AA, the Paschen jump at 8204 AA, and the H- bound-free
-hump turning over into free-free beyond ~1.6 um. The example above (572 wavelengths,
-56 x 65 nodes) takes about two minutes on 8 cores.
+The whole table takes about two seconds on 4 cores. In the figure, the Balmer and Paschen edges near 3650 and 8200 Å rise with temperature, and at 4500 K the ultraviolet opacity of metal photoionisation dominates. The edges are rounded because high hydrogen levels merge into the continuum at these densities.
 
-### Parallelism
+### Line lists
 
-The wavelength axis is split into `nchunks` pieces exactly as dispatch splits it over its
-`n_windows` rt_patches, and the pieces run in `nprocs` processes. Each worker holds its own
-instance and — with a line list — reads only the lines its own chunk needs. Cost scales
-with `nlam x ntemp x nrho`, so raise `nprocs` before you widen the window.
+The master line lists that OpenMULTI3D uses are published on [MPCDF Keeper](https://keeper.mpdl.mpg.de/d/3191475aebe340638422/?p=%2Flinelists%2Fmaster_linelists). `vald_atoms.txt` (19 MB) holds the atomic lines from VALD, `Hlinedata` (10 kB) the hydrogen lines, and the other files one molecule each (about 1 GB in all). hopacity downloads them:
 
-Two things to get right:
-
-- **Guard your script's top level with `if __name__ == '__main__':`.** The workers are
-  spawned, not forked, so without the guard every worker re-runs the script on import and
-  the pool spawns forever. Notebooks and pytest are unaffected.
-- **Pass `vmic` if your atmosphere has microturbulence.** `&opac_table_params` defaults it
-  to -1 (thermal broadening only), but a dispatch run overrides that with the mean of the
-  atmosphere's own vmic whenever any of it is positive — so pass that mean here. Getting
-  this wrong leaves the line opacity up to an order of magnitude off in the cool, dense
-  corner. It affects neither the EOS nor the continuum, and is applied without re-solving
-  the state.
-
-### Line-list opacity
-
-Give `linelist` a file, a list of files, or a folder (the `&linelist_params`
-`linelist_file` / `linelist_folder`), and `dlam` [AA] as the line-wing search radius:
-
-```python
-chi, scat = hop.opacity(lam, linelist='input/linelists/master_line.txt',
-                        dlam=100.0, vmic=1.0, line_scattering=True,
-                        nchunks=8, nprocs=8)
+```bash
+python -m hopacity.linelists list                                   # files and sizes
+python -m hopacity.linelists fetch linelists --file vald_atoms.txt --file Hlinedata
+python -m hopacity.linelists fetch linelists                        # all of them
 ```
 
-Only the lines within `dlam` of the requested wavelengths are read. A line list can only
-ever be *added* to a HOP instance, so calling `opacity` with a different one (or over a
-wider window than before) rebuilds the instance and re-solves the state — repeated calls
-with the same list and window cost nothing extra.
+`fetch` puts the files in the folder you name (here `linelists`), skips files that are already complete there, and resumes an interrupted download when run again. From Python, `hopacity.linelists.fetch('linelists', ['vald_atoms.txt'])` does the same.
+
+Give `opacity` a line-list file, a list of files, or a folder (meaning all files in it), and with `dlam` the distance in Å from the wavelength range within which lines are read in, so that the wings of lines just outside it are included:
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from hopacity import HopEOS, logstep, wavelength_grid
+
+
+def main():
+    tab_temp = logstep(2500.0, 40000.0, 0.05)
+    tab_rho = logstep(1e-12, 1e-5, 0.25)
+    temp, rho = np.meshgrid(tab_temp, tab_rho, indexing='ij')
+    lam = wavelength_grid(4840.0, 4880.0, R_sampling=100000)   # around H beta
+    llist = ['linelists/vald_atoms.txt', 'linelists/Hlinedata']
+
+    with HopEOS(feh=0.0) as hop:
+        hop.load_state(temp, rho=rho)
+        cnt, _ = hop.opacity(lam, nprocs=4)
+        chi, scat = hop.opacity(lam, linelist=llist, dlam=10.0, vmic=1.0, nprocs=4)
+
+    i, j = np.searchsorted(tab_temp, 6000.0), np.searchsorted(tab_rho, 1e-7)
+    fig, ax = plt.subplots(layout='constrained')
+    ax.semilogy(lam, chi[i, j] / cnt[i, j], color='black')
+    ax.set(xlabel=r'$\lambda_{\rm vac}$ [$\rm\AA$]', ylabel=r'$\chi / \chi_{\rm cont}$',
+           title=rf'$T$ = {tab_temp[i]:.0f} K, $\rho$ = {tab_rho[j]:.1e} g cm$^{{-3}}$')
+    fig.savefig('lines.pdf')
+
+
+if __name__ == '__main__':
+    main()
+```
+
+This computes 825 wavelengths for all 3640 cells in a few seconds. The figure shows Hβ at 4862.7 Å (vacuum) and the metal lines around it, as line over continuum extinction.
+
+`vmic` [km s⁻¹] is the microturbulence that broadens the lines; without it they have thermal widths only. It does not affect the EOS or the continuum. The first call that reads a line list reads in the lines near the wavelengths it is given; a later call with another list or over a wider range reads them again, and calls with the same list and range do not.
+
+A line-list file is in [Turbospectrum](https://github.com/bertrandplez/Turbospectrum_NLTE) format, which [`tests/smoke.py`](tests/smoke.py) shows for two Mg I lines.
+
+`include_absmet=True` adds the opacity of a sampled metal-line table, which the option `absmet_file` names (`HopEOS(absmet_file='path/to/absmet')`). Tables are on the same [Keeper share](https://keeper.mpdl.mpg.de/d/3191475aebe340638422/?p=%2Fabsmet_files).
+
+### Parallel runs
+
+`nprocs` runs the calculation in that many processes, each computing part of the wavelength range. The cost grows with the number of wavelengths times the number of cells, so for large tables set `nprocs` to the number of cores. Two things follow from the separate processes:
+
+- A script that passes `nprocs` > 1 must put its work in a function called under `if __name__ == '__main__':`, as in the examples above. Each process imports the script, and without that guard each would start the calculation again. Jupyter notebooks do not need it.
+- Each process reads the lines within `dlam` of its own part of the wavelength range. Far wings of strong lines more than `dlam` away from a part are missing there, so choose `dlam` larger than the wings you need. With `nprocs=1` all lines within `dlam` of the whole range contribute everywhere.
+
+If HOP stops with an error inside one of these processes (for example on a missing data file), `opacity` raises `HopError`, and HOP's message is printed above the Python traceback. With `nprocs=1` the same error ends the Python process itself, after printing the message.
 
 ## Line strengths
 
-`line_strengths` returns one row per line — `ion`, `lam0` [AA, air], `evi` [eV], `loggf`,
-`strength` — for every line HOP used over the given wavelengths:
+`line_strengths(lam, linelist)` lists the lines that contribute over the wavelengths `lam` for the loaded state, as a pandas DataFrame with the columns `ion`, `lam0` (air wavelength, Å), `evi` (lower-level excitation energy, eV), `loggf` and `strength`. `strength` is the line-centre extinction over the continuum extinction, at the cell of the state where that ratio is largest. Unlike an estimate from gf value and excitation energy alone, it includes the abundance, ionisation and molecule formation, so it ranks lines of different elements and molecules against each other.
 
 ```python
-hop.load_state(T, rho=rho)                       # a whole atmosphere, not one point
-lines = hop.line_strengths(lam, 'input/linelists/master_line.txt', dlam=2.0, vmic=1.0)
-lines.sort_values('strength', ascending=False).head()
+from hopacity import HopEOS, wavelength_grid
+
+lam = wavelength_grid(5165.0, 5190.0, R_sampling=100000)
+with HopEOS(feh=0.0) as hop:
+    hop.load_state([4500.0, 5000.0, 5800.0, 6500.0], rho=[1e-8, 5e-8, 2e-7, 3e-7])
+    lines = hop.line_strengths(lam, 'linelists/vald_atoms.txt', dlam=2.0, vmic=1.0)
+print(lines.sort_values('strength', ascending=False).head())
 ```
 
-`strength` is HOP's own diagnostic: the line's centre extinction over the continuum
-extinction, maximised over the cells of the loaded state
-(`linelist_mod`: `ll%strength(l) = max(..., voigt_peak*Rij / cont(f0,i,j,k))`). It is the
-same quantity a full `dispatch.x` run writes as the trailing column of `linelist_out.txt`,
-and it is the criterion HOP itself uses to decide which lines are worth computing.
+```text
+      ion      lam0    evi  loggf       strength
+16   Mg I  5183.604  2.717 -0.180  136965.578125
+15   Mg I  5172.684  2.712 -0.402   83206.320312
+143  Fe I  5167.489  1.485 -1.118   37440.898438
+14   Mg I  5167.321  2.709 -1.030   19746.525391
+163  Fe I  5171.596  1.485 -1.793    7913.413086
+```
 
-**Why it is the number to rank by.** It carries the element abundance, the ionization
-fraction, the molecular dissociation equilibrium and the partition function. A
-`lam0 * 10**loggf * exp(-evi*EK/T)` estimate carries none of them, so it cannot compare two
-species: over 5000–5002 AA in the Sun it puts TiO and C2 bands at the top of a window whose
-real order is Fe I 5001.87, Ni I 5000.34, Ti I 5001.01 — a rank correlation with the truth of
-0.2, no better than chance. Against `data/sed_3000-9000`'s own dump, with that run's line
-list, `line_strengths` matches all 155 lines in the window at Spearman 0.978, with a
-near-constant 1.21 offset from using a 1D MARCS structure in place of the run's own.
-
-**Cost**, for a single-file list on a 56-layer model: 0.08 s for 20 AA, 0.32 s for 100 AA,
-1.5 s for 500 AA. A folder of per-species lists is roughly 5x that, dominated by reading the
-files. Sample finely enough to resolve a line core (0.005 AA is safe in the optical); a
-coarser grid under-reads the peaks.
-
-The strengths are a by-product of computing opacity, so `line_strengths` runs one `opacity`
-call and then reads them back. They are zero before that call, and they *accumulate* across
-calls that share a loaded line list — a line's value is its own peak either way, but the set
-of lines returned grows to everything used since the list was read. Load a band once and
-compute over it in one call if you want exactly that band.
-
-The three C entry points behind it are `hop_linelist_count` (collects and sizes),
-`hop_get_linelist` (the columns, with a species index) and `hop_linelist_species` (the
-newline-separated species ids that index refers to). Call them in that order.
+The four states roughly follow a solar photosphere. `strength` is evaluated at the line centre, so the wavelength grid need not resolve the lines; it only sets the range, widened by `dlam`, from which lines are taken. The strengths accumulate over calls with the same line list, so compute a wavelength band in one call to get exactly its lines.
 
 ## Line-list pruning
 
-`hop_prune.x input.nml` writes the transitions a synthesis on one atmosphere would keep
-from its configured line list, as a line list in the ordinary input format. A ladder of
-runs on that atmosphere (a curve of growth, an abundance fit) then reads a few hundred
-lines each as its `linelist_file` instead of re-reading and re-selecting the whole master
-list. The program needs neither Python nor the DISPATCH runtime.
+`hop_prune.x` is a Fortran program built with the library (see [Development](#development)) for OpenMULTI3D syntheses. From a model atmosphere and an OpenMULTI3D namelist, it writes the lines that a synthesis on that atmosphere uses, as a line list in the input format, so that a series of runs on the same atmosphere (a curve of growth, an abundance fit) reads a few hundred lines instead of the whole master list. It needs neither Python nor DISPATCH.
 
-The input reuses the run's own namelist groups, so one set of settings describes the
-pruning and the runs it feeds, plus a small `&prune_params` group:
+Its input is the run's own namelist groups plus `&prune_params`:
 
 ```fortran
 &atmos_params        atmos_format='marcs' atmos_file='model.mod' vmic=1.0 use_abnd=.true. /
@@ -213,45 +238,28 @@ pruning and the runs it feeds, plus a small `&prune_params` group:
 &prune_params        output_file='pruned.txt' sample_count=8 /
 ```
 
-- The atmosphere is parsed by `HOP/atmos_reader_mod.f90`, shared with `dispatch.x`
-  (MARCS, text 1D and MULTI 1D so far; a 3D cube is refused until a thermodynamic-space
-  sampling policy exists for it). `sample_count` depths spread over the model's whole
-  index range are evaluated (0 = every depth); spanning the range is what matters, since a
-  transition's strength is a maximum over the states.
-- The composition is applied in the run's order: the standard abundance file scaled by
-  `feh`, replaced by the model's own abundances with `use_abnd`, then the explicit
-  `abundances` override. Prune at the strongest rung of a ladder: an element's own lines
-  grow with its abundance, so that selection covers the weaker rungs for them.
-- Transitions are read only inside the windows widened by `dlam`, and the opacity over the
-  run's constant-`R` grid marks the ones that clear HOP's negligibility test on the
-  sampled states. `dlam` and `R_sampling` therefore have to match the runs.
-- Each record ends with the transition's strength and its *reach*: the half-width in
-  Angstrom out to which its extinction exceeds the tolerance times the continuum on the
-  sampled states. A run reading a list in which every transition of a species carries a
-  reach visits, in each output patch, only the transitions whose reach touches it, and
-  evaluates one centred outside the patch about its own centre with the extent capped by
-  the reach. The output patches then no longer scan the whole list, and the spectrum no
-  longer depends on how the grid is divided among them beyond about twice the tolerance.
-  Lists without the column (master lists, older pruned lists) run as before.
-- The output goes to `<output_file>.<pid>.partial` and is renamed into place, so an
-  interrupted run never leaves a truncated list; `<output_file>.provenance.nml` echoes every
-  input group the selection depended on, plus a `&prune_result` group with the sampled
-  depths, the effective vmic and [Fe/H], the vacuum windows and the transition count. Invalid input exits with status 1 and one line on
-  stderr.
+- The atmosphere is read with the reader `dispatch.x` uses (MARCS, text 1D and MULTI 1D; 3D models are refused). `sample_count` depths spread over the model are evaluated (0 means every depth).
+- The composition is applied in the run's order: the abundance file scaled by `feh`, replaced by the model's own abundances with `use_abnd`, then `abundances`. Prune at the highest abundance of a series, since an element's lines grow with its abundance.
+- Lines are read inside the windows widened by `dlam` and kept if their opacity on the run's wavelength grid passes HOP's negligibility test on the sampled depths, so `dlam` and `R_sampling` have to match the runs.
+- Each record ends with the line's strength and its reach, the distance in Å out to which its extinction exceeds the tolerance times the continuum. A run reading a list whose lines carry a reach evaluates each line only where it reaches.
+- The output is written to `<output_file>.<pid>.partial` and renamed when complete. `<output_file>.provenance.nml` records every input group the selection used and a `&prune_result` group with the sampled depths, the effective vmic and [Fe/H], the windows and the line count. Invalid input exits with status 1 and one line on stderr.
 
-Against the `linelist_out.txt` a `dispatch.x` run writes with the same inputs, the pruned
-set is a superset: the program evaluates the file's own depth points, whose deepest layer
-is hotter than any cell centre of dispatch's interpolated mesh, so a few high-excitation
-and near-threshold transitions survive here that the run drops. The run re-selects from
-the pruned list, so nothing it needs is lost. With the run's `dlam` equal to the pruning
-`dlam`, a pruned list without reaches and the master list give spectra that agree to
-float32 rounding. The reach changes how transitions centred outside a patch are
-evaluated, including those of the `dlam` skirt beyond the grid ends: on the api_profile
-dwarf with one output patch this moved the flux within 9 A of the blue end by up to 5e-4
-and elsewhere by less than 1e-4.
+The pruned list contains every line the corresponding `dispatch.x` run keeps, and a few more: the program evaluates the model's own depth points, whose deepest layer is hotter than any cell of the run's interpolated mesh. In OpenMULTI3D, `tumult.prune` runs the program for the synthesis workflows.
 
-`tumult.prune` drives the program from the synthesis workflows: one child per uncached
-atmosphere node on the workflow's CPU budget, killed on cancellation.
+## Development
+
+HOP is developed in the OpenMULTI3D repository, of which this repository is a mirror of the `HOP/` folder.
+
+```bash
+make -C standalone -j8      # standalone/build/libhop.so (copied to hopacity/), hop_prune.x, atom_convert.x
+make -C standalone clean    # rebuild from scratch after editing *.f90
+```
+
+Invoked here, `COMPILER=ifort` or `COMPILER=ifx` selects the Intel compilers and `OPT=-O2` overrides the optimisation (default `-O3`). In an OpenMULTI3D checkout the top-level `make` builds the library alongside `dispatch.x`, with the same compiler and option group, and `pip install -e .` there provides `hopacity` together with `tumult`. The package loads `hopacity/libhop.so`, or the library `$HOP_LIB` points to.
+
+`standalone/libhop.h` declares the C entry points and is committed; `make -C standalone bindings` rewrites it from the `BIND(C)` declarations in `hop_c_api.f90` with `gen_bindings.py` after an interface change. Every `BIND(C)` procedure has to be public, or gfortran 16 does not export it. OpenMULTI3D's `tests/native/test_hop_abi.py` checks both.
+
+`pip wheel --no-deps -w dist .` builds a wheel; `delocate-wheel` (macOS) or `auditwheel repair` (Linux) copies the compiler's runtimes into it. The release workflow (`.github/workflows/wheels.yml`) does this with cibuildwheel for every pushed `v*` tag, runs `tests/smoke.py` against each wheel and attaches the wheels to the release.
 
 ## License
 

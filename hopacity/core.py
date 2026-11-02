@@ -69,8 +69,10 @@ def find_library():
     lib = os.environ.get('HOP_LIB', '')
     path = Path(lib) if lib else _PKG_DIR / 'libhop.so'
     if not path.is_file():
-        raise HopError(f"libhop.so not found at {path}; in a source checkout build it "
-                       f"with 'make -C HOP/standalone', or point $HOP_LIB at it")
+        raise HopError(f"libhop.so not found at {path}. Run Python outside the source "
+                       f"folder to import an installed hopacity; to use the source folder, "
+                       f"build the library with 'make -C standalone' in HOP's directory, "
+                       f"or point $HOP_LIB at it")
     return path
 
 
@@ -505,9 +507,9 @@ class HopEOS:
         and roughly linear in the cell count above that — a 56-layer atmosphere is some 4x a
         depth-thinned 8-layer one over the same window. A floor of ~0.03 s is reading the
         line list, and does not shrink with either.
-        ``lam`` therefore has to sample the line cores — a grid coarser than a Doppler width
-        will under-read the peaks. Only lines HOP actually used are returned, which is the
-        set within ``dlam`` of ``lam``.
+        The strength is evaluated at each line's centre, so ``lam`` need not resolve the
+        cores. Only lines HOP actually used are returned, which is the set within ``dlam``
+        of ``lam``.
         """
         import pandas as pd
         if self._state is None:

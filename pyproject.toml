@@ -13,6 +13,7 @@ license-files = ["LICENSE", "AUTHORS"]
 dependencies = [
     "numpy>=2.0",
     "cffi>=1.16",       # binds libhop.so against the bundled libhop.h
+    "pandas>=2.0",      # line_strengths returns a DataFrame
 ]
 
 # setup.py compiles libhop.so with standalone/Makefile and bundles it, the header and
