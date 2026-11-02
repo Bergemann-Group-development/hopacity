@@ -11,6 +11,7 @@ what checks the generator's type mapping.
 import importlib.util
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -67,7 +68,9 @@ def test_every_bind_c_entry_point_is_public():
 
 def test_header_matches_the_exported_symbols():
     """Header names == what the built library actually exports."""
-    out = subprocess.run(["nm", "-gU", str(HOP_LIB)], capture_output=True, text=True).stdout
+    # a Linux wheel's library is stripped, so its exports are read from the dynamic table
+    flags = ["-gU"] if sys.platform == "darwin" else ["-D", "--defined-only"]
+    out = subprocess.run(["nm", *flags, str(HOP_LIB)], capture_output=True, text=True).stdout
     # macOS prefixes global symbols with an underscore; Linux does not
     exported = sorted({m for m in re.findall(r"^\S+ [TDS] _?(hop_[a-z0-9_]+)$", out, re.M)})
     assert _header_names(HEADER.read_text()) == exported
