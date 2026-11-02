@@ -257,9 +257,13 @@ make -C standalone clean    # rebuild from scratch after editing *.f90
 
 Invoked here, `COMPILER=ifort` or `COMPILER=ifx` selects the Intel compilers and `OPT=-O2` overrides the optimisation (default `-O3`). In an OpenMULTI3D checkout the top-level `make` builds the library alongside `dispatch.x`, with the same compiler and option group, and `pip install -e .` there provides `hopacity` together with `tumult`. The package loads `hopacity/libhop.so`, or the library `$HOP_LIB` points to.
 
-`standalone/libhop.h` declares the C entry points and is committed; `make -C standalone bindings` rewrites it from the `BIND(C)` declarations in `hop_c_api.f90` with `gen_bindings.py` after an interface change. Every `BIND(C)` procedure has to be public, or gfortran 16 does not export it. OpenMULTI3D's `tests/native/test_hop_abi.py` checks both.
+`standalone/libhop.h` declares the C entry points and is committed; `make -C standalone bindings` rewrites it from the `BIND(C)` declarations in `hop_c_api.f90` with `gen_bindings.py` after an interface change. Every `BIND(C)` procedure has to be public, or gfortran 16 does not export it. `tests/test_hop_abi.py` checks both.
 
-`pip wheel --no-deps -w dist .` builds a wheel; `delocate-wheel` (macOS) or `auditwheel repair` (Linux) copies the compiler's runtimes into it. The release workflow (`.github/workflows/wheels.yml`) does this with cibuildwheel for every pushed `v*` tag, runs `tests/smoke.py` against each wheel and attaches the wheels to the release.
+`pip wheel --no-deps -w dist .` builds a wheel; `delocate-wheel` (macOS) or `auditwheel repair` (Linux) copies the compiler's runtimes into it. The release workflow (`.github/workflows/wheels.yml`) does this with cibuildwheel for every pushed `v*` tag, runs `tests/smoke.py` and the tests in `tests/` against each wheel and attaches the wheels to the release.
+
+`python -m pytest tests` in this folder tests the source package, after `make -C standalone`; `python -m pytest <path>/tests` from another folder tests the installed one. `test_hop.py` compares the equation of state and opacity with the references in `tests/golden/`; its docstring states their inputs and tolerance, and `python tests/hop_reference.py` reviews or rewrites them.
+
+`HOP.jl/` is a Julia binding of the same library, with the threaded entry points the Python package does not use. It builds its own library in `standalone/build-opt` with x86 vector flags when it is loaded.
 
 ## License
 
