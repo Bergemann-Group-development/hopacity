@@ -12,7 +12,7 @@ MODULE molecule_mod
     class(ion_pointer_t), allocatable :: ions(:)
     ! atomic number of each constituent, parallel to ions(:)
     integer, allocatable :: z(:)
-    real(dp) :: dc(5) ! dissociation_constants
+    real(dp) :: dc(5) !< dissociation_constants
     ! Total nuclear spin statistical weight, prod over constituent nuclei of
     ! (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
     ! the tabulated partition function counts nuclear spin states, as modern
@@ -31,7 +31,7 @@ MODULE molecule_mod
     ! molecule_damping_estimates = .false. (bbtrans_mod) withholds both from all
     ! molecules. The dissociation energy is no such limit: it ends the nuclear-motion
     ! levels, not the Rydberg series of the electron.
-    real(dp), dimension(:), allocatable :: de ! dissociation_energies
+    real(dp), dimension(:), allocatable :: de !< dissociation_energies
     real(dp), dimension(:,:,:), allocatable :: dis
   contains
     procedure :: read_molec_data
@@ -99,7 +99,7 @@ contains
   END SUBROUTINE read_molec_data
 
   !===============================================================================
-  ! Computes the equilibrium constant log(P(AB)/(P(A)*P(B))) for molecules
+  !> Computes the equilibrium constant log(P(AB)/(P(A)*P(B))) for molecules
   !===============================================================================
   SUBROUTINE get_dis(self, temp, teta, e_kT, dis)
     class(molec_type), intent(in) :: self
@@ -164,33 +164,33 @@ contains
   END FUNCTION calc_e
 
   !=========================================================================
-  ! Molecular + ionization equilibrium, solved cell by cell.
-  !
-  ! The caller supplies the molecules and the solve elements: one neutral
-  ! "root" ion per molecule-forming element (ions).  The routine runs at
-  ! fixed electron density, so within one cell the Saha ratios between the
-  ! ionization stages of every element, the electron pressure, and the
-  ! dissociation constants are all constants.  With yi = ln f_i for the
-  ! neutral fraction of each solve element and ye = ln fe, every molecular
-  ! fraction is an explicit function of the unknowns,
-  !
-  !   ln f_mol = C_m + sum_i nu_im*yi - (n_m - 1)*ye ,
-  !
-  ! where the per-cell constant C_m absorbs the dissociation constant, the
-  ! electron pressure, and the Saha factors of charged constituents (H2+).
-  ! The nonlinear system is number conservation for each solve element plus
-  ! charge conservation,
-  !
-  !   F_i = f_i*phi_i + sum_m nu_im*f_mol - A_i           = 0
-  !   F_e = xnecno + sum_i q_i*f_i + sum_m q_m*f_mol - fe = 0 ,
-  !
-  ! with phi_i (total nuclei per neutral) and q_i (electrons per neutral)
-  ! given by the fixed Saha ladder of element i.  It is solved by a damped
-  ! Newton method in log space: analytic Jacobian, step capped in ln f,
-  ! Armijo backtracking on |F|^2.  One iteration costs nions+nmol+1
-  ! exponentials plus an (nions+1)^2 linear solve; there are no logarithms,
-  ! pointer walks, 3D-array accesses, or array-syntax statements inside the
-  ! iteration, and the working set is O((nions+1)^2) scalars.
+  !> Molecular + ionization equilibrium, solved cell by cell.
+  !>
+  !> The caller supplies the molecules and the solve elements: one neutral
+  !> "root" ion per molecule-forming element (ions).  The routine runs at
+  !> fixed electron density, so within one cell the Saha ratios between the
+  !> ionization stages of every element, the electron pressure, and the
+  !> dissociation constants are all constants.  With yi = ln f_i for the
+  !> neutral fraction of each solve element and ye = ln fe, every molecular
+  !> fraction is an explicit function of the unknowns,
+  !>
+  !>   ln f_mol = C_m + sum_i nu_im*yi - (n_m - 1)*ye ,
+  !>
+  !> where the per-cell constant C_m absorbs the dissociation constant, the
+  !> electron pressure, and the Saha factors of charged constituents (H2+).
+  !> The nonlinear system is number conservation for each solve element plus
+  !> charge conservation,
+  !>
+  !>   F_i = f_i*phi_i + sum_m nu_im*f_mol - A_i           = 0
+  !>   F_e = xnecno + sum_i q_i*f_i + sum_m q_m*f_mol - fe = 0 ,
+  !>
+  !> with phi_i (total nuclei per neutral) and q_i (electrons per neutral)
+  !> given by the fixed Saha ladder of element i.  It is solved by a damped
+  !> Newton method in log space: analytic Jacobian, step capped in ln f,
+  !> Armijo backtracking on |F|^2.  One iteration costs nions+nmol+1
+  !> exponentials plus an (nions+1)^2 linear solve; there are no logarithms,
+  !> pointer walks, 3D-array accesses, or array-syntax statements inside the
+  !> iteration, and the working set is O((nions+1)^2) scalars.
   !=========================================================================
   SUBROUTINE molecular_equilibrium(molecules, ions, tmolim, temp, teta, e_kT, &
                                    pe, xnecno, fe, ysave, same_state)
@@ -796,9 +796,9 @@ contains
 
   contains
     !---------------------------------------------------------------------------
-    ! The molecule's current auction allocation encoded as one integer: the
-    ! element it locked (limel) when it holds a lock, else 0.  Single-sourced
-    ! so the round-to-round comparison and the store into plim cannot drift.
+    !> The molecule's current auction allocation encoded as one integer: the
+    !> element it locked (limel) when it holds a lock, else 0.  Single-sourced
+    !> so the round-to-round comparison and the store into plim cannot drift.
     !---------------------------------------------------------------------------
     integer function alloc_code(mm)
       integer, intent(in) :: mm
@@ -810,12 +810,12 @@ contains
     end function alloc_code
 
     !---------------------------------------------------------------------------
-    ! Damped Newton on the full coupled system from the current yv, for at
-    ! most nit iterations: analytic Jacobian, step capped in ln f, Armijo
-    ! backtracking on |F|^2.  Leaves yv, fi, fm, Fv, norm2, fe_c consistent
-    ! with the last accepted state and mutates the shared Newton scratch
-    ! (Amat, stp, yt, fit, fmt, errf, norm2t); ok reports scaled-residual
-    ! convergence.
+    !> Damped Newton on the full coupled system from the current yv, for at
+    !> most nit iterations: analytic Jacobian, step capped in ln f, Armijo
+    !> backtracking on |F|^2.  Leaves yv, fi, fm, Fv, norm2, fe_c consistent
+    !> with the last accepted state and mutates the shared Newton scratch
+    !> (Amat, stp, yt, fit, fmt, errf, norm2t); ok reports scaled-residual
+    !> convergence.
     !---------------------------------------------------------------------------
     subroutine newton_solve(nit, ok)
       integer, intent(in)  :: nit
@@ -947,11 +947,11 @@ contains
     end subroutine newton_solve
 
     !---------------------------------------------------------------------------
-    ! Solve element ii's scalar conservation equation over yv(ii), all other
-    ! unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
-    ! Newton on ln H - ln A: ln of a positive sum of increasing exponentials
-    ! is increasing and convex with slope in [1, nu_max], so this converges
-    ! globally; the step cap only guards exp overflow.
+    !> Solve element ii's scalar conservation equation over yv(ii), all other
+    !> unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
+    !> Newton on ln H - ln A: ln of a positive sum of increasing exponentials
+    !> is increasing and convex with slope in [1, nu_max], so this converges
+    !> globally; the step cap only guards exp overflow.
     !---------------------------------------------------------------------------
     subroutine solve_element(ii)
       integer, intent(in) :: ii
@@ -991,10 +991,10 @@ contains
     end subroutine solve_element
 
     !---------------------------------------------------------------------------
-    ! Jointly solve the two conservation equations of elements i1 and i2
-    ! (everything else fixed): the inner loop keeps F_i2 = 0 exactly via
-    ! solve_element, the outer Newton moves yv(i1) along the constraint with
-    ! the Schur-complement slope J11 - J12^2/J22 of the pair's SPD Jacobian.
+    !> Jointly solve the two conservation equations of elements i1 and i2
+    !> (everything else fixed): the inner loop keeps F_i2 = 0 exactly via
+    !> solve_element, the outer Newton moves yv(i1) along the constraint with
+    !> the Schur-complement slope J11 - J12^2/J22 of the pair's SPD Jacobian.
     !---------------------------------------------------------------------------
     subroutine solve_pair(i1, i2)
       integer, intent(in) :: i1, i2
@@ -1052,9 +1052,9 @@ contains
     end subroutine solve_pair
 
     !---------------------------------------------------------------------------
-    ! Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
-    ! Also updates the host fe_c to exp(yy(np1)), so that after the accepted
-    ! line-search evaluation fe_c always matches the current state.
+    !> Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
+    !> Also updates the host fe_c to exp(yy(np1)), so that after the accepted
+    !> line-search evaluation fe_c always matches the current state.
     !---------------------------------------------------------------------------
     subroutine eval(yy, fatom, fmol, resid, nrm)
       real(dp), intent(in)  :: yy(:)
@@ -1097,8 +1097,8 @@ contains
     end subroutine eval
 
     !---------------------------------------------------------------------------
-    ! Find the solve-list index of the neutral root of constituent ion c, and
-    ! the charge that c carries relative to it
+    !> Find the solve-list index of the neutral root of constituent ion c, and
+    !> the charge that c carries relative to it
     !---------------------------------------------------------------------------
     subroutine constituent_root(c, idx, charge)
       type(ion_type), pointer, intent(in) :: c
@@ -1190,13 +1190,13 @@ contains
   END SUBROUTINE deallocate_molec
 
   !===============================================================================
-  ! Isotopologue labels follow Turbospectrum's mass part: three digits per constituent,
-  ! constituents in ascending atomic number, mass numbers ascending among equal atomic
-  ! numbers, 000 for the natural mixture.  12C14N is 012014, 1H12C is 000012 since
-  ! hydrogen has no isotope table, and 12C13C is 012013.  The label is stored as an
-  ! integer, which drops the leading zeros; the number of constituents restores them.
-  ! A constituent without an isotope table is always 000.  Combinations that differ
-  ! only in the order of equal atoms share a label, and their fractions are summed.
+  !> Isotopologue labels follow Turbospectrum's mass part: three digits per constituent,
+  !> constituents in ascending atomic number, mass numbers ascending among equal atomic
+  !> numbers, 000 for the natural mixture.  12C14N is 012014, 1H12C is 000012 since
+  !> hydrogen has no isotope table, and 12C13C is 012013.  The label is stored as an
+  !> integer, which drops the leading zeros; the number of constituents restores them.
+  !> A constituent without an isotope table is always 000.  Combinations that differ
+  !> only in the order of equal atoms share a label, and their fractions are summed.
   SUBROUTINE generate_isotopic_combinations(self)
     class(molec_type), intent(inout) :: self
     class(ion_type), pointer :: ion
@@ -1265,10 +1265,10 @@ contains
   END SUBROUTINE generate_isotopic_combinations
 
   !===============================================================================
-  ! The isotopologue label of a line-list header in the convention above.  An
-  ! explicit mass for a constituent without an isotope table that equals its
-  ! natural mass number (hydrogen written 001) reads as the natural mixture, and the
-  ! masses of equal atoms are put in ascending order.
+  !> The isotopologue label of a line-list header in the convention above.  An
+  !> explicit mass for a constituent without an isotope table that equals its
+  !> natural mass number (hydrogen written 001) reads as the natural mixture, and the
+  !> masses of equal atoms are put in ascending order.
   INTEGER FUNCTION canonical_iso(self, iso) result(label)
     class(molec_type), intent(in) :: self
     integer, intent(in) :: iso
@@ -1295,7 +1295,7 @@ contains
   END FUNCTION canonical_iso
 
   !===============================================================================
-  ! Masses given in ascending atomic number, packed three digits each.
+  !> Masses given in ascending atomic number, packed three digits each.
   INTEGER FUNCTION pack_label(self, mass) result(label)
     class(molec_type), intent(in) :: self
     integer, intent(inout) :: mass(:)

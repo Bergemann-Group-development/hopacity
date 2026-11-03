@@ -10,7 +10,7 @@ MODULE op_math_mod
     module procedure searchsorted4, searchsorted8
   end interface searchsorted
 
-  ! A wavelength range [blue_vac, red_vac]; the line-list masks hold vacuum Angstrom
+  !> A wavelength range [blue_vac, red_vac]; the line-list masks hold vacuum Angstrom
   type, public :: interval_t
     real(dp) :: blue_vac, red_vac
   end type interval_t
@@ -64,7 +64,7 @@ contains
   end FUNCTION find_closest8
 
   !====================================================================================
-  ! Finds index of element after which value should be inserted to maintain order.
+  !> Finds index of element after which value should be inserted to maintain order.
   !====================================================================================
   pure FUNCTION searchsorted4(arr, val, outbounds_ok) result(i)
     real(4), intent(in) :: arr(:), val
@@ -95,7 +95,7 @@ contains
   end FUNCTION searchsorted4
 
   !====================================================================================
-  ! Finds index of element after which value should be inserted to maintain order.
+  !> Finds index of element after which value should be inserted to maintain order.
   !====================================================================================
   pure FUNCTION searchsorted8(arr, val, outbounds_ok) result(i)
     real(8), intent(in) :: arr(:), val
@@ -223,9 +223,9 @@ contains
   END SUBROUTINE poly3d
 
   !===============================================================================
-  !  finds solution of system of linear equations
-  !  with gaussian elimination with pivoting
-  !: lineq  90-06-05  new routine: (martin j stift)
+  !>  finds solution of system of linear equations
+  !>  with gaussian elimination with pivoting
+  !>: lineq  90-06-05  new routine: (martin j stift)
   !===============================================================================
   SUBROUTINE lineq(a,b,n)
     integer :: n
@@ -323,22 +323,22 @@ contains
   !---------------------------------------------------------------------
 
   !===============================================================================
-  !  solves the equation  system  a*x=b.
-  !  when newmat=true, the system is rearranged into u*x=l*b, where u
-  !  is upper and l is lower triangular. these are then reused in later
-  !  calls with newmat=false and new right hand sides b. the solution
-  !  vector is returned in b. no pivoting, i.e. the matrix a is assumed
-  !  to have nonzero diagonal elements.
-  !
-  !  coded by: a. nordlund (feb-1979)
-  !
-  !  this is a modified version of eqsyst which tests for zero elements
-  !  below the diagonal and also stops at the last non-zero element above
-  !  the diagonal. considerable savings are obtained for loose matrices.
-  !
-  !  this is a column oriented version (m. carlsson jan-1986)
-  !  temporary scalars bl, all, alm and bk are used to show the compiler
-  !  that there is no vector dependency in the innermost do-loop
+  !>  solves the equation  system  a*x=b.
+  !>  when newmat=true, the system is rearranged into u*x=l*b, where u
+  !>  is upper and l is lower triangular. these are then reused in later
+  !>  calls with newmat=false and new right hand sides b. the solution
+  !>  vector is returned in b. no pivoting, i.e. the matrix a is assumed
+  !>  to have nonzero diagonal elements.
+  !>
+  !>  coded by: a. nordlund (feb-1979)
+  !>
+  !>  this is a modified version of eqsyst which tests for zero elements
+  !>  below the diagonal and also stops at the last non-zero element above
+  !>  the diagonal. considerable savings are obtained for loose matrices.
+  !>
+  !>  this is a column oriented version (m. carlsson jan-1986)
+  !>  temporary scalars bl, all, alm and bk are used to show the compiler
+  !>  that there is no vector dependency in the innermost do-loop
   !===============================================================================
   SUBROUTINE eqsyst(a,b,n)
     integer :: n
@@ -419,20 +419,20 @@ contains
   END SUBROUTINE lineq_no_pivot
 
   !===============================================================================
-  ! Orthogonal PCA basis of 2D scatter data (x1,x2), e.g. (lnT, lnNe) samples.
-  ! Returns the mean, rotation into principal-axis coordinates, and the origin/
-  ! spacing/node count of a rectangular grid laid out along those axes with
-  ! projected resolution d1,d2 (in x1,x2 units) and npad extra nodes past the
-  ! data hull on each end. Caller passes x1,x2 pre-transformed (e.g. logged)
-  ! so the transform is computed once rather than repeated per moment/extent.
+  !> Orthogonal PCA basis of 2D scatter data (x1,x2), e.g. (lnT, lnNe) samples.
+  !> Returns the mean, rotation into principal-axis coordinates, and the origin/
+  !> spacing/node count of a rectangular grid laid out along those axes with
+  !> projected resolution d1,d2 (in x1,x2 units) and npad extra nodes past the
+  !> data hull on each end. Caller passes x1,x2 pre-transformed (e.g. logged)
+  !> so the transform is computed once rather than repeated per moment/extent.
   !===============================================================================
   SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2, use_pca)
-    real(8), intent(in)  :: x1(:), x2(:)     ! sample coordinates, e.g. (lnT, lnNe)
-    real(8), intent(in)  :: d1, d2           ! requested resolution along x1, x2
-    integer, intent(in)  :: npad             ! extra nodes past the data hull, each end
+    real(8), intent(in)  :: x1(:), x2(:)     !< sample coordinates, e.g. (lnT, lnNe)
+    real(8), intent(in)  :: d1, d2           !< requested resolution along x1, x2
+    integer, intent(in)  :: npad             !< extra nodes past the data hull, each end
     real(8), intent(out) :: mu(2), rot(2,2), c0(2), dc(2)
     integer, intent(out) :: n1, n2
-    logical, intent(in), optional :: use_pca ! .false. -> axis-aligned (no rotation)
+    logical, intent(in), optional :: use_pca !< .false. -> axis-aligned (no rotation)
     real(8) :: a, b, d, tr, disc, l1, l2, tiny_b, vn
     real(8) :: pmin1, pmax1, pmin2, pmax2
     real(8), dimension(size(x1)) :: p1, p2
@@ -489,20 +489,20 @@ contains
     n2    = ceiling((pmax2 - pmin2)/dc(2)) + 1 + 2*np
   END SUBROUTINE pca_grid_2d
   !=====================================================================================
-  ! Build a union of wavelength windows and return it sorted and merged.
-  ! Input:
-  !   windows(:,1) = blue edges [Angstrom]
-  !   windows(:,2) = red edges [Angstrom]
-  !   dlam = expansion margin (in Angstrom)
-  ! Output:
-  !   merged_intervals = sorted, non-overlapping intervals
-  !   n_merged = number of merged intervals
-  !
-  ! The routine:
-  ! 1. Expands each window by dlam on both sides
-  ! 2. Clamps the lower edge to a physically valid wavelength
-  ! 3. Sorts the expanded intervals
-  ! 4. Merges overlapping or touching intervals
+  !> Build a union of wavelength windows and return it sorted and merged.
+  !> Input:
+  !>   windows(:,1) = blue edges [Angstrom]
+  !>   windows(:,2) = red edges [Angstrom]
+  !>   dlam = expansion margin (in Angstrom)
+  !> Output:
+  !>   merged_intervals = sorted, non-overlapping intervals
+  !>   n_merged = number of merged intervals
+  !>
+  !> The routine:
+  !> 1. Expands each window by dlam on both sides
+  !> 2. Clamps the lower edge to a physically valid wavelength
+  !> 3. Sorts the expanded intervals
+  !> 4. Merges overlapping or touching intervals
   !-------------------------------------------------------------------------------------
   SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
     real(dp), intent(in) :: windows(:,:)
@@ -559,7 +559,7 @@ contains
   END SUBROUTINE merge_intervals
 
   !=====================================================================================
-  ! Sort an array of intervals by blue edge (ascending).
+  !> Sort an array of intervals by blue edge (ascending).
   !-------------------------------------------------------------------------------------
   SUBROUTINE sort_intervals(intervals, n)
     type(interval_t), intent(inout) :: intervals(:)

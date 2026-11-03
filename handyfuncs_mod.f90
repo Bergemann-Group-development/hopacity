@@ -218,7 +218,7 @@ contains
     !===============================================================================
   FUNCTION hash_string(text) result(hashed)
     character(*), intent(in) :: text
-    integer :: hashed ! 32-bit integers assumed
+    integer :: hashed !< 32-bit integers assumed
     integer, parameter :: magic_numb = int(Z'5D7A9F43', kind=kind(magic_numb))  ! hexadecimal
     integer :: i, j
     !-----------------------------------------------------------------------------
@@ -255,10 +255,10 @@ contains
   END SUBROUTINE argsort_int
 
   !===============================================================================
-  ! In-place ascending sort (recursive quicksort, middle-element pivot).  Both call
-  ! sites (spectrum_mod%sort, composition_mod) are one-time setup sorts, not hot
-  ! loops.  The middle-element pivot keeps the already-sorted and
-  ! concatenated-sorted-runs inputs they pass off the O(n^2) path.
+  !> In-place ascending sort (recursive quicksort, middle-element pivot).  Both call
+  !> sites (spectrum_mod%sort, composition_mod) are one-time setup sorts, not hot
+  !> loops.  The middle-element pivot keeps the already-sorted and
+  !> concatenated-sorted-runs inputs they pass off the O(n^2) path.
   RECURSIVE SUBROUTINE sort_asc(a)
     real(8), intent(inout) :: a(:)
     !-----------------------------------------------------------------------------
@@ -306,8 +306,8 @@ contains
   END FUNCTION lowercase
 
   !====================================================================================
+  !> converts the first ss characters of string to uppercase and returns them as a new string.
   PURE FUNCTION uppercase(string)
-    ! converts the first ss characters of string to uppercase and returns them as a new string.
     implicit none
     character(len=*),intent(in) :: string
     character(len=len(string)) :: uppercase
@@ -689,12 +689,12 @@ contains
 
 
   ! ==============================================================================
+  !> Build a symmetric log-spaced grid with preferred-number mantissas
+  !> (1, 1.5, 2, 3, 4, 6, 8) per decade, mirrored about zero.
+  !> The endpoints are snapped to the nearest preferred mantissa.
+  !> Output q has the shape  [-q_n, ..., -q_1, 0, q_1, ..., q_n].
+  ! ----------------------------------------------------------------------
   PURE SUBROUTINE symmetric_log_grid(q0, qmax, q)
-    ! Build a symmetric log-spaced grid with preferred-number mantissas
-    ! (1, 1.5, 2, 3, 4, 6, 8) per decade, mirrored about zero.
-    ! The endpoints are snapped to the nearest preferred mantissa.
-    ! Output q has the shape  [-q_n, ..., -q_1, 0, q_1, ..., q_n].
-    ! ----------------------------------------------------------------------
     real(8),              intent(in)  :: q0, qmax
     real(8), allocatable, intent(out) :: q(:)
 

@@ -1,18 +1,18 @@
+!>  Single home for all 1-D cubic-Hermite / monotone-PCHIP interpolation in the
+!>  code: the cubic basis (p = 3t^2 - 2t^3) and the Fritsch-Carlson node-slope
+!>  rule live here exactly once.
+!>
+!>  Design follows a gradient/eval split: the node-slope (gradient) computation
+!>  is factored into pchip_slopes, called once per driver invocation, while the
+!>  per-point evaluation stays inline in the drivers. Both halves are same-file,
+!>  so they inline together under -Ofast / -O3 in the hot loops (rt_patch /
+!>  ray_patch ghost zones).
+!>
+!>  The interior slope is the documented reciprocal harmonic mean of Ibgui et
+!>  al. 2013 (A&A, "IRIS"). Boundary slopes use quadratic extrapolation from
+!>  the neighbouring node slope. This is the ONE canonical rule for the whole
+!>  codebase.
 MODULE interpol_mod
-  !  Single home for all 1-D cubic-Hermite / monotone-PCHIP interpolation in the
-  !  code: the cubic basis (p = 3t^2 - 2t^3) and the Fritsch-Carlson node-slope
-  !  rule live here exactly once.
-  !
-  !  Design follows a gradient/eval split: the node-slope (gradient) computation
-  !  is factored into pchip_slopes, called once per driver invocation, while the
-  !  per-point evaluation stays inline in the drivers. Both halves are same-file,
-  !  so they inline together under -Ofast / -O3 in the hot loops (rt_patch /
-  !  ray_patch ghost zones).
-  !
-  !  The interior slope is the documented reciprocal harmonic mean of Ibgui et
-  !  al. 2013 (A&A, "IRIS"). Boundary slopes use quadratic extrapolation from
-  !  the neighbouring node slope. This is the ONE canonical rule for the whole
-  !  codebase.
   USE prec_mod                       ! dp; single precision written as real(4)
   USE op_math_mod, only: searchsorted, option
   USE console_mod
@@ -46,9 +46,9 @@ MODULE interpol_mod
 contains
 
   !===============================================================================
-  ! The cumulative integral of y over x from x(1), exact for the monotone PCHIP
-  ! interpolant of y: h (y_i + y_i+1)/2 + h^2 (s_i - s_i+1)/12 per interval of
-  ! width h, with s the pchip_slopes8 node slopes.  It has the sign of the x steps.
+  !> The cumulative integral of y over x from x(1), exact for the monotone PCHIP
+  !> interpolant of y: h (y_i + y_i+1)/2 + h^2 (s_i - s_i+1)/12 per interval of
+  !> width h, with s the pchip_slopes8 node slopes.  It has the sign of the x steps.
   !===============================================================================
   PURE SUBROUTINE pchip_integral (x, y, cum)
     real(8), intent(in) :: x(:), y(:)
@@ -65,14 +65,14 @@ contains
   END SUBROUTINE pchip_integral
 
   !===============================================================================
-  ! Optical depth down one column, index 1 at the top: the PCHIP integral of chi
-  ! in the height z (cm, either sign convention).  The top cell gets tau = chi H,
-  ! the depth of an atmosphere above the column in which chi falls off with the
-  ! scale height H.  H is the smaller of the density and extinction scale heights
-  ! between the two top cells: chi falls faster than rho where H- dominates
-  ! (chi ~ rho n_e), and in a temperature inversion, where chi can grow outward,
-  ! the density scale height keeps H finite.  The floor of 0.01 on the log step
-  ! does the same in a density inversion.
+  !> Optical depth down one column, index 1 at the top: the PCHIP integral of chi
+  !> in the height z (cm, either sign convention).  The top cell gets tau = chi H,
+  !> the depth of an atmosphere above the column in which chi falls off with the
+  !> scale height H.  H is the smaller of the density and extinction scale heights
+  !> between the two top cells: chi falls faster than rho where H- dominates
+  !> (chi ~ rho n_e), and in a temperature inversion, where chi can grow outward,
+  !> the density scale height keeps H finite.  The floor of 0.01 on the log step
+  !> does the same in a density inversion.
   !===============================================================================
   PURE SUBROUTINE optical_depth (chi, lnrho, z, tau)
     real(8), intent(in) :: chi(:), lnrho(:), z(:)
@@ -84,11 +84,11 @@ contains
   END SUBROUTINE optical_depth
 
   !===============================================================================
-  ! The heights (cm, z(1) = 0 at the top, negative below) of a column given on an
-  ! optical depth scale, index 1 at the top: dz = (tau/chi) d ln tau, the scale
-  ! height tau/chi integrated as a PCHIP in ln tau, which is exact for an
-  ! exponential atmosphere.  Only the differences of tau enter, so the depth of
-  ! the top cell is not kept; optical_depth assigns it chi H again.
+  !> The heights (cm, z(1) = 0 at the top, negative below) of a column given on an
+  !> optical depth scale, index 1 at the top: dz = (tau/chi) d ln tau, the scale
+  !> height tau/chi integrated as a PCHIP in ln tau, which is exact for an
+  !> exponential atmosphere.  Only the differences of tau enter, so the depth of
+  !> the top cell is not kept; optical_depth assigns it chi H again.
   !===============================================================================
   PURE SUBROUTINE heights_from_tau (tau, chi, z)
     real(8), intent(in) :: tau(:), chi(:)
@@ -99,10 +99,10 @@ contains
   END SUBROUTINE heights_from_tau
 
   !===============================================================================
-  !  Shared cubic-Hermite basis kernel (the "eval half"). Value form on an
-  !  interval of width h for local parameter t in [0,1] with endpoint values
-  !  y0,y1 and endpoint slopes m0,m1:
-  !     val = (1-p)*y0 + p*y1 + h*((t^3-2t^2+t)*m0 + (t^3-t^2)*m1),  p = 3t^2-2t^3
+  !>  Shared cubic-Hermite basis kernel (the "eval half"). Value form on an
+  !>  interval of width h for local parameter t in [0,1] with endpoint values
+  !>  y0,y1 and endpoint slopes m0,m1:
+  !>     val = (1-p)*y0 + p*y1 + h*((t^3-2t^2+t)*m0 + (t^3-t^2)*m1),  p = 3t^2-2t^3
   !===============================================================================
   elemental PURE FUNCTION hermite_value4 (t, h, y0, y1, m0, m1) result(val)
     real(4), intent(in) :: t, h, y0, y1, m0, m1
@@ -126,12 +126,12 @@ contains
   END FUNCTION hermite_value8
 
   !===============================================================================
-  !  Cubic Hermite basis coefficients for local parameter t in [0,1] on an
-  !  interval of width h. The interpolated value on the interval is
-  !     val = c0*y0 + c1*y1 + cm0*m0 + cm1*m1
-  !  with endpoint values y0,y1 and endpoint slopes m0,m1. p = 3t^2 - 2t^3 is
-  !  also returned for value-basis carrying of auxiliary (cross-axis) slope
-  !  fields: g = (1-p)*g0 + p*g1. (Donated from optab_mod; used by optab_mod.)
+  !>  Cubic Hermite basis coefficients for local parameter t in [0,1] on an
+  !>  interval of width h. The interpolated value on the interval is
+  !>     val = c0*y0 + c1*y1 + cm0*m0 + cm1*m1
+  !>  with endpoint values y0,y1 and endpoint slopes m0,m1. p = 3t^2 - 2t^3 is
+  !>  also returned for value-basis carrying of auxiliary (cross-axis) slope
+  !>  fields: g = (1-p)*g0 + p*g1. (Donated from optab_mod; used by optab_mod.)
   !===============================================================================
   elemental PURE SUBROUTINE hermite_coefs (t, h, p, c0, c1, cm0, cm1)
     real(4), intent(in) :: t, h
@@ -148,11 +148,11 @@ contains
   END SUBROUTINE hermite_coefs
 
   !===============================================================================
-  !  Canonical monotone node slopes (the "gradient half"): reciprocal harmonic
-  !  mean at interior nodes (Ibgui et al. 2013), zeroed at non-monotone or flat
-  !  segments, quadratic extrapolation at the boundaries. imin/imax window which
-  !  interior nodes are needed; dydx is always zero-initialised. dx and dy are
-  !  the node spacings/differences, returned for reuse by the caller's eval loop.
+  !>  Canonical monotone node slopes (the "gradient half"): reciprocal harmonic
+  !>  mean at interior nodes (Ibgui et al. 2013), zeroed at non-monotone or flat
+  !>  segments, quadratic extrapolation at the boundaries. imin/imax window which
+  !>  interior nodes are needed; dydx is always zero-initialised. dx and dy are
+  !>  the node spacings/differences, returned for reuse by the caller's eval loop.
   !===============================================================================
   PURE SUBROUTINE pchip_slopes4 (xx, yy, imin, imax, dx, dy, dydx)
     real(4), intent(in) :: xx(:), yy(:)
@@ -238,15 +238,15 @@ contains
   END SUBROUTINE pchip_slopes8
 
   !===============================================================================
-  ! Monotonic piecewise cubic hermite interpolation (real4)
-  ! Coded by Richard Hoppe, July 2023
+  !> Monotonic piecewise cubic hermite interpolation (real4)
+  !> Coded by Richard Hoppe, July 2023
   !===============================================================================
   SUBROUTINE pchip_mono4(xx, yy, newx, newy, sorted, newdydx)
-    real(4), intent(in) :: xx(:)            ! X values of the data points
-    real(4), intent(in) :: yy(:)            ! Y values of the data points
-    real(4), intent(in) :: newx(:)          ! X values to interpolate at
-    real(4), intent(out) :: newy(:)         ! Interpolated Y values
-    real(4), intent(out), optional :: newdydx(:) ! Derivative at interpolation points
+    real(4), intent(in) :: xx(:)            !< X values of the data points
+    real(4), intent(in) :: yy(:)            !< Y values of the data points
+    real(4), intent(in) :: newx(:)          !< X values to interpolate at
+    real(4), intent(out) :: newy(:)         !< Interpolated Y values
+    real(4), intent(out), optional :: newdydx(:) !< Derivative at interpolation points
     real(4), save, allocatable :: dydx(:)   ! derivative
     real(4), save, allocatable :: dx(:)
     real(4), save, allocatable :: dy(:)
@@ -319,14 +319,14 @@ contains
   END SUBROUTINE pchip_mono4
 
   !===============================================================================
-  ! Monotonic piecewise cubic hermite interpolation (real8)
-  ! Coded by Richard Hoppe, July 2023
+  !> Monotonic piecewise cubic hermite interpolation (real8)
+  !> Coded by Richard Hoppe, July 2023
   !===============================================================================
   SUBROUTINE pchip_mono8(xx, yy, newx, newy, sorted)
-    real(8), intent(in) :: xx(:)            ! X values of the data points
-    real(8), intent(in) :: yy(:)            ! Y values of the data points
-    real(8), intent(in) :: newx(:)          ! X values to interpolate at
-    real(8), intent(out) :: newy(:)         ! Interpolated Y values
+    real(8), intent(in) :: xx(:)            !< X values of the data points
+    real(8), intent(in) :: yy(:)            !< Y values of the data points
+    real(8), intent(in) :: newx(:)          !< X values to interpolate at
+    real(8), intent(out) :: newy(:)         !< Interpolated Y values
     real(8), save, allocatable :: dydx(:)   ! derivative
     real(8), save, allocatable :: dx(:)
     real(8), save, allocatable :: dy(:)
@@ -392,15 +392,15 @@ contains
   END SUBROUTINE pchip_mono8
 
   !===============================================================================
-  ! Monotonic piecewise cubic hermite interpolation on a regular periodic grid
-  ! Coded by Richard Hoppe, July 2023
+  !> Monotonic piecewise cubic hermite interpolation on a regular periodic grid
+  !> Coded by Richard Hoppe, July 2023
   !===============================================================================
   SUBROUTINE pchip_mono4_reg_period(yy, new_x0, new_dx, newy, newdydx)
-    real(4), intent(in) :: yy(:)            ! Y values of the data points
-    real(8), intent(in) :: new_x0           ! Starting x value in grid units
-    real(8), intent(in) :: new_dx           ! Spacing of new x values in grid units
-    real(4), intent(out) :: newy(:)         ! Interpolated Y values
-    real(4), intent(out), optional :: newdydx(:) ! Derivative per grid unit at interpolation points
+    real(4), intent(in) :: yy(:)            !< Y values of the data points
+    real(8), intent(in) :: new_x0           !< Starting x value in grid units
+    real(8), intent(in) :: new_dx           !< Spacing of new x values in grid units
+    real(4), intent(out) :: newy(:)         !< Interpolated Y values
+    real(4), intent(out), optional :: newdydx(:) !< Derivative per grid unit at interpolation points
     real(4), save, allocatable :: dydx(:)   ! derivative
     real(4), save, allocatable :: dy(:)
     integer :: n                 ! Number of data points
@@ -489,9 +489,9 @@ contains
   END SUBROUTINE pchip_mono4_reg_period
 
   !===============================================================================
-  !  Node slopes over a whole array via the canonical monotone rule (thin wrapper
-  !  used by the Hermite-interpolation drivers below and by external callers that
-  !  precompute the gradient once, e.g. cont_type%hermite_interp in trans_mod).
+  !>  Node slopes over a whole array via the canonical monotone rule (thin wrapper
+  !>  used by the Hermite-interpolation drivers below and by external callers that
+  !>  precompute the gradient once, e.g. cont_type%hermite_interp in trans_mod).
   !===============================================================================
   PURE SUBROUTINE hermite_derivative(dydx,x,y)
     real(8),dimension(:),intent(in)  :: x,y
@@ -504,8 +504,8 @@ contains
   END SUBROUTINE hermite_derivative
 
   !===============================================================================
-  !  Cubic-Hermite interpolation of the nodes (x, y, dydx) at xx, held constant
-  !  outside [x(1), x(n)].
+  !>  Cubic-Hermite interpolation of the nodes (x, y, dydx) at xx, held constant
+  !>  outside [x(1), x(n)].
   !===============================================================================
   PURE SUBROUTINE hermite_interpolation_single(yy,xx,x,y,dydx)
     real(kind=8), dimension(:), intent(in)  :: x,y,dydx
@@ -597,8 +597,8 @@ contains
 
   !===============================================================================
   SUBROUTINE interp1d_reg_period (yy, new_x0, new_dx, newy)
-    real(8), intent(in) :: new_x0    ! Starting x value in grid units
-    real(8), intent(in) :: new_dx    ! Spacing of new x values in grid units
+    real(8), intent(in) :: new_x0    !< Starting x value in grid units
+    real(8), intent(in) :: new_dx    !< Spacing of new x values in grid units
     real(4), dimension(:), intent(in) :: yy
     real(4), dimension(:), intent(out) :: newy
     real(4) :: ratio, delta

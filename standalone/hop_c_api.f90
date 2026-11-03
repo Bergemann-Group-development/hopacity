@@ -92,7 +92,7 @@ MODULE hop_c_api
   ! it can size its buffers, and everything it then reads describes that same walk.
   real(8), allocatable, save :: ll_lam(:), ll_evi(:), ll_loggf(:), ll_strength(:)
   integer, allocatable, save :: ll_ispec(:)
-  character(len=:), allocatable, save :: absmet_loaded   ! the file osmet holds
+  character(len=:), allocatable, save :: absmet_loaded   !< the file osmet holds
   character(len=8), allocatable, save :: ll_species(:)
   integer, save :: ll_nspecies = 0
 
@@ -190,25 +190,25 @@ CONTAINS
   ! reported when it is active and was actually used, which is the same set
   ! linelist_out.txt writes.
   !=============================================================================
-  ! Write the reported lines as a line list in the *input* format, so a caller can
-  ! use them as the linelist_file of a later run. The records are the ones
-  ! linelist_out.txt carries, written by the same routines a full run writes its dump
-  ! with. The trailing strength column is a diagnostic both readers ignore; the reach
-  ! column after it lets a run select lines per output patch (linelist_mod).
-  !
-  ! What makes this useful: a curve of growth repeats one atmosphere at many
-  ! abundances, and every rung then re-reads and re-selects from the whole master
-  ! list. Selecting once per atmosphere -- at the strongest rung, so the result is a
-  ! superset of what any weaker one needs -- and handing the cropped list to every
-  ! rung makes the selection a property of the atmosphere rather than of each run.
-  !
-  ! Which lines appear follows how the list was *loaded*, not the wavelengths of the
-  ! opacity call: a line is reported when it was active and used, and the load is what
-  ! decides the pool.  Crop with hop_init_linelist_windows, therefore --
-  ! hop_init_linelist masks on the hull of its wavelengths and would put the whole
-  ! span in the file.
-  !
-  ! Model-atom transitions are not included: a standalone HOP state has none.
+  !> Write the reported lines as a line list in the *input* format, so a caller can
+  !> use them as the linelist_file of a later run. The records are the ones
+  !> linelist_out.txt carries, written by the same routines a full run writes its dump
+  !> with. The trailing strength column is a diagnostic both readers ignore; the reach
+  !> column after it lets a run select lines per output patch (linelist_mod).
+  !>
+  !> What makes this useful: a curve of growth repeats one atmosphere at many
+  !> abundances, and every rung then re-reads and re-selects from the whole master
+  !> list. Selecting once per atmosphere -- at the strongest rung, so the result is a
+  !> superset of what any weaker one needs -- and handing the cropped list to every
+  !> rung makes the selection a property of the atmosphere rather than of each run.
+  !>
+  !> Which lines appear follows how the list was *loaded*, not the wavelengths of the
+  !> opacity call: a line is reported when it was active and used, and the load is what
+  !> decides the pool.  Crop with hop_init_linelist_windows, therefore --
+  !> hop_init_linelist masks on the hull of its wavelengths and would put the whole
+  !> span in the file.
+  !>
+  !> Model-atom transitions are not included: a standalone HOP state has none.
   FUNCTION hop_write_linelist(path) RESULT(status) BIND(c, name='hop_write_linelist')
     character(kind=c_char), intent(in) :: path(*)
     integer(c_int) :: status
@@ -239,9 +239,9 @@ CONTAINS
   END FUNCTION hop_linelist_count
 
   !-----------------------------------------------------------------------------
-  ! The collection itself.  lam_air is Angstrom (as in the line-list files), evi the
-  ! lower-level energy [eV], strength the ratio above, and ispec a 0-based index into
-  ! the list hop_linelist_species reports.
+  !> The collection itself.  lam_air is Angstrom (as in the line-list files), evi the
+  !> lower-level energy [eV], strength the ratio above, and ispec a 0-based index into
+  !> the list hop_linelist_species reports.
   !-----------------------------------------------------------------------------
   FUNCTION hop_get_linelist(n, lam_air, evi, loggf, strength, ispec) RESULT(status) &
            BIND(c, name='hop_get_linelist')
@@ -269,9 +269,9 @@ CONTAINS
   END FUNCTION hop_get_linelist
 
   !-----------------------------------------------------------------------------
-  ! The species ids the ispec column indexes, newline separated in index order.  Ids
-  ! carry the ionization stage ('Fe I', 'Fe II', 'TiO'), so they cannot be separated
-  ! by blanks the way hop_option_names does it.
+  !> The species ids the ispec column indexes, newline separated in index order.  Ids
+  !> carry the ionization stage ('Fe I', 'Fe II', 'TiO'), so they cannot be separated
+  !> by blanks the way hop_option_names does it.
   !-----------------------------------------------------------------------------
   FUNCTION hop_linelist_species(buf, buflen) RESULT(status) &
            BIND(c, name='hop_linelist_species')
@@ -294,10 +294,10 @@ CONTAINS
   END FUNCTION hop_linelist_species
 
   !-----------------------------------------------------------------------------
-  ! Walk the solved composition and gather every reported line.  The order is the one
-  ! m3d_patch_t%print_linelist writes linelist_out.txt in -- each element's ions, then
-  ! the molecules -- so the two agree line for line, which is what makes the dump a
-  ! usable check on this.
+  !> Walk the solved composition and gather every reported line.  The order is the one
+  !> m3d_patch_t%print_linelist writes linelist_out.txt in -- each element's ions, then
+  !> the molecules -- so the two agree line for line, which is what makes the dump a
+  !> usable check on this.
   !-----------------------------------------------------------------------------
   SUBROUTINE collect_lines(nout)
     integer(c_int), intent(out) :: nout
@@ -336,7 +336,7 @@ CONTAINS
   END SUBROUTINE collect_lines
 
   !-----------------------------------------------------------------------------
-  ! One particle's reported lines, from its line lists (one per isotope).
+  !> One particle's reported lines, from its line lists (one per isotope).
   !-----------------------------------------------------------------------------
   SUBROUTINE take_particle(ptc, pass, ntot)
     class(particle_type), intent(in) :: ptc
@@ -359,8 +359,8 @@ CONTAINS
   END SUBROUTINE take_particle
 
   !-----------------------------------------------------------------------------
-  ! Record one line.  ispec is the particle's index in ll_species, claimed lazily so a
-  ! species that reports nothing takes no slot.
+  !> Record one line.  ispec is the particle's index in ll_species, claimed lazily so a
+  !> species that reports nothing takes no slot.
   !-----------------------------------------------------------------------------
   SUBROUTINE emit(id, ispec, pass, ntot, lam_air, evi, loggf, strength)
     character(len=*), intent(in) :: id
@@ -385,9 +385,9 @@ CONTAINS
   !=============================================================================
   ! Helpers
   !=============================================================================
-  ! A subroutine rather than a function with a deferred-length result: built with
-  ! -fno-realloc-lhs, gfortran hands such a result to callers in this module with
-  ! length 0.
+  !> A subroutine rather than a function with a deferred-length result: built with
+  !> -fno-realloc-lhs, gfortran hands such a result to callers in this module with
+  !> length 0.
   SUBROUTINE c2f_string(cs, fs)
     character(kind=c_char), intent(in) :: cs(*)
     character(len=:), allocatable, intent(out) :: fs
@@ -405,10 +405,10 @@ CONTAINS
   END SUBROUTINE c2f_string
 
   !-----------------------------------------------------------------------------
-  ! Species lookup shared by hop_keep_species/hop_get_species.  Guards the bare
-  ! element id case ('Fe' without an ionization stage): particle_by_id would
-  ! crash on its unguarded second read, so only blank-free ids that name a
-  ! molecule are allowed through.
+  !> Species lookup shared by hop_keep_species/hop_get_species.  Guards the bare
+  !> element id case ('Fe' without an ionization stage): particle_by_id would
+  !> crash on its unguarded second read, so only blank-free ids that name a
+  !> molecule are allowed through.
   !-----------------------------------------------------------------------------
   SUBROUTINE species_lookup (c, nm, particle, status)
     class(composition_type), target :: c
@@ -436,7 +436,7 @@ CONTAINS
   END SUBROUTINE species_lookup
 
   !=============================================================================
-  ! Lifecycle
+  !> Lifecycle
   !=============================================================================
   FUNCTION hop_init(absdat_file, abund_file, isotope_file, molec_file, &
                     feh, tmolim, alpha_enh, r_process_enh) RESULT(status) &
@@ -478,9 +478,9 @@ CONTAINS
   END FUNCTION hop_init
 
   !-----------------------------------------------------------------------------
-  ! Atmosphere-provided abundances, log eps indexed by atomic number, for the next
-  ! hop_init: what a dispatch run applies with atmos_params use_abnd=T.  Elements
-  ! beyond n keep the standard value.  n=0 clears a previous vector.
+  !> Atmosphere-provided abundances, log eps indexed by atomic number, for the next
+  !> hop_init: what a dispatch run applies with atmos_params use_abnd=T.  Elements
+  !> beyond n keep the standard value.  n=0 clears a previous vector.
   !-----------------------------------------------------------------------------
   FUNCTION hop_set_external_abundances(n, abund) RESULT(status) &
            BIND(c, name='hop_set_external_abundances')
@@ -569,15 +569,15 @@ CONTAINS
   END SUBROUTINE parse_logical
 
   !=============================================================================
-  ! The one option setter.  Name and value both cross as strings and the parse
-  ! happens here, against the option's own type, so no caller has to know which
-  ! type bucket an option belongs to, and an unknown name stays distinguishable
-  ! from a value that will not parse (see the status codes below).
-  !
-  ! Options that influence injon (abundances, exclude_elements, ...) must still
-  ! be set BEFORE hop_init.
-  !
-  ! status: 0 ok, 1 unknown name, 4 value will not parse as that option's type
+  !> The one option setter.  Name and value both cross as strings and the parse
+  !> happens here, against the option's own type, so no caller has to know which
+  !> type bucket an option belongs to, and an unknown name stays distinguishable
+  !> from a value that will not parse (see the status codes below).
+  !>
+  !> Options that influence injon (abundances, exclude_elements, ...) must still
+  !> be set BEFORE hop_init.
+  !>
+  !> status: 0 ok, 1 unknown name, 4 value will not parse as that option's type
   !=============================================================================
   FUNCTION hop_set_option(name, value) RESULT(status) &
            BIND(c, name='hop_set_option')
@@ -684,7 +684,7 @@ CONTAINS
   END FUNCTION hop_set_option
 
   !=============================================================================
-  ! EOS
+  !> EOS
   !=============================================================================
   FUNCTION hop_load_state(n, temp, ne, rho, vmic, use_rho, use_ne) &
            RESULT(status) BIND(c, name='hop_load_state')
@@ -783,11 +783,11 @@ CONTAINS
   END FUNCTION hop_get_field
 
   !-----------------------------------------------------------------------------
-  ! Mark a species ('Fe I', 'CH', ...) so its number density survives the solve.
-  ! Call after hop_init and before hop_load_state; the mark is set on the master
-  ! instance, so every subsequent solve retains the species.  Mirrors dispatch's
-  ! save_species pre-init marking: in_opac is read only by the deallocate keep-
-  ! checks, so this does not change any opacity.
+  !> Mark a species ('Fe I', 'CH', ...) so its number density survives the solve.
+  !> Call after hop_init and before hop_load_state; the mark is set on the master
+  !> instance, so every subsequent solve retains the species.  Mirrors dispatch's
+  !> save_species pre-init marking: in_opac is read only by the deallocate keep-
+  !> checks, so this does not change any opacity.
   !-----------------------------------------------------------------------------
   FUNCTION hop_keep_species(name) RESULT(status) BIND(c, name='hop_keep_species')
     character(kind=c_char), intent(in) :: name(*)
@@ -805,9 +805,9 @@ CONTAINS
   END FUNCTION hop_keep_species
 
   !-----------------------------------------------------------------------------
-  ! Number density [1/cm3] of a species in the loaded state.  The species must
-  ! have been kept (hop_keep_species) before the hop_load_state call -- or be
-  ! one HOP retains anyway (continuum-opacity and line-list species).
+  !> Number density [1/cm3] of a species in the loaded state.  The species must
+  !> have been kept (hop_keep_species) before the hop_load_state call -- or be
+  !> one HOP retains anyway (continuum-opacity and line-list species).
   !-----------------------------------------------------------------------------
   FUNCTION hop_get_species(name, n, out) RESULT(status) &
            BIND(c, name='hop_get_species')
@@ -842,10 +842,10 @@ CONTAINS
   END FUNCTION hop_get_grph
 
   !-----------------------------------------------------------------------------
-  ! Microturbulence [km/s] of the loaded state.  vmic enters only the line
-  ! broadening (composition%add_linelist_opacities), never the EOS, so it can
-  ! be changed on a solved state instead of re-solving it.  A negative value is
-  ! thermal-only broadening.
+  !> Microturbulence [km/s] of the loaded state.  vmic enters only the line
+  !> broadening (composition%add_linelist_opacities), never the EOS, so it can
+  !> be changed on a solved state instead of re-solving it.  A negative value is
+  !> thermal-only broadening.
   !-----------------------------------------------------------------------------
   FUNCTION hop_set_vmic(n, vmic) RESULT(status) BIND(c, name='hop_set_vmic')
     integer(c_int), value :: n
@@ -862,13 +862,13 @@ CONTAINS
   END FUNCTION hop_set_vmic
 
   !=============================================================================
-  ! Opacity.  lam is vacuum Angstrom, ascending.  The chi and scat buffers are
-  ! float32 of size nlam*n (Fortran order: wavelength fastest), filled in 1/cm
-  ! (per-volume extinction; divide by rho for per-gram).  See
-  ! composition_type%opacity for what each of them contains: chi is the total
-  ! extinction (continuum + absmet + line list), scat its scattering part.
-  ! line_scat < 0 leaves the split to the module-global line_scattering, 0/1
-  ! override it; include_llist is honoured only once a line list has been read.
+  !> Opacity.  lam is vacuum Angstrom, ascending.  The chi and scat buffers are
+  !> float32 of size nlam*n (Fortran order: wavelength fastest), filled in 1/cm
+  !> (per-volume extinction; divide by rho for per-gram).  See
+  !> composition_type%opacity for what each of them contains: chi is the total
+  !> extinction (continuum + absmet + line list), scat its scattering part.
+  !> line_scat < 0 leaves the split to the module-global line_scattering, 0/1
+  !> override it; include_llist is honoured only once a line list has been read.
   !=============================================================================
   FUNCTION hop_opacity(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
                        line_scat) RESULT(status) BIND(c, name='hop_opacity')
@@ -905,7 +905,7 @@ CONTAINS
   END FUNCTION hop_opacity
 
   !=============================================================================
-  ! Threaded Opacity
+  !> Threaded Opacity
   !=============================================================================
   FUNCTION hop_opacity_omp(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
                            line_scat, nthreads) RESULT(status) BIND(c, name='hop_opacity_omp')
@@ -1071,24 +1071,16 @@ CONTAINS
     END SUBROUTINE chunk_range
   END FUNCTION hop_opacity_omp
 
-  !-----------------------------------------------------------------------------
-  ! Read one line-list file into the master instance, keeping only lines inside
-  ! [lam(1)-dlam, lam(nlam)+dlam] (pass nlam=0 for no wavelength mask).  Mirrors
-  ! the composition%init_linelist calls dispatch makes at setup, one per file in
-  ! linelist_folder; repeated calls accumulate.  Must be called after hop_init and
-  ! BEFORE hop_load_state: the solve works on a fresh copy of master, and
-  ! particle%ll is allocatable, so the copy carries the lines along.
-  !-----------------------------------------------------------------------------
-  ! Read a line list keeping only the lines inside a set of windows, rather than
-  ! everything between the first and last wavelength.  hop_init_linelist masks on
-  ! [lam(1)-dlam, lam(nlam)+dlam], so a request for fifteen 2.5 A windows spread
-  ! over 1300 A loads all 1300 A of it: measured on the master list, 18943 lines
-  ! where the windows hold 484.  The windows are merged and expanded by dlam here
-  ! exactly as a full run does it (build_linelist_intervals), so the kept set is the
-  ! one that run would keep, wing contributors included.
-  !
-  ! blue_vac/red_vac are vacuum Angstrom, like interval_t itself; the reader masks
-  ! on the vacuum line centre.
+  !> Read a line list keeping only the lines inside a set of windows, rather than
+  !> everything between the first and last wavelength.  hop_init_linelist masks on
+  !> [lam(1)-dlam, lam(nlam)+dlam], so a request for fifteen 2.5 A windows spread
+  !> over 1300 A loads all 1300 A of it: measured on the master list, 18943 lines
+  !> where the windows hold 484.  The windows are merged and expanded by dlam here
+  !> exactly as a full run does it (build_linelist_intervals), so the kept set is the
+  !> one that run would keep, wing contributors included.
+  !>
+  !> blue_vac/red_vac are vacuum Angstrom, like interval_t itself; the reader masks
+  !> on the vacuum line centre.
   FUNCTION hop_init_linelist_windows(linelist_file, dlam, nwin, blue_vac, red_vac) &
            RESULT(status) BIND(c, name='hop_init_linelist_windows')
     character(kind=c_char), intent(in) :: linelist_file(*)
@@ -1133,6 +1125,13 @@ CONTAINS
     call master%init_linelist(file_f, dlam, lam8, merged(1:nmerged))
   END FUNCTION hop_init_linelist_windows
 
+  !-----------------------------------------------------------------------------
+  !> Read one line-list file into the master instance, keeping only lines inside
+  !> [lam(1)-dlam, lam(nlam)+dlam] (pass nlam=0 for no wavelength mask).  Mirrors
+  !> the composition%init_linelist calls dispatch makes at setup, one per file in
+  !> linelist_folder; repeated calls accumulate.  Must be called after hop_init and
+  !> BEFORE hop_load_state: the solve works on a fresh copy of master, and
+  !> particle%ll is allocatable, so the copy carries the lines along.
   !-----------------------------------------------------------------------------
   FUNCTION hop_init_linelist(linelist_file, dlam, nlam, lam) RESULT(status) &
            BIND(c, name='hop_init_linelist')
@@ -1195,11 +1194,11 @@ CONTAINS
   ! Model-atmosphere files, parsed by atmos_reader_mod exactly as dispatch.x
   ! reads them, at the file's full resolution and in its own orientation.
   !=============================================================================
-  ! Parse a file; format 'unknown' infers it from the name as dispatch.x does.
-  ! snap is the Stagger snapshot number and use_aux /= 0 lets a Stagger snapshot
-  ! take T and n_e from its .aux file (both ignored by the other formats).
-  ! dims returns nx, ny, nz, the ghost zones, has_pe, has_rho, has_feh and the
-  ! number of abundances the file carries (92 for MARCS, else 0).
+  !> Parse a file; format 'unknown' infers it from the name as dispatch.x does.
+  !> snap is the Stagger snapshot number and use_aux /= 0 lets a Stagger snapshot
+  !> take T and n_e from its .aux file (both ignored by the other formats).
+  !> dims returns nx, ny, nz, the ghost zones, has_pe, has_rho, has_feh and the
+  !> number of abundances the file carries (92 for MARCS, else 0).
   FUNCTION hop_atmos_read(atmos_format, atmos_file, snap, use_aux, dims) RESULT(status) &
            BIND(c, name='hop_atmos_read')
     character(kind=c_char), intent(in) :: atmos_format(*), atmos_file(*)
@@ -1234,9 +1233,9 @@ CONTAINS
     end associate
   END FUNCTION hop_atmos_read
 
-  ! One field of the parsed atmosphere as float32, x fastest: ltemp, lpe, lrho
-  ! (natural logs, cgs), vx, vy, vz [cm/s], vmic [km/s] (nx*ny*nz values), xx, yy,
-  ! zz (the axes), feh (1) or abund (log eps for Z=1..92, MARCS only).
+  !> One field of the parsed atmosphere as float32, x fastest: ltemp, lpe, lrho
+  !> (natural logs, cgs), vx, vy, vz [cm/s], vmic [km/s] (nx*ny*nz values), xx, yy,
+  !> zz (the axes), feh (1) or abund (log eps for Z=1..92, MARCS only).
   FUNCTION hop_atmos_get(name, n, out) RESULT(status) BIND(c, name='hop_atmos_get')
     character(kind=c_char), intent(in) :: name(*)
     integer(c_int), value :: n
@@ -1303,10 +1302,10 @@ CONTAINS
   END FUNCTION hop_atmos_free
 
   !=============================================================================
-  ! Optical depth of ncol columns of nz cells, each top first and depth fastest
-  ! (C order (ncol, nz)), with the integrator and top rule of dispatch.x
-  ! (interpol_mod optical_depth): chi [1/cm], ln rho and the height z [cm].
-  ! Needs no hop_init.
+  !> Optical depth of ncol columns of nz cells, each top first and depth fastest
+  !> (C order (ncol, nz)), with the integrator and top rule of dispatch.x
+  !> (interpol_mod optical_depth): chi [1/cm], ln rho and the height z [cm].
+  !> Needs no hop_init.
   !=============================================================================
   FUNCTION hop_optical_depth(ncol, nz, chi, lnrho, z, tau) RESULT(status) &
            BIND(c, name='hop_optical_depth')
@@ -1329,9 +1328,9 @@ CONTAINS
   END FUNCTION hop_optical_depth
 
   !=============================================================================
-  ! Cumulative PCHIP integrals of y over x from the first point, for ncol series
-  ! of n points, each contiguous (C order (ncol, n)) -- the quadrature of
-  ! optical_depth (interpol_mod pchip_integral).  Needs no hop_init.
+  !> Cumulative PCHIP integrals of y over x from the first point, for ncol series
+  !> of n points, each contiguous (C order (ncol, n)) -- the quadrature of
+  !> optical_depth (interpol_mod pchip_integral).  Needs no hop_init.
   !=============================================================================
   FUNCTION hop_pchip_integral(ncol, n, x, y, cum) RESULT(status) &
            BIND(c, name='hop_pchip_integral')

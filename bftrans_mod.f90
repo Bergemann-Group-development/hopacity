@@ -19,10 +19,10 @@ MODULE bftrans_mod
     logical :: ilogl, kvadl, minex, maxex, loglam=.false.
     logical :: ilogt, kvadt, minet, maxet, iteta, pedep, istim
     real(dp), dimension(:), allocatable :: lam, temp, teta, tt, lnlam
-    real(4), dimension(:,:), allocatable :: xkap   ! scaled table, see set_table
+    real(4), dimension(:,:), allocatable :: xkap   !< scaled table, see set_table
     real(dp) :: xkap_scale=1
     logical :: log_table=.false.
-    logical, dimension(:), allocatable :: ldisk!, tdisk
+    logical, dimension(:), allocatable :: ldisk!<, tdisk
     logical :: peach=.false., regular=.false., molecular=.false.
     logical :: lam3=.false.
     logical :: active=.true.
@@ -54,14 +54,14 @@ contains
   END SUBROUTINE deactivate
 
   !===============================================================================
-  ! Store the absorption table xkap(nnu, ntt) in real(4), in the form in which
-  ! interp_xkap interpolates it first: logarithmic for a logarithmic temperature
-  ! interpolation, or for a table without temperature dependence that is
-  ! interpolated logarithmically in wavelength.  The table is divided by its
-  ! maximum, xkap_scale, which keeps cross sections far below the real(4) range
-  ! (collision-induced absorption, ~1e-45) representable; interp_xkap multiplies
-  ! xkap_scale into the double-precision absorption factor instead.  Logarithms
-  ! of non-positive entries are taken of 1e-37.
+  !> Store the absorption table xkap(nnu, ntt) in real(4), in the form in which
+  !> interp_xkap interpolates it first: logarithmic for a logarithmic temperature
+  !> interpolation, or for a table without temperature dependence that is
+  !> interpolated logarithmically in wavelength.  The table is divided by its
+  !> maximum, xkap_scale, which keeps cross sections far below the real(4) range
+  !> (collision-induced absorption, ~1e-45) representable; interp_xkap multiplies
+  !> xkap_scale into the double-precision absorption factor instead.  Logarithms
+  !> of non-positive entries are taken of 1e-37.
   !===============================================================================
   SUBROUTINE set_table(self, xkap)
     class(bftrans_type), intent(inout) :: self
@@ -407,8 +407,8 @@ contains
       call trace%end(itimer2)
     endif
   contains
-    ! The absorption factor times xkap_scale, which the scaled table leaves out,
-    ! capped at the real(4) maximum so that the conversion cannot overflow
+    !> The absorption factor times xkap_scale, which the scaled table leaves out,
+    !> capped at the real(4) maximum so that the conversion cannot overflow
     pure real(4) function scaled_factor(fk)
       real(dp), intent(in) :: fk
       scaled_factor = real(min(fk*self%xkap_scale, real(huge(1.0), dp)), 4)
@@ -423,7 +423,7 @@ contains
     class(particle_type), pointer :: ion
     real(dp), dimension(:,:,:), intent(in) :: e_kT, teta, pe, dxi
     real(dp), dimension(:,:,:), intent(inout) :: fakt
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
+    integer, intent(in), optional :: i0, i1        !< optional cell range on dim 1 (threading)
     real(dp) :: scalar
     integer :: lo, hi
     integer :: itimer=0
@@ -477,7 +477,7 @@ contains
     real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
     real(dp), dimension(:,:,:), intent(in) :: temp, e_kT, teta, pe, dxi
     real(dp), dimension(:,:,:), intent(in), optional :: ne, nhe, shield
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
+    integer, intent(in), optional :: i0, i1        !< optional cell range on dim 1 (threading)
     real(dp), dimension(:), intent(in) :: lam
     real(dp), dimension(:,:,:), allocatable :: fakt
     logical, optional :: sorted

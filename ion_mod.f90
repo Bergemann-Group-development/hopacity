@@ -19,7 +19,7 @@ MODULE ion_mod
 
   type, extends(isotope_type) :: particle_type
     real(dp), dimension(:,:,:), allocatable :: part
-    integer :: j=1 ! ionisation stage (1 is neutral)
+    integer :: j=1 !< ionisation stage (1 is neutral)
     integer :: m(3)=[0,0,0], nk
     character(len=6) :: id
     integer :: niso=1

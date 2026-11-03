@@ -9,10 +9,10 @@ MODULE optab_mod
   implicit none
 
   !=============================================================================
-  ! Externally-read binned opacity table (special case): 2D (log temp, log rho)
-  ! interpolation, one independent lookup per wavelength bin. Node derivatives
-  ! along both axes are precomputed once in build_derivatives (called from init)
-  ! so interpolate is a pure Hermite evaluation with stored slopes.
+  !> Externally-read binned opacity table (special case): 2D (log temp, log rho)
+  !> interpolation, one independent lookup per wavelength bin. Node derivatives
+  !> along both axes are precomputed once in build_derivatives (called from init)
+  !> so interpolate is a pure Hermite evaluation with stored slopes.
   !=============================================================================
   type :: optab_type
     real(4), dimension(:), allocatable :: ltemp, lrho
@@ -28,33 +28,33 @@ MODULE optab_mod
   end type
 
   !=============================================================================
-  ! Orthogonal PCA coordinate transform of (lnT, lnNe):
-  !   c = rot^T ((lnT,lnNe) - mu),   coord_k(i) = c0(k) + (i-1)*dc(k)
-  ! Ties a sampled opacity table's (temp, ne) node grid to the physical
-  ! coordinates it was built from, so a query point can be rotated into the
-  ! same node-index space (see sample_interpolate). Built once, in
-  ! pca_opac_grid, and carried from the composition patch that owns the grid
-  ! down to every rt_patch that samples it (composition_type%pca).
+  !> Orthogonal PCA coordinate transform of (lnT, lnNe):
+  !>   c = rot^T ((lnT,lnNe) - mu),   coord_k(i) = c0(k) + (i-1)*dc(k)
+  !> Ties a sampled opacity table's (temp, ne) node grid to the physical
+  !> coordinates it was built from, so a query point can be rotated into the
+  !> same node-index space (see sample_interpolate). Built once, in
+  !> pca_opac_grid, and carried from the composition patch that owns the grid
+  !> down to every rt_patch that samples it (composition_type%pca).
   !=============================================================================
   type :: pca_transform_type
-    real(8) :: mu(2)=0            ! mean of (lnT, lnNe)
-    real(8) :: rot(2,2)=0          ! PC directions (unit eigenvectors as columns)
-    real(8) :: c0(2)=0, dc(2)=1    ! min coordinate & spacing along each PC axis
+    real(8) :: mu(2)=0            !< mean of (lnT, lnNe)
+    real(8) :: rot(2,2)=0          !< PC directions (unit eigenvectors as columns)
+    real(8) :: c0(2)=0, dc(2)=1    !< min coordinate & spacing along each PC axis
   end type
 
   !=============================================================================
-  ! Runtime background-opacity sampling table: 3D (wavelength, temp, log ne).
-  ! The temp axis is regularly spaced (linear) and the ne axis is regularly
-  ! spaced in log(ne); the wavelength axis is irregular. Monotone PCHIP node
-  ! slopes along every dimension are precomputed and stored, so interpolate is
-  ! an O(1) separable tensor-product cubic Hermite evaluation per query.
+  !> Runtime background-opacity sampling table: 3D (wavelength, temp, log ne).
+  !> The temp axis is regularly spaced (linear) and the ne axis is regularly
+  !> spaced in log(ne); the wavelength axis is irregular. Monotone PCHIP node
+  !> slopes along every dimension are precomputed and stored, so interpolate is
+  !> an O(1) separable tensor-product cubic Hermite evaluation per query.
   !=============================================================================
   type :: sample_optab_type
     integer :: nnu=0, ntemp=0, nne=0
-    type(pca_transform_type) :: pca       ! (lnT, lnNe) -> table-axis coordinates
-    real(8), dimension(:), allocatable :: lam                 ! (nnu) irregular wavelength nodes
-    real(4), dimension(:,:,:), allocatable :: val             ! (nnu,ntemp,nne) /chi500
-    real(4), dimension(:,:,:), allocatable :: dl, dt, de      ! precomputed node slopes
+    type(pca_transform_type) :: pca       !< (lnT, lnNe) -> table-axis coordinates
+    real(8), dimension(:), allocatable :: lam                 !< (nnu) irregular wavelength nodes
+    real(4), dimension(:,:,:), allocatable :: val             !< (nnu,ntemp,nne) /chi500
+    real(4), dimension(:,:,:), allocatable :: dl, dt, de      !< precomputed node slopes
     ! Second, scattering component with its own node slopes, /chi500.
     !   background table: val is the true absorption and scat the coherent
     !     scattering, kept DISJOINT and summed only after interpolation.  Both
@@ -82,7 +82,7 @@ MODULE optab_mod
 contains
 
   !===============================================================================
-  ! initialises opacity table.
+  !> initialises opacity table.
   !===============================================================================
   SUBROUTINE init (self, opac_table, sp)
     class(optab_type) :: self
@@ -116,8 +116,8 @@ contains
   END SUBROUTINE init
 
   !===============================================================================
-  ! Precompute monotone node slopes of the binned table along the (irregular)
-  ! log-temperature and log-density axes, for both chi and src.
+  !> Precompute monotone node slopes of the binned table along the (irregular)
+  !> log-temperature and log-density axes, for both chi and src.
   !===============================================================================
   SUBROUTINE optab_build_derivatives (self)
     class(optab_type) :: self
@@ -130,10 +130,10 @@ contains
   END SUBROUTINE optab_build_derivatives
 
   !===============================================================================
-  ! Interpolate the binned table at the requested (temp, rho). Separable 2D
-  ! tensor-product cubic Hermite (collapse log-temp then log-rho) using the
-  ! precomputed node slopes; mixed partials are ignored. chi and eta are
-  ! shaped (nbin, ncells...) with the bin as the first, contiguous index.
+  !> Interpolate the binned table at the requested (temp, rho). Separable 2D
+  !> tensor-product cubic Hermite (collapse log-temp then log-rho) using the
+  !> precomputed node slopes; mixed partials are ignored. chi and eta are
+  !> shaped (nbin, ncells...) with the bin as the first, contiguous index.
   !===============================================================================
   SUBROUTINE interpolate (self, chi, eta, temp, rho)
     class(optab_type) :: self
@@ -192,12 +192,12 @@ contains
   END SUBROUTINE interpolate
 
   !===============================================================================
-  ! Precompute monotone node slopes of the 3D sampling table along wavelength
-  ! (dl, irregular), temperature (dt, regular) and log ne (de, regular).
-  ! The wavelength slopes are taken on the real(8) nodes: the spectrum keeps its
-  ! nodes lam_tolerance apart, but in real(4) two nodes 0.002 A apart at 3.8 um
-  ! (the continua of two nearly degenerate levels) coincide. The PC axes are
-  ! centred on the data and spaced dc apart, which real(4) resolves.
+  !> Precompute monotone node slopes of the 3D sampling table along wavelength
+  !> (dl, irregular), temperature (dt, regular) and log ne (de, regular).
+  !> The wavelength slopes are taken on the real(8) nodes: the spectrum keeps its
+  !> nodes lam_tolerance apart, but in real(4) two nodes 0.002 A apart at 3.8 um
+  !> (the continua of two nearly degenerate levels) coincide. The PC axes are
+  !> centred on the data and spaced dc apart, which real(4) resolves.
   !===============================================================================
   SUBROUTINE sample_build_derivatives (self)
     class(sample_optab_type) :: self
@@ -241,11 +241,11 @@ contains
   END SUBROUTINE sample_build_derivatives
 
   !===============================================================================
-  ! Sample the 3D table into back(fs:fe,x,y,z), multiplying by the local chi500.
-  ! Separable tensor-product cubic Hermite: collapse wavelength -> temp -> log ne
-  ! using the precomputed node slopes (mixed partials ignored). The regular
-  ! temp/ne axes use direct floor indexing; the irregular wavelength axis uses a
-  ! per-frequency searchsorted precompute.
+  !> Sample the 3D table into back(fs:fe,x,y,z), multiplying by the local chi500.
+  !> Separable tensor-product cubic Hermite: collapse wavelength -> temp -> log ne
+  !> using the precomputed node slopes (mixed partials ignored). The regular
+  !> temp/ne axes use direct floor indexing; the irregular wavelength axis uses a
+  !> per-frequency searchsorted precompute.
   !===============================================================================
   SUBROUTINE sample_interpolate (self, temp, ne, chi500, back, scat, lam_q, fs, fe)
     class(sample_optab_type) :: self
@@ -321,9 +321,9 @@ contains
     call trace%end(itimer)
 
   contains
-    ! separable tensor-product cubic Hermite collapse (wavelength -> temp ->
-    ! log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
-    ! coefficients; one call per table component
+    !> separable tensor-product cubic Hermite collapse (wavelength -> temp ->
+    !> log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
+    !> coefficients; one call per table component
     real(4) function collapse(val, dl, dt, de) result(kap)
       real(4), dimension(:,:,:), intent(in) :: val, dl, dt, de
       real(4) :: v00, v10, v01, v11, gt00, gt10, gt01, gt11
@@ -356,15 +356,15 @@ contains
   END SUBROUTINE sample_interpolate
 
   !===============================================================================
-  ! Sample the LTE line-list table into the foreground work arrays, ADDING the
-  ! interpolated value to both xhat (work(...,1)) and ehat (work(...,2)) -- in LTE
-  ! the line's two working forms are identical (val stores chi_line/((1-beta)*chi500)).
-  ! The query wavelength is Doppler-shifted per cell by the projected velocity:
-  ! lam_query = lam_q(f)*(1 - vproj) (equivalently log-lam - vproj, the same sign
-  ! convention as the line kernels' llc = llam0 - vproj_c). Because the shift is
-  ! per cell, the wavelength bracket is computed inside the (x,y,z) loop rather
-  ! than precomputed per frequency. Separable tensor-product cubic Hermite over
-  ! (wavelength -> temp -> log ne), reusing the linear-lambda node slopes dl.
+  !> Sample the LTE line-list table into the foreground work arrays, ADDING the
+  !> interpolated value to both xhat (work(...,1)) and ehat (work(...,2)) -- in LTE
+  !> the line's two working forms are identical (val stores chi_line/((1-beta)*chi500)).
+  !> The query wavelength is Doppler-shifted per cell by the projected velocity:
+  !> lam_query = lam_q(f)*(1 - vproj) (equivalently log-lam - vproj, the same sign
+  !> convention as the line kernels' llc = llam0 - vproj_c). Because the shift is
+  !> per cell, the wavelength bracket is computed inside the (x,y,z) loop rather
+  !> than precomputed per frequency. Separable tensor-product cubic Hermite over
+  !> (wavelength -> temp -> log ne), reusing the linear-lambda node slopes dl.
   !===============================================================================
   SUBROUTINE sample_interpolate_ll (self, temp, ne, chi500, work, lam_q, vproj, fs, fe, chi_scat)
     class(sample_optab_type) :: self
@@ -443,9 +443,9 @@ contains
     call trace%end(itimer)
 
   contains
-    ! separable tensor-product cubic Hermite collapse (wavelength -> temp ->
-    ! log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
-    ! coefficients; one call per table component
+    !> separable tensor-product cubic Hermite collapse (wavelength -> temp ->
+    !> log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
+    !> coefficients; one call per table component
     real(4) function collapse(val, dl, dt, de) result(kap)
       real(4), dimension(:,:,:), intent(in) :: val, dl, dt, de
       real(4) :: cv00, cv10, cv01, cv11, cgt00, cgt10, cgt01, cgt11
@@ -493,11 +493,11 @@ contains
   END SUBROUTINE sample_dealloc
 
   !===============================================================================
-  ! Monotone PCHIP node slopes of a 3D array f along dimension dim, given the
-  ! node coordinates axis. Reuses pchip_mono evaluated at the nodes: at a node
-  ! the interpolant derivative equals the node slope. Works for regular and
-  ! irregular axes (the Fritsch-Carlson weights collapse to the plain harmonic
-  ! mean on a uniform grid automatically).
+  !> Monotone PCHIP node slopes of a 3D array f along dimension dim, given the
+  !> node coordinates axis. Reuses pchip_mono evaluated at the nodes: at a node
+  !> the interpolant derivative equals the node slope. Works for regular and
+  !> irregular axes (the Fritsch-Carlson weights collapse to the plain harmonic
+  !> mean on a uniform grid automatically).
   !===============================================================================
   SUBROUTINE node_slopes_dim (axis, f, dim, slope)
     real(4), dimension(:), intent(in) :: axis
@@ -532,21 +532,21 @@ contains
   END SUBROUTINE node_slopes_dim
 
   !===============================================================================
-  ! Build the node grid for the 3D sampling table (sample_optab_type) in the
-  ! orthogonal PCA basis of (lnT, lnNe) over all cells, rather than an
-  ! axis-aligned box in (T, lnNe). Since T and Ne are strongly correlated the
-  ! atmosphere hugs a thin locus; a PC-rotated grid tracks it, dropping the
-  ! unphysical off-diagonal corners that crash the EOS and cutting the node
-  ! count. ldtemp/ldne are the requested lnT/lnNe resolutions, projected onto
-  ! the PC axes for spacing. Callers pass temp/ne as read (real4, any shape)
-  ! and get back ready-to-use (T, ne) node tables plus the transform needed
-  ! later to rotate a query point into table coordinates (see sample_interpolate).
+  !> Build the node grid for the 3D sampling table (sample_optab_type) in the
+  !> orthogonal PCA basis of (lnT, lnNe) over all cells, rather than an
+  !> axis-aligned box in (T, lnNe). Since T and Ne are strongly correlated the
+  !> atmosphere hugs a thin locus; a PC-rotated grid tracks it, dropping the
+  !> unphysical off-diagonal corners that crash the EOS and cutting the node
+  !> count. ldtemp/ldne are the requested lnT/lnNe resolutions, projected onto
+  !> the PC axes for spacing. Callers pass temp/ne as read (real4, any shape)
+  !> and get back ready-to-use (T, ne) node tables plus the transform needed
+  !> later to rotate a query point into table coordinates (see sample_interpolate).
   !===============================================================================
   SUBROUTINE pca_opac_grid(temp, ne, ldtemp, ldne, npad, tab_temp, tab_ne, pca, n1, n2, use_pca)
     real(4), dimension(:,:,:,:), intent(in) :: temp, ne
     real(8), intent(in) :: ldtemp, ldne
     integer, intent(in) :: npad
-    logical, intent(in), optional :: use_pca   ! .false. -> axis-aligned (lnT,lnNe) grid
+    logical, intent(in), optional :: use_pca   !< .false. -> axis-aligned (lnT,lnNe) grid
     real(8), dimension(:,:,:), allocatable, intent(out) :: tab_temp, tab_ne
     type(pca_transform_type), intent(out) :: pca
     integer, intent(out) :: n1, n2

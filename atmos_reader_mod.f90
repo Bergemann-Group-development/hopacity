@@ -28,20 +28,20 @@ MODULE atmos_reader_mod
   type, public :: atmos_data_t
     character(len=16) :: format = ''
     integer :: nx=0, ny=0, nz=0
-    integer :: gz=0                          ! ghost zones at each end in z (Stagger)
-    real(4) :: timestamp=-1                  ! CO5BOLD snapshot time
+    integer :: gz=0                          !< ghost zones at each end in z (Stagger)
+    real(4) :: timestamp=-1                  !< CO5BOLD snapshot time
     ! ln T [K], ln P_e [dyn/cm2], ln rho [g/cm3]; a column a format does not carry
     ! is flagged absent and left unset.
     real(4), allocatable :: ltemp(:,:,:), lpe(:,:,:), lrho(:,:,:)
     logical :: has_pe=.false., has_rho=.false.
-    real(4), allocatable :: vmic(:,:,:)      ! [km/s], the file's own values
-    real(4), allocatable :: vx(:,:,:), vy(:,:,:), vz(:,:,:)  ! [cm/s] where the format has them, else 0
-    real(4), allocatable :: xx(:), yy(:)     ! horizontal mesh [cm] (3D formats), else 0
-    real(4), allocatable :: zz(:)            ! depth coordinate as the file gives it
+    real(4), allocatable :: vmic(:,:,:)      !< [km/s], the file's own values
+    real(4), allocatable :: vx(:,:,:), vy(:,:,:), vz(:,:,:)  !< [cm/s] where the format has them, else 0
+    real(4), allocatable :: xx(:), yy(:)     !< horizontal mesh [cm] (3D formats), else 0
+    real(4), allocatable :: zz(:)            !< depth coordinate as the file gives it
     logical :: has_feh=.false.
-    real(8) :: feh=0                         ! model [Fe/H] when the file states one
-    real(4) :: radius=0                      ! [cm], MARCS (1 for plane-parallel)
-    real(4), allocatable :: abund(:)         ! MARCS: log eps for Z=1..92
+    real(8) :: feh=0                         !< model [Fe/H] when the file states one
+    real(4) :: radius=0                      !< [cm], MARCS (1 for plane-parallel)
+    real(4), allocatable :: abund(:)         !< MARCS: log eps for Z=1..92
   contains
     procedure :: allocate => allocate_atmos_data
   end type atmos_data_t
@@ -710,8 +710,8 @@ CONTAINS
   END SUBROUTINE read_siu_bin_file
 
   !=============================================================================
+  !> f is centered on (i-.5,j,k), fifth order stagger
   SUBROUTINE xup_set (f, fp)
-    ! f is centered on (i-.5,j,k), fifth order stagger
     real(4), dimension(:,:,:), intent(in) :: f
     real(4), dimension(:,:,:), intent(out) :: fp
     integer :: j, k

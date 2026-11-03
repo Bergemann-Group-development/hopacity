@@ -137,14 +137,14 @@ MODULE hprofl_mod
 
   logical, public :: hydrogen_BPO=.true.
 
-  ! Profile parameters of one hydrogen line (see hydrogen_line). The widths carry the
-  ! over_4pi/nu0 scaling of the bbtrans_type broadening constants; dq(1:io), wt(1:io)
-  ! are the fine-structure offsets [nu/nu0] and weights, dqbar their weighted mean and
-  ! dqmax the largest |dq|. bpo marks the lines whose self-broadening follows Barklem,
-  ! Piskunov & O'Mara (2000) instead of Ali & Griem.
+  !> Profile parameters of one hydrogen line (see hydrogen_line). The widths carry the
+  !> over_4pi/nu0 scaling of the bbtrans_type broadening constants; dq(1:io), wt(1:io)
+  !> are the fine-structure offsets [nu/nu0] and weights, dqbar their weighted mean and
+  !> dqmax the largest |dq|. bpo marks the lines whose self-broadening follows Barklem,
+  !> Piskunov & O'Mara (2000) instead of Ali & Griem.
   type, public :: hline_t
-    integer  :: n=0, m=0          ! lower and upper principal quantum numbers
-    real(dp) :: nu0=0             ! rest frequency [Hz]
+    integer  :: n=0, m=0          !< lower and upper principal quantum numbers
+    real(dp) :: nu0=0             !< rest frequency [Hz]
     real(dp) :: grad=0, gstk=0, gw1=0, gw2=0, gw3=0
     logical  :: bpo=.false.
     integer  :: io=0
@@ -152,27 +152,27 @@ MODULE hprofl_mod
     real(dp) :: dqbar=0, dqmax=0
   end type hline_t
 
-  ! The q-independent part of stark_eval for one line in one cell (stark_prepare)
+  !> The q-independent part of stark_eval for one line in one cell (stark_prepare)
   type :: stark_cell_t
-    logical  :: off = .true.      ! no Stark broadening (hwstk = 0)
+    logical  :: off = .true.      !< no Stark broadening (hwstk = 0)
     integer  :: n = 0, m = 0
     real(8)  :: hw5, pp, cne, ex, c1coef, g1, gcon1, gcon2, gam0
   end type stark_cell_t
 
-  ! One hydrogen line in one cell, prepared by hcell_prepare for hprofile
+  !> One hydrogen line in one cell, prepared by hcell_prepare for hprofile
   type, public :: hcell_t
     real(4) :: idf, ne, tothi, resont, vdw, hwstk, hwlor, hfwid
-    real(4) :: hwadd = 0                  ! table path: Lorentzian half width added to the table
+    real(4) :: hwadd = 0                  !< table path: Lorentzian half width added to the table
     logical :: use_vcs = .false., lymanalf = .false.
     type(stark_cell_t)   :: st
-    type(qlg_bot_coef_t) :: vcore, vwing   ! Voigt coefficients inside / outside hfwid
+    type(qlg_bot_coef_t) :: vcore, vwing   !< Voigt coefficients inside / outside hfwid
     type(vcs_profile_t)  :: vcs
-    real(8) :: xholt4000 = 0              ! Lyman alpha: half the Stark profile at q4000
+    real(8) :: xholt4000 = 0              !< Lyman alpha: half the Stark profile at q4000
   end type hcell_t
 
   ! Lyman alpha wing regions, in relative detuning q
-  real(8), parameter :: LyA0 = 82259.105 ! wavenumber
-  real(8), parameter :: rayqcut = (1e8/1400.d0 - LyA0)/LyA0 !Changed from 1240 to 1400 by BPz 04/10-2007
+  real(8), parameter :: LyA0 = 82259.105 !< wavenumber
+  real(8), parameter :: rayqcut = (1e8/1400.d0 - LyA0)/LyA0 !<Changed from 1240 to 1400 by BPz 04/10-2007
   real(8), parameter :: redthresh = 20000./LyA0 - 1d0
   real(8), parameter :: q4000 = -4000./LyA0
 
@@ -183,7 +183,7 @@ contains
     ne, tothi, vbar2h, fo, t3nhe, bi, bj, chi, eta, cont, do_nlte, line_used, &
     line_strength, i0, i1)
     type(hline_t), intent(in) :: h
-    real(dp), intent(in) :: Bij                 ! Einstein Bij, incl. the h/4pi factor
+    real(dp), intent(in) :: Bij                 !< Einstein Bij, incl. the h/4pi factor
     ! diagnostics: set when the line is evaluated in some cell; the maximum centre
     ! line/continuum opacity ratio
     logical, intent(inout) :: line_used
@@ -292,10 +292,10 @@ contains
 
   contains
 
-    !  The profile at frequency index f, detuning q. Past qt every fine-structure
-    !  component is on the VCS power-law tail (see vcs_fine), evaluated at
-    !  ln|q - dqbar| = ln|d| + ln(1 - vp/d). |vp/d| < 1e-2 there, so the series to
-    !  second order leaves an error below 1e-6 in ln|q|.
+    !>  The profile at frequency index f, detuning q. Past qt every fine-structure
+    !>  component is on the VCS power-law tail (see vcs_fine), evaluated at
+    !>  ln|q - dqbar| = ln|d| + ln(1 - vp/d). |vp/d| < 1e-2 there, so the series to
+    !>  second order leaves an error below 1e-6 in ln|q|.
     FUNCTION profile_at (f, q) result(phi)
       integer, intent(in) :: f
       real(8), intent(in) :: q
@@ -338,9 +338,9 @@ contains
   END SUBROUTINE add_h_opacities
 
   !===============================================================================
-  ! The per-cell part of a hydrogen line's profile: widths, the Stark setup, the Voigt
-  ! coefficients of the core and wing branches, and the tabulated VCS profile. The
-  ! caller keeps c across cells, so an unchanged VCS stamp is not rebuilt.
+  !> The per-cell part of a hydrogen line's profile: widths, the Stark setup, the Voigt
+  !> coefficients of the core and wing branches, and the tabulated VCS profile. The
+  !> caller keeps c across cells, so an unchanged VCS stamp is not rebuilt.
   !===============================================================================
   SUBROUTINE hcell_prepare (h, temp, ne, fo, vbar2h, tothi, t3nhe, idf, c)
     type(hline_t), intent(in) :: h
@@ -388,8 +388,8 @@ contains
   END SUBROUTINE hcell_prepare
 
   !===============================================================================
-  !  The profile at q = (nu - nu0)/nu0 in a cell prepared by hcell_prepare.
-  !  Based on code by Deane Peterson and Bob Kurucz
+  !>  The profile at q = (nu - nu0)/nu0 in a cell prepared by hcell_prepare.
+  !>  Based on code by Deane Peterson and Bob Kurucz
   !===============================================================================
   FUNCTION hprofile (h, c, q) result(phi)
     type(hline_t), intent(in) :: h
@@ -434,20 +434,20 @@ contains
   END FUNCTION
 
   !====================================================================================
-  !  Tabulated VCS profile with the same fine-structure superposition as hvoigt:
-  !  the prepared (symmetric, unit-area) table profile is shifted to each
-  !  component dq(i) and weighted by wt(i). The weights sum to one, so the
-  !  normalisation is preserved; lines with a single component reduce to
-  !  vcs_eval at q. Mirrors SIU's HYDL_AG_CON_FS, with HOP's component pattern.
-  !  Broadening the table lacks is added to each component as a Lorentzian
-  !  (added_wing), as SIU's HYDL_BPO_CON_FS and the adding method of Barklem's
-  !  HLINPROF do for BPO.
-  !
-  !  Once every component lies beyond the table's outer edge, the profile is the
-  !  power law A*|q|**s, and the weighted sum equals one evaluation at the mean
-  !  shift dqbar up to a relative s(s-1)/2 * var(dq)/q**2, below 1e-5 there. Most
-  !  evaluations of the strong lines fall in this regime; add_h_opacities
-  !  evaluates it directly, sharing ln|q| between cells.
+  !>  Tabulated VCS profile with the same fine-structure superposition as hvoigt:
+  !>  the prepared (symmetric, unit-area) table profile is shifted to each
+  !>  component dq(i) and weighted by wt(i). The weights sum to one, so the
+  !>  normalisation is preserved; lines with a single component reduce to
+  !>  vcs_eval at q. Mirrors SIU's HYDL_AG_CON_FS, with HOP's component pattern.
+  !>  Broadening the table lacks is added to each component as a Lorentzian
+  !>  (added_wing), as SIU's HYDL_BPO_CON_FS and the adding method of Barklem's
+  !>  HLINPROF do for BPO.
+  !>
+  !>  Once every component lies beyond the table's outer edge, the profile is the
+  !>  power law A*|q|**s, and the weighted sum equals one evaluation at the mean
+  !>  shift dqbar up to a relative s(s-1)/2 * var(dq)/q**2, below 1e-5 there. Most
+  !>  evaluations of the strong lines fall in this regime; add_h_opacities
+  !>  evaluates it directly, sharing ln|q| between cells.
   !====================================================================================
   FUNCTION vcs_fine (h, c, q) result(phi)
     type(hline_t), intent(in) :: h
@@ -473,12 +473,12 @@ contains
   END FUNCTION
 
   !====================================================================================
-  !  The added Lorentzian (unit area in q) at detuning d from a component, added
-  !  to the table profile beyond hfwid = max(Doppler width, hwadd), the same
-  !  switch between core and adding as in hvoigt. Inside it the Doppler core
-  !  dominates, and leaving the Lorentzian out there keeps the summed area close
-  !  to one; the excess, about 2/pi * hwadd/hfwid, is what the analytic path's
-  !  adding also carries.
+  !>  The added Lorentzian (unit area in q) at detuning d from a component, added
+  !>  to the table profile beyond hfwid = max(Doppler width, hwadd), the same
+  !>  switch between core and adding as in hvoigt. Inside it the Doppler core
+  !>  dominates, and leaving the Lorentzian out there keeps the summed area close
+  !>  to one; the excess, about 2/pi * hwadd/hfwid, is what the analytic path's
+  !>  adding also carries.
   !====================================================================================
   PURE FUNCTION added_wing (c, d) result(phi)
     type(hcell_t), intent(in) :: c
@@ -604,10 +604,10 @@ contains
   END SUBROUTINE
 
   !====================================================================================
-  ! Profile parameters of the hydrogen line n -> m with rest frequency nu0 [Hz]:
-  ! Stark, natural, resonance and van der Waals widths, and the fine-structure
-  ! pattern. Depends only on its arguments and the disable_*/hydrogen_BPO switches,
-  ! so callers may rebuild it wherever it is needed instead of storing it.
+  !> Profile parameters of the hydrogen line n -> m with rest frequency nu0 [Hz]:
+  !> Stark, natural, resonance and van der Waals widths, and the fine-structure
+  !> pattern. Depends only on its arguments and the disable_*/hydrogen_BPO switches,
+  !> so callers may rebuild it wherever it is needed instead of storing it.
   !------------------------------------------------------------------------------------
   FUNCTION hydrogen_line (n, m, nu0) result(h)
     integer, intent(in) :: n, m
@@ -713,8 +713,8 @@ contains
   END FUNCTION hydrogen_line
 
   !====================================================================================
-  ! Fill a model-atom hydrogen transition (bbtrans_type, n and m in self%i, self%j)
-  ! with the hydrogen_line parameters, and load the VCS tables if they are enabled.
+  !> Fill a model-atom hydrogen transition (bbtrans_type, n and m in self%i, self%j)
+  !> with the hydrogen_line parameters, and load the VCS tables if they are enabled.
   !------------------------------------------------------------------------------------
   SUBROUTINE prepare_hydrogen_damping (self)
     class(bbtrans_type), intent(inout) :: self
@@ -743,7 +743,7 @@ contains
   END FUNCTION lyman_interp
 
   !===============================================================================
-  !  HFNM calculates hydrogen oscillator strengths
+  !>  HFNM calculates hydrogen oscillator strengths
   !===============================================================================
   FUNCTION hfnm(n,m)
     integer, intent(in) :: n
@@ -781,18 +781,17 @@ contains
 
 
   !===============================================================================
-  !  Returns the Stark broadened line profile.  The code follows Griem's
-  !  theories (mostly 1960 ApJ, 132, 883) with corrections to approximate
-  !  the Vidal, Cooper & Smith (1973, ApJS 25, 37) profiles.
-
-  !  Area normalised to unity with frequency.
-
-  !  by Deane Peterson & Bob Kurucz.
-  !  (adapted, corrected and comments added by PB)
-  !===============================================================================
-  !
-  !  stark_prepare holds everything that does not depend on the detuning q, which is
-  !  the bulk of the work; stark_eval is the profile at one q.
+  !>  Returns the Stark broadened line profile.  The code follows Griem's
+  !>  theories (mostly 1960 ApJ, 132, 883) with corrections to approximate
+  !>  the Vidal, Cooper & Smith (1973, ApJS 25, 37) profiles.
+  !>
+  !>  Area normalised to unity with frequency.
+  !>
+  !>  by Deane Peterson & Bob Kurucz.
+  !>  (adapted, corrected and comments added by PB)
+  !>
+  !>  stark_prepare holds everything that does not depend on the detuning q, which is
+  !>  the bulk of the work; stark_eval is the profile at one q.
   !===============================================================================
   SUBROUTINE stark_prepare(n, m, nu0, temp, ne, hwstk, s)
     integer, intent(in) :: n
@@ -929,7 +928,7 @@ contains
 
   !  By Deane Peterson and Bob Kurucz.
 
-  !  STORAGE FOR CORRECTIONS (P,BETA,IND),(P,IND),(P,IND)
+  !>  STORAGE FOR CORRECTIONS (P,BETA,IND),(P,IND),(P,IND)
   !===============================================================================
   FUNCTION holtsmark(b,p,n,m)
     real(8), intent(in) :: b
@@ -1102,9 +1101,9 @@ contains
   END FUNCTION holtsmark
 
   !===============================================================================
-  !  E1 function calculator for VCS approximation. It's rough, but
-  !  arranged to be fast. X must be >=0.
-  !  From Kurucz codes.
+  !>  E1 function calculator for VCS approximation. It's rough, but
+  !>  arranged to be fast. X must be >=0.
+  !>  From Kurucz codes.
   !===============================================================================
   FUNCTION vcse1f(x)
     real(8), intent(in)  :: x

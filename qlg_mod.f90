@@ -1,64 +1,64 @@
 !=======================================================================================
-! qlg_mod.f90 -- the four deployed members of the QLG family of Voigt approximations.
-!
-! Companion code to "A branchless single-precision Voigt approximation for spectral
-! synthesis" (Hoppe).  Every kernel here is the compiled form of a member of Eq. (5) of
-! that paper: the two analytic limits, plus a correction whose coefficients are
-! polynomials in x = 2r - 1 with r = a/Gamma the damping ratio.  The constants below are
-! the ones in the paper's appendix table of coefficients, in that table's convention.
-!
-! The name is the family's three ingredients: the Lorentzian generator L = 1/(1+u), the
-! Gaussian generator G = 2^-u, and the envelope q = r(1-r) that multiplies every fitted
-! correction.  q vanishes at r = 0 and r = 1, so the Gaussian and Lorentzian limits are
-! exact by construction and no fitted constant can perturb them.
-!
-!   qlg_toy_sweep   3 constants, 2.2e-2   -- the smallest useful member, Eq. (6)
-!   qlg_bot_sweep   6 constants, 5.7e-3   -- Synspec's cost, a much smaller flux error
-!   qlg_mid_sweep  14 constants, 9.2e-4   -- flux error below 1e-3 on all three stars
-!   qlg_top_sweep  56 constants, 3.2e-5   -- a replacement for Humlicek w4
-!
-! A fifth public routine, qlg_ref_f64, is the fp64 Humlicek-Weideman reference the four
-! are validated against.  It is reference grade and correspondingly slow: it is here to
-! check a member, and to build QLG-bot's table, not to be called in a synthesis.
-!
-! CALLING.  All four share one signature and evaluate a whole line window into an array:
-!
-!     call qlg_mid_sweep (a, v0, dv, nw, K)      ! K(f) = F(a, v0 + (f-1)*dv), f = 1..nw
-!
-! with a, v0, dv and K all real(4).  K is the profile in the normalisation K(0,0) = 1 for
-! a = 0, i.e. K = Re w(v + i a) with w the Faddeeva function, so a caller multiplies by
-! its own 1/(sqrt(pi) Delta_nu_D) as it would for any Voigt routine.  The window form is
-! not a convenience: the per-line setup -- the half-width, r, and every coefficient
-! polynomial -- is evaluated once per call and amortised over the window, which is where
-! most of these members' advantage lies.  A one-point-per-call wrapper throws that away.
-!
-! INITIALISATION.  qlg_bot_sweep reads two tables and requires
-!
-!     call qlg_init
-!
-! once before its first use.  The call is idempotent and costs a few milliseconds, so a
-! caller that cannot easily tell which member will be selected may simply always make it.
-! The other three members are arithmetic: they need no tables and no initialisation.
-!
-! fp32.  All four are single precision throughout, and are fitted to be so: the
-! coefficient polynomials are evaluated in x = 2r - 1 rather than in r, which keeps their
-! constants O(1) and the single-precision loss below 1e-5 (Appendix C of the paper).
-!
-! SELF-CONTAINED, DELIBERATELY.  This file compiles alone, with no dependency on anything
-! else.  Two consequences worth knowing before tidying it:
-!
-!   - fexp2, the 2^-u kernel, lives in this module rather than in a utility module of its
-!     own because a cross-module call inside the point loop does not inline without -flto,
-!     and one measured 4.07 ns/point against 1.64 for the same arithmetic.
-!   - qlg_init builds its table from the Weideman-32 reference qlg_ref_f64 at the bottom
-!     of this file, so the module carries its own reference rather than depending on one.
-!
-! COEFFICIENT PROVENANCE, for the record: QLG-toy and QLG-mid and QLG-top are the fits
-! stored as `Q5r_H0.2_d111_w1` (fit/botshapes.json), `G0_Gm1_L2_G2_G3_L4_G4|d1|whiting0`
-! (fit/midarith_scored.json) and `N13|alloc43` (fit/toparith_final.json) in the paper's
-! working repository, transcribed here without change.
-!
-!   gfortran -O3 -mcpu=native -c qlg_mod.f90
+!> qlg_mod.f90 -- the four deployed members of the QLG family of Voigt approximations.
+!>
+!> Companion code to "A branchless single-precision Voigt approximation for spectral
+!> synthesis" (Hoppe).  Every kernel here is the compiled form of a member of Eq. (5) of
+!> that paper: the two analytic limits, plus a correction whose coefficients are
+!> polynomials in x = 2r - 1 with r = a/Gamma the damping ratio.  The constants below are
+!> the ones in the paper's appendix table of coefficients, in that table's convention.
+!>
+!> The name is the family's three ingredients: the Lorentzian generator L = 1/(1+u), the
+!> Gaussian generator G = 2^-u, and the envelope q = r(1-r) that multiplies every fitted
+!> correction.  q vanishes at r = 0 and r = 1, so the Gaussian and Lorentzian limits are
+!> exact by construction and no fitted constant can perturb them.
+!>
+!>   qlg_toy_sweep   3 constants, 2.2e-2   -- the smallest useful member, Eq. (6)
+!>   qlg_bot_sweep   6 constants, 5.7e-3   -- Synspec's cost, a much smaller flux error
+!>   qlg_mid_sweep  14 constants, 9.2e-4   -- flux error below 1e-3 on all three stars
+!>   qlg_top_sweep  56 constants, 3.2e-5   -- a replacement for Humlicek w4
+!>
+!> A fifth public routine, qlg_ref_f64, is the fp64 Humlicek-Weideman reference the four
+!> are validated against.  It is reference grade and correspondingly slow: it is here to
+!> check a member, and to build QLG-bot's table, not to be called in a synthesis.
+!>
+!> CALLING.  All four share one signature and evaluate a whole line window into an array:
+!>
+!>     call qlg_mid_sweep (a, v0, dv, nw, K)      ! K(f) = F(a, v0 + (f-1)*dv), f = 1..nw
+!>
+!> with a, v0, dv and K all real(4).  K is the profile in the normalisation K(0,0) = 1 for
+!> a = 0, i.e. K = Re w(v + i a) with w the Faddeeva function, so a caller multiplies by
+!> its own 1/(sqrt(pi) Delta_nu_D) as it would for any Voigt routine.  The window form is
+!> not a convenience: the per-line setup -- the half-width, r, and every coefficient
+!> polynomial -- is evaluated once per call and amortised over the window, which is where
+!> most of these members' advantage lies.  A one-point-per-call wrapper throws that away.
+!>
+!> INITIALISATION.  qlg_bot_sweep reads two tables and requires
+!>
+!>     call qlg_init
+!>
+!> once before its first use.  The call is idempotent and costs a few milliseconds, so a
+!> caller that cannot easily tell which member will be selected may simply always make it.
+!> The other three members are arithmetic: they need no tables and no initialisation.
+!>
+!> fp32.  All four are single precision throughout, and are fitted to be so: the
+!> coefficient polynomials are evaluated in x = 2r - 1 rather than in r, which keeps their
+!> constants O(1) and the single-precision loss below 1e-5 (Appendix C of the paper).
+!>
+!> SELF-CONTAINED, DELIBERATELY.  This file compiles alone, with no dependency on anything
+!> else.  Two consequences worth knowing before tidying it:
+!>
+!>   - fexp2, the 2^-u kernel, lives in this module rather than in a utility module of its
+!>     own because a cross-module call inside the point loop does not inline without -flto,
+!>     and one measured 4.07 ns/point against 1.64 for the same arithmetic.
+!>   - qlg_init builds its table from the Weideman-32 reference qlg_ref_f64 at the bottom
+!>     of this file, so the module carries its own reference rather than depending on one.
+!>
+!> COEFFICIENT PROVENANCE, for the record: QLG-toy and QLG-mid and QLG-top are the fits
+!> stored as `Q5r_H0.2_d111_w1` (fit/botshapes.json), `G0_Gm1_L2_G2_G3_L4_G4|d1|whiting0`
+!> (fit/midarith_scored.json) and `N13|alloc43` (fit/toparith_final.json) in the paper's
+!> working repository, transcribed here without change.
+!>
+!>   gfortran -O3 -mcpu=native -c qlg_mod.f90
 !=======================================================================================
 MODULE qlg
   implicit none
@@ -67,16 +67,16 @@ MODULE qlg
   public :: qlg_init
   public :: qlg_toy_sweep, qlg_bot_sweep, qlg_mid_sweep, qlg_top_sweep
   public :: qlg_ref_f64
-  public :: qlg_bot_phi, qlg_bot_profile          ! local addition, see the bottom of this file
-  public :: qlg_bot_coef, qlg_bot_eval             ! local addition, as is qlg_bot_coef_t
-  public :: qlg_bot_cell, qlg_bot_line, qlg_bot_line_eval, qlg_bot_line_sweep   ! local addition
+  public :: qlg_bot_phi, qlg_bot_profile          !< local addition, see the bottom of this file
+  public :: qlg_bot_coef, qlg_bot_eval             !< local addition, as is qlg_bot_coef_t
+  public :: qlg_bot_cell, qlg_bot_line, qlg_bot_line_eval, qlg_bot_line_sweep   !< local addition
 
-  ! QLG-bot's per-line setup for one damping a (local addition, see qlg_bot_coef)
+  !> QLG-bot's per-line setup for one damping a (local addition, see qlg_bot_coef)
   type, public :: qlg_bot_coef_t
     real(4) :: ih, bL, gG, cZH, cL2
   end type qlg_bot_coef_t
 
-  ! The Doppler-width terms of qlg_bot_line for one cell (local addition, see qlg_bot_cell)
+  !> The Doppler-width terms of qlg_bot_line for one cell (local addition, see qlg_bot_cell)
   type, public :: qlg_bot_cell_t
     real(4) :: D, D2, SQ, D2h, D2G, D2L
   end type qlg_bot_cell_t
@@ -88,8 +88,8 @@ MODULE qlg
   real(4), parameter :: OVERPI = 0.3183098862, GNORM = 0.4697186
   real(4), parameter :: SQL2 = 0.8325546112
   real(8), parameter :: DLN2 = 0.69314718055994531d0
-  real(8), parameter :: ISQPI8 = 0.564189583547756287d0   ! 1/sqrt(pi)
-  real(4), parameter :: ISQPI  = 0.5641895835              ! 1/sqrt(pi), fp32 (local addition)
+  real(8), parameter :: ISQPI8 = 0.564189583547756287d0   !< 1/sqrt(pi)
+  real(4), parameter :: ISQPI  = 0.5641895835              !< 1/sqrt(pi), fp32 (local addition)
 
   !-------------------------------------------------------------------------------------
   ! minimax p2(f) ~ 2^-f on f in [0,1); G = 2^-u as p2(u-n) * 2^-n. See fexp2.
@@ -153,10 +153,10 @@ MODULE qlg
 contains
 
   !=====================================================================================
-  ! G = 2^-u, branchless: a degree-5 minimax polynomial on the fractional part times the
-  ! integer part spliced straight into the exponent field.  Used by QLG-toy, QLG-mid and
-  ! QLG-top.  The clamp at U_CAP = 127 is what makes the splice safe; past it 2^-u has
-  ! underflowed in fp32 anyway.
+  !> G = 2^-u, branchless: a degree-5 minimax polynomial on the fractional part times the
+  !> integer part spliced straight into the exponent field.  Used by QLG-toy, QLG-mid and
+  !> QLG-top.  The clamp at U_CAP = 127 is what makes the splice safe; past it 2^-u has
+  !> underflowed in fp32 anyway.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE fexp2(u, E)
     real(4), intent(in) :: u
@@ -175,10 +175,10 @@ contains
   END SUBROUTINE fexp2
 
   !=====================================================================================
-  ! QLG-toy -- 3 basis functions at x-degree 0, so the three coefficients are plain
-  ! numbers.  Eq. (6) of the paper, on Whiting's half-width.  The smallest member for
-  ! which both counts are minimal at its accuracy; stated in the paper to be read, and
-  ! kept here so that it can be run.
+  !> QLG-toy -- 3 basis functions at x-degree 0, so the three coefficients are plain
+  !> numbers.  Eq. (6) of the paper, on Whiting's half-width.  The smallest member for
+  !> which both counts are minimal at its accuracy; stated in the paper to be read, and
+  !> kept here so that it can be run.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_toy_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
@@ -214,10 +214,10 @@ contains
   END SUBROUTINE qlg_toy_sweep
 
   !=====================================================================================
-  ! QLG-bot -- 3 basis functions {q G, q Z_0.2, q L^2} at x-degree 1, 6 constants, on the
-  ! sqrt-free rational half-width of Eq. (4).  The tabulated member: G and Z_0.2/L^2 are
-  ! read from TGX and TH2X at one shared snapped index, so call qlg_init first.
-  ! Maximum relative error over the validation domain, compiled in fp32: 5.6923e-3.
+  !> QLG-bot -- 3 basis functions {q G, q Z_0.2, q L^2} at x-degree 1, 6 constants, on the
+  !> sqrt-free rational half-width of Eq. (4).  The tabulated member: G and Z_0.2/L^2 are
+  !> read from TGX and TH2X at one shared snapped index, so call qlg_init first.
+  !> Maximum relative error over the validation domain, compiled in fp32: 5.6923e-3.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_bot_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
@@ -257,11 +257,11 @@ contains
   END SUBROUTINE qlg_bot_sweep
 
   !=====================================================================================
-  ! QLG-mid -- 7 basis functions at x-degree 1, 14 constants, on Whiting's half-width.
-  ! Arithmetic: G comes from fexp2, so there is no table and no gather.  Exactly one
-  ! multiply by G stands between fexp2 and the result, which is what keeps a G-coupled
-  ! correction as cheap as a pure-L one of the same L-power count.
-  ! Maximum relative error, compiled in fp32: 9.2002e-4.
+  !> QLG-mid -- 7 basis functions at x-degree 1, 14 constants, on Whiting's half-width.
+  !> Arithmetic: G comes from fexp2, so there is no table and no gather.  Exactly one
+  !> multiply by G stands between fexp2 and the result, which is what keeps a G-coupled
+  !> correction as cheap as a pure-L one of the same L-power count.
+  !> Maximum relative error, compiled in fp32: 9.2002e-4.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_mid_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
@@ -302,11 +302,11 @@ contains
   END SUBROUTINE qlg_mid_sweep
 
   !=====================================================================================
-  ! QLG-top -- 13 basis functions at x-degrees 2 to 4, 56 constants, on Whiting's
-  ! half-width.  Arithmetic, as QLG-mid is.  The shapes are grouped by their power of G
-  ! into three Horner chains in L -- pure L, G L, G^2 -- so the whole correction costs one
-  ! evaluation of G, one of G^2, and thirteen FMAs.
-  ! Maximum relative error, compiled in fp32: 3.1790e-5.
+  !> QLG-top -- 13 basis functions at x-degrees 2 to 4, 56 constants, on Whiting's
+  !> half-width.  Arithmetic, as QLG-mid is.  The shapes are grouped by their power of G
+  !> into three Horner chains in L -- pure L, G L, G^2 -- so the whole correction costs one
+  !> evaluation of G, one of G^2, and thirteen FMAs.
+  !> Maximum relative error, compiled in fp32: 3.1790e-5.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_top_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
@@ -354,12 +354,12 @@ contains
   END SUBROUTINE qlg_top_sweep
 
   !=====================================================================================
-  ! Build QLG-bot's two tables.  MUST be called once before any opacity or rate is
-  ! accumulated: qlg_bot_sweep and qlg_bot_phi are PURE and cannot check, so an omitted
-  ! call is not an error but a silently zero profile.  Idempotent, and a few
-  ! milliseconds.  Entry points that must make it: SRC/composition_patch_mod.f90 after
-  ! reading &linelist_params, and the standalone library's hop_init.
-  ! Both tables are built in fp64 and rounded once, on the same grid u_i = (i/XSCL)^2.
+  !> Build QLG-bot's two tables.  MUST be called once before any opacity or rate is
+  !> accumulated: qlg_bot_sweep and qlg_bot_phi are PURE and cannot check, so an omitted
+  !> call is not an error but a silently zero profile.  Idempotent, and a few
+  !> milliseconds.  Entry points that must make it: SRC/composition_patch_mod.f90 after
+  !> reading &linelist_params, and the standalone library's hop_init.
+  !> Both tables are built in fp64 and rounded once, on the same grid u_i = (i/XSCL)^2.
   !-------------------------------------------------------------------------------------
   SUBROUTINE qlg_init
     integer :: i
@@ -375,11 +375,11 @@ contains
   END SUBROUTINE qlg_init
 
   !=====================================================================================
-  ! Z_0.2(u)/L^2 in fp64 -- the integrand of TH2X, and the definition of the basis
-  ! function Z_r* at r* = 0.2 (Eq. 7 of the paper): the exact residual left by the two
-  ! analytic limits at one fixed damping ratio, divided by the correction envelope q.
-  ! The four anchor constants belong to that r* and are quoted to full fp64.  Evaluated
-  ! against qlg_ref_f64 below, which is this file's own reference-grade Voigt in double.
+  !> Z_0.2(u)/L^2 in fp64 -- the integrand of TH2X, and the definition of the basis
+  !> function Z_r* at r* = 0.2 (Eq. 7 of the paper): the exact residual left by the two
+  !> analytic limits at one fixed damping ratio, divided by the correction envelope q.
+  !> The four anchor constants belong to that r* and are quoted to full fp64.  Evaluated
+  !> against qlg_ref_f64 below, which is this file's own reference-grade Voigt in double.
   !-------------------------------------------------------------------------------------
   FUNCTION qlg_wr02 (u) result (w)
     real(8), intent(in) :: u
@@ -399,14 +399,14 @@ contains
   END FUNCTION qlg_wr02
 
   !=====================================================================================
-  ! Humlicek-Weideman, fp64: the two-region hybrid Schreier (2011) recommends -- Weideman's
-  ! (1994) N = 32 rational approximation inside |v| + a < 15, and Humlicek's (1982) w4
-  ! region-1 asymptote outside it -- and the reference every accuracy figure in the paper
-  ! is measured against.  It is NOT w4: that is the kernel SMElib and Turbospectrum deploy
-  ! and the one QLG-top replaces, and this hybrid is far more accurate and far dearer than
-  ! either.  Public, so that a caller can check a member against it, and used
-  ! internally by qlg_init to build TH2X.  It is not one of the four members -- it costs
-  ! roughly an order of magnitude more than any of them and no point loop should call it.
+  !> Humlicek-Weideman, fp64: the two-region hybrid Schreier (2011) recommends -- Weideman's
+  !> (1994) N = 32 rational approximation inside |v| + a < 15, and Humlicek's (1982) w4
+  !> region-1 asymptote outside it -- and the reference every accuracy figure in the paper
+  !> is measured against.  It is NOT w4: that is the kernel SMElib and Turbospectrum deploy
+  !> and the one QLG-top replaces, and this hybrid is far more accurate and far dearer than
+  !> either.  Public, so that a caller can check a member against it, and used
+  !> internally by qlg_init to build TH2X.  It is not one of the four members -- it costs
+  !> roughly an order of magnitude more than any of them and no point loop should call it.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_ref_f64 (a, v0, dv, n, K)
     real(8), intent(in)  :: a, v0, dv
@@ -490,13 +490,13 @@ contains
   !#####################################################################################
 
   !=====================================================================================
-  ! K(a,v)/sqrt(pi) at one point -- the convention of the retired voigt_function2, whose
-  ! call sites pass a = gamma/(4 pi dnud) and v = (nu - nu0)/dnud, both already scaled by
-  ! the inverse Doppler width.  Peaks at 1/sqrt(pi) for a = v = 0, which is linelist_mod's
-  ! voigt_peak and the bound its tolerance pre-filter relies on.
-  !
-  ! ELEMENTAL is legal over the PURE qlg_bot_sweep, and is used: rt_patch_mod and
-  ! hprofl_mod both apply these to array sections.
+  !> K(a,v)/sqrt(pi) at one point -- the convention of the retired voigt_function2, whose
+  !> call sites pass a = gamma/(4 pi dnud) and v = (nu - nu0)/dnud, both already scaled by
+  !> the inverse Doppler width.  Peaks at 1/sqrt(pi) for a = v = 0, which is linelist_mod's
+  !> voigt_peak and the bound its tolerance pre-filter relies on.
+  !>
+  !> ELEMENTAL is legal over the PURE qlg_bot_sweep, and is used: rt_patch_mod and
+  !> hprofl_mod both apply these to array sections.
   !-------------------------------------------------------------------------------------
   ELEMENTAL FUNCTION qlg_bot_phi (a, v) result (h)
     real(4), intent(in) :: a, v
@@ -507,10 +507,10 @@ contains
   END FUNCTION qlg_bot_phi
 
   !=====================================================================================
-  ! qlg_bot_phi split at the damping: qlg_bot_coef holds qlg_bot_sweep's per-line setup
-  ! for damping a, and qlg_bot_eval(c, v) is the profile at one point. It equals
-  ! qlg_bot_phi(a, v) up to rounding: the compiler may contract the two forms into
-  ! fused multiply-adds differently, which is why qlg_bot_phi still calls the sweep.
+  !> qlg_bot_phi split at the damping: qlg_bot_coef holds qlg_bot_sweep's per-line setup
+  !> for damping a, and qlg_bot_eval(c, v) is the profile at one point. It equals
+  !> qlg_bot_phi(a, v) up to rounding: the compiler may contract the two forms into
+  !> fused multiply-adds differently, which is why qlg_bot_phi still calls the sweep.
   !-------------------------------------------------------------------------------------
   ELEMENTAL FUNCTION qlg_bot_coef (a) result (c)
     real(4), intent(in) :: a
@@ -528,12 +528,12 @@ contains
   END FUNCTION qlg_bot_eval
 
   !=====================================================================================
-  ! qlg_bot_sweep's per-line setup on the caller's own abscissa x. gL and D are the
-  ! Lorentz and Doppler widths in units of x (a = gL/D, v = x/D), SQ = sqrt(ln2) D^2, and
-  ! qlg_bot_line_eval(c, x) = S K(a, x/D)/(sqrt(pi) D). The half-width 1/ih of Eq. (4),
-  ! D (a + sqrt(ln2)/d) with d = 1 + 0.606 a, is e/(gL e + SQ) with e = D + 0.606 gL
-  ! in units of x, so a caller on x needs neither a = gL/D nor v = x/D. qlg_bot_coef is
-  ! the case D = 1, S = sqrt(pi), which is qlg_bot_sweep's setup operation for operation.
+  !> qlg_bot_sweep's per-line setup on the caller's own abscissa x. gL and D are the
+  !> Lorentz and Doppler widths in units of x (a = gL/D, v = x/D), SQ = sqrt(ln2) D^2, and
+  !> qlg_bot_line_eval(c, x) = S K(a, x/D)/(sqrt(pi) D). The half-width 1/ih of Eq. (4),
+  !> D (a + sqrt(ln2)/d) with d = 1 + 0.606 a, is e/(gL e + SQ) with e = D + 0.606 gL
+  !> in units of x, so a caller on x needs neither a = gL/D nor v = x/D. qlg_bot_coef is
+  !> the case D = 1, S = sqrt(pi), which is qlg_bot_sweep's setup operation for operation.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE bot_setup (gL, D, SQ, S, c)
     real(4), intent(in) :: gL, D, SQ, S
@@ -571,7 +571,7 @@ contains
   END FUNCTION qlg_bot_line_eval
 
   !=====================================================================================
-  ! The Doppler-width terms of qlg_bot_line, once per cell rather than once per line.
+  !> The Doppler-width terms of qlg_bot_line, once per cell rather than once per line.
   !-------------------------------------------------------------------------------------
   ELEMENTAL FUNCTION qlg_bot_cell (D) result (w)
     real(4), intent(in) :: D
@@ -586,32 +586,32 @@ contains
   END FUNCTION qlg_bot_cell
 
   !=====================================================================================
-  ! One line's QLG-bot setup c and the half-width hw outside which it stays below a
-  ! tolerance reference ref, both on the caller's abscissa x. w = qlg_bot_cell(D) holds
-  ! the Doppler width D in units of x, gL is the Lorentz width in the same units, and S
-  ! is the line opacity per Doppler width R times D: qlg_bot_line_eval(c, x) is then the
-  ! line's opacity R K(a, x/D)/sqrt(pi), with no further scaling. lnq = ln(R/(sqrt(pi)
-  ! ref)) is the log of the line's peak bound over ref, which callers have from their
-  ! log-space pre-test.
-  !
-  ! The extent is that of the profile's two analytic limits, which QLG-bot's G and L
-  ! generators reduce to: in units of 1/q, K <= exp(-v^2) + A/(a^2 + v^2) with
-  ! A = a q/sqrt(pi). Each term alone falls to 1/q at
-  !     v_G^2 = ln q,    v_L^2 = A - a^2.
-  ! The a^2 keeps a line whose damping exceeds its extent from being given a window of
-  ! order a that it never fills above ref (a ~ 1e7 would give thousands of Angstrom). It
-  ! is a^2 - 1/2 below, and nothing for a^2 < 1/2, which is still no narrower than QLG's
-  ! own Lorentz crossing A - 1/ih^2, as its half-width 1/ih >= a. Where one term crosses,
-  ! the other still adds to K and moves the crossing of the sum out; each crossing is
-  ! widened by a bounded multiple of A, min(A, 1.5) for the Gaussian and min(A, 5) for
-  ! the Lorentz term. On x every v^2 carries D^2, and A D^2 = gL S/(pi ref).
-  !
-  ! The extent does not read the setup's half-width, so that it runs alongside the
-  ! setup's division rather than waiting for it.
-  !
-  ! Against exact Voigt profiles (Re w, a = 1e-4..1e7, q = 1..1e14, fp32) the window
-  ! never ends inside the true tolerance crossing; it is the true one at the median,
-  ! 14 % wider at the 99th percentile and at most 1.8 times wider (a ~ 0.3-3).
+  !> One line's QLG-bot setup c and the half-width hw outside which it stays below a
+  !> tolerance reference ref, both on the caller's abscissa x. w = qlg_bot_cell(D) holds
+  !> the Doppler width D in units of x, gL is the Lorentz width in the same units, and S
+  !> is the line opacity per Doppler width R times D: qlg_bot_line_eval(c, x) is then the
+  !> line's opacity R K(a, x/D)/sqrt(pi), with no further scaling. lnq = ln(R/(sqrt(pi)
+  !> ref)) is the log of the line's peak bound over ref, which callers have from their
+  !> log-space pre-test.
+  !>
+  !> The extent is that of the profile's two analytic limits, which QLG-bot's G and L
+  !> generators reduce to: in units of 1/q, K <= exp(-v^2) + A/(a^2 + v^2) with
+  !> A = a q/sqrt(pi). Each term alone falls to 1/q at
+  !>     v_G^2 = ln q,    v_L^2 = A - a^2.
+  !> The a^2 keeps a line whose damping exceeds its extent from being given a window of
+  !> order a that it never fills above ref (a ~ 1e7 would give thousands of Angstrom). It
+  !> is a^2 - 1/2 below, and nothing for a^2 < 1/2, which is still no narrower than QLG's
+  !> own Lorentz crossing A - 1/ih^2, as its half-width 1/ih >= a. Where one term crosses,
+  !> the other still adds to K and moves the crossing of the sum out; each crossing is
+  !> widened by a bounded multiple of A, min(A, 1.5) for the Gaussian and min(A, 5) for
+  !> the Lorentz term. On x every v^2 carries D^2, and A D^2 = gL S/(pi ref).
+  !>
+  !> The extent does not read the setup's half-width, so that it runs alongside the
+  !> setup's division rather than waiting for it.
+  !>
+  !> Against exact Voigt profiles (Re w, a = 1e-4..1e7, q = 1..1e14, fp32) the window
+  !> never ends inside the true tolerance crossing; it is the true one at the median,
+  !> 14 % wider at the 99th percentile and at most 1.8 times wider (a ~ 0.3-3).
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_bot_line (w, gL, S, ref, lnq, c, hw)
     type(qlg_bot_cell_t), intent(in) :: w
@@ -627,21 +627,21 @@ contains
   END SUBROUTINE qlg_bot_line
 
   !=====================================================================================
-  ! qlg_bot_line on a grid llam(1:nf) that is uniform with idl steps per unit, followed
-  ! by the sweep of its window, with x in grid steps: the line centre llc lies pos =
-  ! (llc - llam(1)) idl steps from node 1, and the window covers the nodes within
-  ! min(hw, cap) of it. K(1:fb-fa+1) receives the opacity at nodes fa..fb, and fa > fb
-  ! when no node lies inside. hw is returned unclipped.
-  !
-  ! The window is the nearest node ic +- nint(min(hw, cap)). As the centre lies within
-  ! half a step of ic, an integer offset n covers every node within W of the centre iff
-  ! n >= W + 1/2, and nint(W) is the smallest such n. A half-width beyond the grid is
-  ! clamped to nf + |ic| before nint, which still fills the grid and keeps it in range.
-  ! The ramp is anchored at the grid node nearest the centre, llam(ic) clamped to the
-  ! grid, so a grid that is uniform only to the tolerance its callers accept puts the
-  ! centre correctly in each window and departs from uniform only across it. The anchor
-  ! is read before the extent is known, which keeps the load off the path from the
-  ! setup's division to the sweep.
+  !> qlg_bot_line on a grid llam(1:nf) that is uniform with idl steps per unit, followed
+  !> by the sweep of its window, with x in grid steps: the line centre llc lies pos =
+  !> (llc - llam(1)) idl steps from node 1, and the window covers the nodes within
+  !> min(hw, cap) of it. K(1:fb-fa+1) receives the opacity at nodes fa..fb, and fa > fb
+  !> when no node lies inside. hw is returned unclipped.
+  !>
+  !> The window is the nearest node ic +- nint(min(hw, cap)). As the centre lies within
+  !> half a step of ic, an integer offset n covers every node within W of the centre iff
+  !> n >= W + 1/2, and nint(W) is the smallest such n. A half-width beyond the grid is
+  !> clamped to nf + |ic| before nint, which still fills the grid and keeps it in range.
+  !> The ramp is anchored at the grid node nearest the centre, llam(ic) clamped to the
+  !> grid, so a grid that is uniform only to the tolerance its callers accept puts the
+  !> centre correctly in each window and departs from uniform only across it. The anchor
+  !> is read before the extent is known, which keeps the load off the path from the
+  !> setup's division to the sweep.
   !-------------------------------------------------------------------------------------
   PURE SUBROUTINE qlg_bot_line_sweep (w, gL, S, ref, lnq, nf, llam, llc, pos, idl, cap, &
                                       fa, fb, hw, K)
@@ -671,13 +671,13 @@ contains
   END SUBROUTINE qlg_bot_line_sweep
 
   !=====================================================================================
-  ! The convention of the retired voigt_profile: the same profile, but on the relative
-  ! frequency q = (nu - nu0)/nu0 with the projected Doppler shift vpr subtracted and the
-  ! inverse Doppler width idf applied here rather than by the caller, and normalised per
-  ! unit frequency rather than per Doppler width -- hence the trailing idf*(q + 1), the
-  ! nu/nu0 Jacobian.  Kept as a separate routine rather than folded into the call sites
-  ! because that tail is exactly what distinguishes the NLTE rate integrals' convention
-  ! from the opacity path's, and it is easy to drop.
+  !> The convention of the retired voigt_profile: the same profile, but on the relative
+  !> frequency q = (nu - nu0)/nu0 with the projected Doppler shift vpr subtracted and the
+  !> inverse Doppler width idf applied here rather than by the caller, and normalised per
+  !> unit frequency rather than per Doppler width -- hence the trailing idf*(q + 1), the
+  !> nu/nu0 Jacobian.  Kept as a separate routine rather than folded into the call sites
+  !> because that tail is exactly what distinguishes the NLTE rate integrals' convention
+  !> from the opacity path's, and it is easy to drop.
   !-------------------------------------------------------------------------------------
   ELEMENTAL FUNCTION qlg_bot_profile (a, q, vpr, idf) result (h)
     real(4), intent(in) :: a, q, vpr, idf

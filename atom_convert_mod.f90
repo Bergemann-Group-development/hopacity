@@ -41,7 +41,7 @@ MODULE atom_convert_mod
     character(len=20) :: id = ''
     real(8) :: abnd = 0, awgt = 0
     integer :: nlevel = 0, nline = 0, nbf = 0, ncol = 0
-    real(8), allocatable :: ev(:), g(:)               ! [eV]
+    real(8), allocatable :: ev(:), g(:)               !< [eV]
     integer, allocatable :: ion(:)
     character(len=64), allocatable :: label(:)
     ! bound-bound records as written, components already split
@@ -49,7 +49,7 @@ MODULE atom_convert_mod
     real(8), allocatable :: lam_vac(:), loggf(:), grad(:), gvdw(:), gstk(:), qmax(:), q0(:)
     ! bound-free nodes, each continuum from its threshold to shorter wavelengths
     integer, allocatable :: bf_i(:), bf_j(:)
-    real(8), allocatable :: bf_lam(:), bf_alpha(:)  ! [AA], [cm^2]
+    real(8), allocatable :: bf_lam(:), bf_alpha(:)  !< [AA], [cm^2]
     logical :: excited_bf = .false.
     ! collision records on one temperature grid
     real(8), allocatable :: temp(:), col_val(:,:)
@@ -57,7 +57,7 @@ MODULE atom_convert_mod
     integer, allocatable :: col_l(:), col_u(:)
   end type classic_atom_t
 
-  ! a MULTI line with its components (none for a single line)
+  !> a MULTI line with its components (none for a single line)
   type :: line_rec_t
     integer :: i, j, nq, io
     real(8) :: f, qmax, q0, grad, gvdw, gstk
@@ -623,22 +623,22 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   endif
   close(u)
 CONTAINS
-  ! edit descriptor of the index column of a table with n rows
+  !> edit descriptor of the index column of a table with n rows
   SUBROUTINE set_index (n)
     integer, intent(in) :: n
     write(idx, '(a,i0)') 'i', ndigits(n-1)
   END SUBROUTINE set_index
-  ! name right-aligned over a field of width w after its separating blank
+  !> name right-aligned over a field of width w after its separating blank
   FUNCTION title (name, w) result (s)
     character(len=*), intent(in) :: name
     integer, intent(in) :: w
     character(len=w+1) :: s
     s = repeat(' ', w+1-len(name))//name
   END FUNCTION title
-  ! x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
-  ! characters or wider when it needs more: positional for a decimal exponent
-  ! -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
-  ! after rounding to p digits.
+  !> x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
+  !> characters or wider when it needs more: positional for a decimal exponent
+  !> -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
+  !> after rounding to p digits.
   FUNCTION g_format (x, p, w) result (s)
     real(8), intent(in) :: x
     integer, intent(in) :: p, w
@@ -664,8 +664,8 @@ CONTAINS
     allocate(character(len=max(w, len_trim(t))) :: s)
     s = repeat(' ', len(s)-len_trim(t))//trim(t)
   END FUNCTION g_format
-  ! a decimal number without the trailing zeros of its fraction, and without the point
-  ! when nothing is left after it
+  !> a decimal number without the trailing zeros of its fraction, and without the point
+  !> when nothing is left after it
   FUNCTION strip_zeros (t) result (u)
     character(len=*), intent(in) :: t
     character(len=len(t)) :: u

@@ -7,16 +7,16 @@ MODULE bbtrans_mod
     real(dp) :: nu0
     real(dp) :: lam0
     real(dp) :: lam_air
-    integer :: nnu ! number of frequencies in the line
-    real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 ! line broadening (damping) constants
-    real(dp) :: grad_in=0, gstk_in=0, gv_in=0 ! input values for line broadening
+    integer :: nnu !< number of frequencies in the line
+    real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 !< line broadening (damping) constants
+    real(dp) :: grad_in=0, gstk_in=0, gv_in=0 !< input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
-    real(dp) :: Aji, Aij, Bji, Bij ! Einstein coefficients, Bij is the
+    real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, Bij is the
     ! transition from the lower to the upper
     ! level
     logical :: active=.true., unsold
-    integer :: i=0 ! lower level
-    integer :: j=0 ! upper level
+    integer :: i=0 !< lower level
+    integer :: j=0 !< upper level
   contains
     procedure :: init_einstein_coefficients
     procedure :: damping => line_damping
@@ -84,9 +84,9 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
-  ! Line broadening constants for model-atom lines (the type-bound forms) and
-  ! line-list lines (linelist_mod%build_linelist, which calls the scalar forms
-  ! directly).  All results are scaled by over_4pi/nu0.
+  !> Line broadening constants for model-atom lines (the type-bound forms) and
+  !> line-list lines (linelist_mod%build_linelist, which calls the scalar forms
+  !> directly).  All results are scaled by over_4pi/nu0.
   !------------------------------------------------------------------------------------
   PURE ELEMENTAL SUBROUTINE bb_prepare_Stark(self, gstk, j, cnt_ev, is_mol)
     class(bbtrans_type), intent(inout)  :: self

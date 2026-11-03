@@ -13,22 +13,22 @@ MODULE trans_mod
   implicit none
 
   type, extends(bbtrans_type) :: transition_type
-    integer :: ntrans ! transition identifier
+    integer :: ntrans !< transition identifier
 
     real(8) :: upper_ev
 
-    integer :: iblue = 0 ! start index where line is active in overall wavelength grid
-    integer :: ired  = 0 ! end index where line is active in overall wavelength grid
+    integer :: iblue = 0 !< start index where line is active in overall wavelength grid
+    integer :: ired  = 0 !< end index where line is active in overall wavelength grid
     real(8) :: lam_min, lam_max
 
-    real(8), dimension(:), pointer, contiguous :: nu => null()  ! frequencies [Hz]
-    real(8), dimension(:), pointer, contiguous :: lam => null() ! wavelength [AA]
+    real(8), dimension(:), pointer, contiguous :: nu => null()  !< frequencies [Hz]
+    real(8), dimension(:), pointer, contiguous :: lam => null() !< wavelength [AA]
     real(8), dimension(:), pointer, contiguous :: lam_input => null()
     ! The frequency arrays of a transition are pointers, so the copy each rt_patch
     ! keeps of a transition shares them with the atom instead of duplicating them
     ! for every window, direction and depth slab.  The patch indexes them with the
     ! global frequency index of its own range.
-    real(8), dimension(:), pointer, contiguous :: wnu => null() ! frequency quadrature weight [Hz]
+    real(8), dimension(:), pointer, contiguous :: wnu => null() !< frequency quadrature weight [Hz]
 
   contains
     procedure :: check_range
@@ -37,18 +37,18 @@ MODULE trans_mod
   type, extends(transition_type) :: line_type
 
     logical :: hydrogen
-    real(4), dimension(:), pointer, contiguous :: q => null()  ! frequencies [Doppler units]
-    real(8), dimension(:), pointer, contiguous :: wq => null() ! frequency quadrature weight [Doppler units]
+    real(4), dimension(:), pointer, contiguous :: q => null()  !< frequencies [Doppler units]
+    real(8), dimension(:), pointer, contiguous :: wq => null() !< frequency quadrature weight [Doppler units]
 
-    real(4),dimension(:,:,:,:), pointer :: phi => null() ! actual line profile data
-    real(4),dimension(:,:,:), pointer, contiguous :: wphi => null() ! normalization such that
+    real(4),dimension(:,:,:,:), pointer :: phi => null() !< actual line profile data
+    real(4),dimension(:,:,:), pointer, contiguous :: wphi => null() !< normalization such that
     ! \Sigma_mu=1^{nrays} \Sigma_nu=1^{nnu} phi(nu,v(mu)) = 1
     ! in case of strong velocities this does not automatically follow from
     ! the independent normalization of the angle and frequency quadrature
 
-    real(8) :: f    ! oscillator strength
-    real(8) :: qmax ! width of profile in doppler units
-    real(8) :: q0   ! switch from linear to logarithmic frequency grid spacing
+    real(8) :: f    !< oscillator strength
+    real(8) :: qmax !< width of profile in doppler units
+    real(8) :: q0   !< switch from linear to logarithmic frequency grid spacing
 
     real(8), dimension(:), allocatable :: fterm
     real(8), dimension(:), allocatable :: gwterm
@@ -61,11 +61,11 @@ MODULE trans_mod
   end type line_type
 
   type, extends(transition_type) ::  cont_type
-    character(len=20) :: bf_type ! either 'detail' or 'hydrogenic'
+    character(len=20) :: bf_type !< either 'detail' or 'hydrogenic'
 
     !real(8) :: nu0 ! ionization edge frequency
-    real(4) :: alpha0 ! cross section at ionization threshold [cm^2]
-    real(4), dimension(:), pointer, contiguous :: alpha => null() ! cross sections [cm^2]
+    real(4) :: alpha0 !< cross section at ionization threshold [cm^2]
+    real(4), dimension(:), pointer, contiguous :: alpha => null() !< cross sections [cm^2]
     real(8), dimension(:), pointer, contiguous :: alpha_input => null()
 
   contains

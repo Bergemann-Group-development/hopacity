@@ -55,8 +55,8 @@ MODULE spectrum_mod
 
   contains
     !===============================================================================
-    ! Read and validate window_file: its windows, sorted and merged where they overlap
-    ! or touch, as (n, 2) vacuum wavelengths [AA].
+    !> Read and validate window_file: its windows, sorted and merged where they overlap
+    !> or touch, as (n, 2) vacuum wavelengths [AA].
     !===============================================================================
     SUBROUTINE read_windows(wfile, in_air_flag, windows)
       character(len=*), intent(in) :: wfile
@@ -132,10 +132,10 @@ MODULE spectrum_mod
     END SUBROUTINE read_windows
 
     !===============================================================================
-    ! Build the segmented constant-R grid of window_file.
-    ! Input: window_file path, in_air flag, R_sampling (resolving power lambda/dlambda of the grid spacing, not an
-    ! instrumental broadening)
-    ! Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
+    !> Build the segmented constant-R grid of window_file.
+    !> Input: window_file path, in_air flag, R_sampling (resolving power lambda/dlambda of the grid spacing, not an
+    !> instrumental broadening)
+    !> Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
     !===============================================================================
     SUBROUTINE build_segmented_grid(wfile, in_air_flag, R_val, lam, nnu_out, self)
       character(len=*), intent(in) :: wfile
@@ -224,7 +224,7 @@ MODULE spectrum_mod
     END SUBROUTINE build_segmented_grid
 
     !===============================================================================
-    ! Append array b to array a, growing a in place
+    !> Append array b to array a, growing a in place
     !===============================================================================
     SUBROUTINE append_to_array(a, b)
       real(8), dimension(:), allocatable, intent(inout) :: a
@@ -253,7 +253,7 @@ MODULE spectrum_mod
     END SUBROUTINE append_to_array
 
     !===============================================================================
-    ! Check if a real number is finite (not inf or nan)
+    !> Check if a real number is finite (not inf or nan)
     !===============================================================================
     PURE LOGICAL FUNCTION isfinite(x) result(res)
       real(8), intent(in) :: x
@@ -434,14 +434,14 @@ MODULE spectrum_mod
     END SUBROUTINE reset
 
     !===============================================================================
-    ! Test whether lam is uniform in log(lambda), i.e. a constant-R (geometric) grid.
-    ! Each consecutive log spacing is compared to the GLOBAL average d0 = (llam(n)-
-    ! llam(1))/(n-1) -- the very step the equi kernel uses -- which both bounds the
-    ! cumulative index drift and separates geometric grids from arithmetic (daa) ones
-    ! (whose local step varies as 1/lambda across the band, far above rtol). The
-    ! tolerance is loose enough to admit the tiny (~1e-5) non-uniformity that the
-    ! air->vacuum conversion imprints on an R grid. A contiguous subrange of a
-    ! geometric grid stays geometric, so sub-spectra inherit the property.
+    !> Test whether lam is uniform in log(lambda), i.e. a constant-R (geometric) grid.
+    !> Each consecutive log spacing is compared to the GLOBAL average d0 = (llam(n)-
+    !> llam(1))/(n-1) -- the very step the equi kernel uses -- which both bounds the
+    !> cumulative index drift and separates geometric grids from arithmetic (daa) ones
+    !> (whose local step varies as 1/lambda across the band, far above rtol). The
+    !> tolerance is loose enough to admit the tiny (~1e-5) non-uniformity that the
+    !> air->vacuum conversion imprints on an R grid. A contiguous subrange of a
+    !> geometric grid stays geometric, so sub-spectra inherit the property.
     !===============================================================================
     PURE LOGICAL FUNCTION is_log_equidistant(lam) result(equi)
       real(8), intent(in) :: lam(:)
@@ -523,11 +523,11 @@ MODULE spectrum_mod
     END SUBROUTINE
 
     !===============================================================================
-    ! Restrict an atom-native output grid to the crop_windows requested via window_file or a
-    ! bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is set, so the internal (bb/bf/all) solve grids -- which need full coverage -- are
-    ! left untouched; only the emitted output spectrum is trimmed. Call after the grid
-    ! is assembled/sorted but before the per-transition [iblue,ired] windows are set,
-    ! since those are recomputed against the (now smaller) grid.
+    !> Restrict an atom-native output grid to the crop_windows requested via window_file or a
+    !> bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is set, so the internal (bb/bf/all) solve grids -- which need full coverage -- are
+    !> left untouched; only the emitted output spectrum is trimmed. Call after the grid
+    !> is assembled/sorted but before the per-transition [iblue,ired] windows are set,
+    !> since those are recomputed against the (now smaller) grid.
     !===============================================================================
     SUBROUTINE crop (self)
       class(spectrum_type) :: self

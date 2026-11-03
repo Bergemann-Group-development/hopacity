@@ -28,7 +28,7 @@ MODULE osmet_mod
 contains
 
   !===============================================================================
-  ! initialises osmet type.
+  !> initialises osmet type.
   !===============================================================================
   SUBROUTINE init (self, absmet_file)
     class(osmet_type) :: self
@@ -239,11 +239,11 @@ contains
   END SUBROUTINE compute_epsilon
 
   !===============================================================================
-  ! Scattering fraction 1-eps of line opacity carried by one ionization stage
-  ! (z=1 neutral p-function, z>=2 charged): the van Regemorter recipe of
-  ! compute_epsilon without the eosmet blend -- the stage of a line-list line
-  ! is known exactly, so no neutral/ion mixing fraction is needed.  Needs no
-  ! absmet table, hence a plain module procedure.
+  !> Scattering fraction 1-eps of line opacity carried by one ionization stage
+  !> (z=1 neutral p-function, z>=2 charged): the van Regemorter recipe of
+  !> compute_epsilon without the eosmet blend -- the stage of a line-list line
+  !> is known exactly, so no neutral/ion mixing fraction is needed.  Needs no
+  !> absmet table, hence a plain module procedure.
   !===============================================================================
   SUBROUTINE compute_epsilon_stage(z, nu, temp, ne, one_m_eps)
     integer, intent(in) :: z
@@ -292,8 +292,8 @@ contains
   END SUBROUTINE compute_epsilon_stage
 
   !===============================================================================
-  !  thermal p-FUNCTION for semic empirical collision rates
-  !  reference: sobel'man - 'atomic physics ii.  '
+  !>  thermal p-FUNCTION for semic empirical collision rates
+  !>  reference: sobel'man - 'atomic physics ii.  '
   !===============================================================================
   SUBROUTINE psemi(z,b,out)
     integer, intent(in) :: z

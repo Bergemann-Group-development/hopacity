@@ -71,20 +71,20 @@ contains
   END SUBROUTINE calc_x_and_k
 
   !===============================================================================
-  ! Computes the occupation probability for a H atom in
-  ! state with effective principle quantum number NS in a plasma
-  ! enviroment with NH, NE, NHE number densities of H, ions,
-  ! and He atoms respectively.  This code assumes the perturbing
-  ! neutral H and He are in the ground state, (noting the hard
-  ! sphere approximation used is quite crude anyway) and that ions
-  ! are predominantly singly ionized (ie. N(Z=1 ions) = Ne).
-  ! See eqn 4.71 Hummer & Milhalas (1988)
-  ! Ions are now treated via Appendix A Hubeny, Hummer & Lanz (1994)
-  ! which is a fit to detailed calculation including correlations,
-  ! thus the temperature dependence
-  ! Sizes of neutral atoms adopted are sqrt(<r^2>)
-  ! Coded by Paul Barklem and Kjell Eriksson, Aug 2003
-  ! Optimized by Richard Hoppe, Jul 2023
+  !> Computes the occupation probability for a H atom in
+  !> state with effective principle quantum number NS in a plasma
+  !> enviroment with NH, NE, NHE number densities of H, ions,
+  !> and He atoms respectively.  This code assumes the perturbing
+  !> neutral H and He are in the ground state, (noting the hard
+  !> sphere approximation used is quite crude anyway) and that ions
+  !> are predominantly singly ionized (ie. N(Z=1 ions) = Ne).
+  !> See eqn 4.71 Hummer & Milhalas (1988)
+  !> Ions are now treated via Appendix A Hubeny, Hummer & Lanz (1994)
+  !> which is a fit to detailed calculation including correlations,
+  !> thus the temperature dependence
+  !> Sizes of neutral atoms adopted are sqrt(<r^2>)
+  !> Coded by Paul Barklem and Kjell Eriksson, Aug 2003
+  !> Optimized by Richard Hoppe, Jul 2023
   !===============================================================================
   PURE SUBROUTINE wcalc(nh, nhe, ne, shield, ns, w)
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
