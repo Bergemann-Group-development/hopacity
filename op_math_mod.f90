@@ -182,10 +182,9 @@ contains
   END FUNCTION linspace
 
   !====================================================================================
-  pure SUBROUTINE get_interval(arr, lower, upper, lo, up, limit)
+  pure SUBROUTINE get_interval(arr, lower, upper, lo, up)
     real(8), intent(in) :: arr(:), lower, upper
     integer, intent(out) ::lo, up
-    logical, intent(in) :: limit
     integer :: n
     !----------------------------------------------------------------------------
     lo = searchsorted(arr, lower, outbounds_ok=.true.) + 1
@@ -202,10 +201,6 @@ contains
         up = up + 1
         if (up >= n) exit
       end do
-    endif
-    if (limit) then
-      lo = max(1, lo)
-      up = min(n, up)
     endif
   end SUBROUTINE get_interval
 

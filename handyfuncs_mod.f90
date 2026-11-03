@@ -103,25 +103,27 @@ contains
   SUBROUTINE replace_substring (string, out, in)
     character(len=*), intent(inout) :: string
     character(len=*), intent(in) :: out, in
-    character(:), allocatable :: tmp
+    character(len=len(string)) :: tmp
     integer :: i, j, n, no, ni
     !-----------------------------------------------------------------------------
     n = len(string)
     no = len(out)
     ni = len(in)
-    allocate(tmp, mold=string)
+    tmp = ''
     i = 1
     j = 1
-    do while (i<=n-no+1)
-      if (string(i:i+no-1) == out) then
-        tmp(j:j+ni-1) = in
-        j = j + ni
-        i = i + no
-      else
-        tmp(j:j) = string(i:i)
-        i = i + 1
-        j = j + 1
+    do while (i <= n .and. j <= n)
+      if (i <= n-no+1) then
+        if (string(i:i+no-1) == out) then
+          tmp(j:) = in
+          j = j + ni
+          i = i + no
+          cycle
+        endif
       endif
+      tmp(j:j) = string(i:i)
+      i = i + 1
+      j = j + 1
     end do
     string = tmp
   END SUBROUTINE replace_substring
@@ -522,7 +524,7 @@ contains
     if (present(check_zero)) do_check_zero = check_zero
     if (present(check_negative)) do_check_negative = check_negative
     do i = 1, size(arr)
-      if (arr(i) /= arr(i) .or. arr(i) > inf8 &
+      if (arr(i) /= arr(i) .or. abs(arr(i)) > inf8 &
       .or. (do_check_zero .and. arr(i) == 0.d0) &
       .or. (do_check_negative .and. arr(i) < 0.d0)) &
       then
@@ -535,7 +537,7 @@ contains
 
         if (arr(i) /= arr(i)) then
           call report_invalid ('NaN', label, idx)
-        elseif (arr(i) > inf8) then
+        elseif (abs(arr(i)) > inf8) then
           call report_invalid ('Infinity', label, idx)
         elseif (do_check_zero .and. arr(i) == 0.d0) then
           call report_invalid ('Zero', label, idx)
@@ -570,7 +572,7 @@ contains
     if (present(check_zero)) do_check_zero = check_zero
     if (present(check_negative)) do_check_negative = check_negative
     do i = 1, size(arr)
-      if (arr(i) /= arr(i) .or. arr(i) > inf4 &
+      if (arr(i) /= arr(i) .or. abs(arr(i)) > inf4 &
         .or. (do_check_zero .and. arr(i) == 0.0) &
         .or. (do_check_negative .and. arr(i) < 0.0)) then
         has_issue = .true.
@@ -582,7 +584,7 @@ contains
 
         if (arr(i) /= arr(i)) then
           call report_invalid ('NaN', label, idx)
-        elseif (arr(i) > inf4) then
+        elseif (abs(arr(i)) > inf4) then
           call report_invalid ('Infinity', label, idx)
         elseif (do_check_zero .and. arr(i) == 0.0) then
           call report_invalid ('Zero', label, idx)

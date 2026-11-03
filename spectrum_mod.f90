@@ -494,7 +494,7 @@ MODULE spectrum_mod
       integer, intent(out) :: ired, iblue
       !-----------------------------------------------------------------------------
       if (self%sorted) then
-        call get_ivl(self%lam, trans%lam_min, trans%lam_max, iblue, ired, limit=.false.)
+        call get_ivl(self%lam, trans%lam_min, trans%lam_max, iblue, ired)
         if (iblue > 1) then
           if((trans%lam_min - self%lam(iblue-1)) < lam_tolerance) then
             iblue = iblue - 1
