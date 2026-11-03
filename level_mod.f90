@@ -39,8 +39,7 @@ contains
   !===============================================================================
   !> Partition-function sum of the hydrogenic series of ion stage ion from
   !> n = xl up to the pressure cutoff set by ne, in the asymptotic form of
-  !> [Fischel & Sparks (1971)](https://ui.adsabs.harvard.edu/abs/1971ApJ...164..359F),
-  !> eqs. 26 and 27.
+  !> Fischel & Sparks.
   !===============================================================================
   elemental real(dp) FUNCTION fischel_sparks(self, ion, e_kT, ne)
     class(level_type), intent(in) :: self
