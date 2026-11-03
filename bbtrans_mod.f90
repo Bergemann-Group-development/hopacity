@@ -51,9 +51,12 @@ MODULE bbtrans_mod
 contains
 
   !====================================================================================
+  !> Sets the Einstein coefficients of the line from its oscillator strength.
+  !====================================================================================
   SUBROUTINE init_einstein_coefficients(self, f, gij)
     class(bbtrans_type), intent(inout) :: self
-    real(8), intent(in) :: f, gij
+    real(8), intent(in) :: f   !< oscillator strength
+    real(8), intent(in) :: gij !< statistical weight ratio g_i/g_j, lower over upper
     !----------------------------------------------------------------------------------
     ! Aji is the Einstein coefficient of spontaneous emission [1/s] and Aij = Aji/gij.
     ! Bij and Bji carry the factor h/4pi of the line opacity, which
@@ -75,8 +78,12 @@ contains
   !====================================================================================
   PURE ELEMENTAL SUBROUTINE line_damping (self, adamp, ne, tothi, vbar2, stark_pe, unsold)
     class(bbtrans_type), intent(in)  :: self
-    real(4), intent(in)  :: ne, tothi, vbar2, stark_pe, unsold
-    real(4), intent(inout) :: adamp
+    real(4), intent(in)  :: ne       !< electron number density [cm^-3]
+    real(4), intent(in)  :: tothi    !< neutral H number density [cm^-3]
+    real(4), intent(in)  :: vbar2    !< mean relative speed squared with H, compute_vbar2 [cm^2 s^-2]
+    real(4), intent(in)  :: stark_pe !< ne T^(1/6), for the T-dependent Stark recipes
+    real(4), intent(in)  :: unsold   !< vbar2^0.3 tothi, for the Unsold-type van der Waals recipes
+    real(4), intent(inout) :: adamp  !< damping parameter
     !----------------------------------------------------------------------------------
     adamp = 0
     ! Van der Waals Broadening
@@ -102,9 +109,10 @@ contains
   !====================================================================================
   PURE ELEMENTAL SUBROUTINE bb_prepare_Stark(self, gstk, j, cnt_ev, is_mol)
     class(bbtrans_type), intent(inout)  :: self
-    real(dp), intent(in) :: gstk, cnt_ev
-    integer, intent(in) :: j
-    logical, intent(in) :: is_mol
+    real(dp), intent(in) :: gstk   !< Stark recipe value, gstk_in of prepare_stark
+    integer, intent(in) :: j       !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in) :: cnt_ev !< ionisation limit [eV]
+    logical, intent(in) :: is_mol  !< molecular line
     !----------------------------------------------------------------------------------
     call prepare_stark(self%gstk, gstk, self%nu0, self%lower_ev, j, cnt_ev, is_mol)
   END SUBROUTINE bb_prepare_Stark
@@ -114,7 +122,7 @@ contains
   !====================================================================================
   PURE ELEMENTAL SUBROUTINE bb_prepare_Radiative(self, grad)
     class(bbtrans_type), intent(inout)  :: self
-    real(dp), intent(in) :: grad
+    real(dp), intent(in) :: grad !< radiative damping rate [s^-1], 0 for the default
     !----------------------------------------------------------------------------------
     call prepare_radiative(self%grad, grad, self%nu0, self%loggf)
   END SUBROUTINE bb_prepare_Radiative
@@ -124,9 +132,11 @@ contains
   !====================================================================================
   PURE SUBROUTINE bb_prepare_VanderWaals(self, gvdw, lower_ion, cnt_ev, vbar2e4, is_mol)
     class(bbtrans_type), intent(inout)  :: self
-    integer, intent(in) :: lower_ion
-    real(dp), intent(in) :: gvdw, cnt_ev, vbar2e4
-    logical, intent(in) :: is_mol
+    real(dp), intent(in) :: gvdw     !< van der Waals recipe value, as in prepare_vanderwaals
+    integer, intent(in) :: lower_ion !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in) :: cnt_ev   !< ionisation limit [eV]
+    real(dp), intent(in) :: vbar2e4  !< compute_vbar2 at 10^4 K [cm^2 s^-2]
+    logical, intent(in) :: is_mol    !< molecular line
     !----------------------------------------------------------------------------------
     call prepare_vanderwaals(self%gw1, self%gw2, self%unsold, gvdw, self%nu0, &
                              self%lower_ev, lower_ion, cnt_ev, vbar2e4, is_mol)
@@ -137,8 +147,10 @@ contains
   !> grad_in = 0 the value g_u A_ul = 8 pi^2 e^2 nu0^2 gf/(m_e c^3) that Korg uses.
   !====================================================================================
   PURE SUBROUTINE prepare_radiative(grad, grad_in, nu0, loggf)
-    real(dp), intent(out) :: grad
-    real(dp), intent(in)  :: grad_in, nu0, loggf
+    real(dp), intent(out) :: grad    !< radiative damping / (4 pi nu0)
+    real(dp), intent(in)  :: grad_in !< radiative damping rate [s^-1], 0 for the default
+    real(dp), intent(in)  :: nu0     !< line frequency [Hz]
+    real(dp), intent(in)  :: loggf   !< log10 gf
     !----------------------------------------------------------------------------------
     if (grad_in == 0) then
       ! Default as in Korg: 8 pi^2 e^2 nu0^2 gf / (m_e c^3) = g_u A_ul. Turbospectrum
@@ -168,10 +180,13 @@ contains
   !> [Cowley (1971)](https://ui.adsabs.harvard.edu/abs/1971Obs....91..139C)
   !====================================================================================
   PURE SUBROUTINE prepare_stark(gstk, gstk_in, nu0, lower_ev, j, cnt_ev, is_mol)
-    real(dp), intent(out) :: gstk
-    real(dp), intent(in)  :: gstk_in, nu0, lower_ev, cnt_ev
-    integer,  intent(in)  :: j
-    logical,  intent(in)  :: is_mol
+    real(dp), intent(out) :: gstk     !< Stark constant / (4 pi nu0), negative for the T-dependent recipes
+    real(dp), intent(in)  :: gstk_in  !< recipe value, see the table
+    real(dp), intent(in)  :: nu0      !< line frequency [Hz]
+    real(dp), intent(in)  :: lower_ev !< lower level energy [eV]
+    integer,  intent(in)  :: j        !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in)  :: cnt_ev   !< ionisation limit [eV]
+    logical,  intent(in)  :: is_mol   !< molecular line
     real(dp), parameter :: scale = 1e4**(-one_sixth)   ! (T/1e4 K)**(1/6), with T**(1/6) in stark_pe
     real(dp), parameter :: c19 = log10(39. * (8. / (PI*EM*BK**5))**one_sixth) ! ~19.4
     real(dp) :: upper_ev, c1
@@ -223,11 +238,16 @@ contains
   !====================================================================================
   PURE SUBROUTINE prepare_vanderwaals(gw1, gw2, unsold, gvdw, nu0, lower_ev, lower_ion, &
                                       cnt_ev, vbar2e4, is_mol)
-    real(dp), intent(out) :: gw1, gw2
-    logical,  intent(out) :: unsold
-    real(dp), intent(in)  :: gvdw, nu0, lower_ev, cnt_ev, vbar2e4
-    integer,  intent(in)  :: lower_ion
-    logical,  intent(in)  :: is_mol
+    real(dp), intent(out) :: gw1       !< van der Waals constant / (4 pi nu0)
+    real(dp), intent(out) :: gw2       !< exponent of vbar2 in line_damping
+    logical,  intent(out) :: unsold    !< Unsold temperature dependence
+    real(dp), intent(in)  :: gvdw      !< recipe value, see the table
+    real(dp), intent(in)  :: nu0       !< line frequency [Hz]
+    real(dp), intent(in)  :: lower_ev  !< lower level energy [eV]
+    integer,  intent(in)  :: lower_ion !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in)  :: cnt_ev    !< ionisation limit [eV]
+    real(dp), intent(in)  :: vbar2e4   !< compute_vbar2 at 10^4 K [cm^2 s^-2]
+    logical,  intent(in)  :: is_mol    !< molecular line
     real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625
     ! uns = 17*C_U**0.4 (CGS, energies in eV). Unsold (1955, eqs. 82.48 and 82.55) gives
     ! gamma_6 = 17 C6**0.4 v**0.6 N with C6 = 1.61e-33*(13.5*Z)**2*[...], i.e. C_U = 2.93e-31

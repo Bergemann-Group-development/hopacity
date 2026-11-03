@@ -192,8 +192,8 @@ contains
   PURE SUBROUTINE pchip_slopes4 (xx, yy, imin, imax, dx, dy, dydx)
     real(4), intent(in) :: xx(:)    !< nodes, ascending
     real(4), intent(in) :: yy(:)    !< values at the nodes
-    integer, intent(in) :: imin       !< first node whose slope is needed
-    integer, intent(in) :: imax       !< last node whose slope is needed
+    integer, intent(in) :: imin     !< first node whose slope is needed
+    integer, intent(in) :: imax     !< last node whose slope is needed
     real(4), intent(out) :: dx(:)   !< node spacings xx(i+1) - xx(i)
     real(4), intent(out) :: dy(:)   !< differences yy(i+1) - yy(i)
     real(4), intent(out) :: dydx(:) !< node slopes
@@ -240,8 +240,8 @@ contains
   PURE SUBROUTINE pchip_slopes8 (xx, yy, imin, imax, dx, dy, dydx)
     real(8), intent(in) :: xx(:)    !< nodes, ascending
     real(8), intent(in) :: yy(:)    !< values at the nodes
-    integer, intent(in) :: imin       !< first node whose slope is needed
-    integer, intent(in) :: imax       !< last node whose slope is needed
+    integer, intent(in) :: imin     !< first node whose slope is needed
+    integer, intent(in) :: imax     !< last node whose slope is needed
     real(8), intent(out) :: dx(:)   !< node spacings xx(i+1) - xx(i)
     real(8), intent(out) :: dy(:)   !< differences yy(i+1) - yy(i)
     real(8), intent(out) :: dydx(:) !< node slopes
@@ -794,10 +794,10 @@ contains
   !> along-ray derivative of the interpolant, parameterized by z (in oldz units).
   !===============================================================================
   SUBROUTINE linterpolate_3d_rotated(f, fout, dx, dy, oldz, lower, ds, newz, vec, bot2pivot, pchip, dfdz)
-    real(4), intent(in),  dimension(:,:,:) :: f              !< field on the input grid
-    real(4), intent(out), dimension(:,:,:) :: fout           !< field on the output grid
-    real(4), dimension(:), intent(in) :: oldz                !< heights of the input grid, ascending
-    real(4), dimension(:), intent(in) :: newz                !< heights of the output grid, ascending
+    real(4), intent(in),  dimension(:,:,:) :: f    !< field on the input grid
+    real(4), intent(out), dimension(:,:,:) :: fout !< field on the output grid
+    real(4), dimension(:), intent(in) :: oldz      !< heights of the input grid, ascending
+    real(4), dimension(:), intent(in) :: newz      !< heights of the output grid, ascending
     real(4), dimension(:,:,:), allocatable :: fx, fxy
     real(8), intent(in) :: dx                                !< input grid spacing in x
     real(8), intent(in) :: dy                                !< input grid spacing in y

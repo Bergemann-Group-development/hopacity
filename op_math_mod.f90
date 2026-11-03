@@ -33,7 +33,8 @@ contains
   !> bool if present, else default if present, else .false.
   !====================================================================================
   PURE FUNCTION option(bool, default) result(out)
-    logical, intent(in), optional :: bool, default
+    logical, intent(in), optional :: bool    !< value, if given
+    logical, intent(in), optional :: default !< value without bool (default .false.)
     logical :: out
     !---------------------------------------------------------------------------------
     if (present(bool)) then
@@ -51,7 +52,8 @@ contains
   !> find_closest for real(4).
   !====================================================================================
   pure FUNCTION find_closest4(arr, val) result(i)
-    real(4), intent(in) :: arr(:), val
+    real(4), intent(in) :: arr(:) !< ascending array
+    real(4), intent(in) :: val    !< value to look up
     integer :: i
     !----------------------------------------------------------------------------
     i = searchsorted4(arr, val, outbounds_ok=.true.)
@@ -68,7 +70,8 @@ contains
   !> find_closest for real(8).
   !====================================================================================
   pure FUNCTION find_closest8(arr, val) result(i)
-    real(8), intent(in) :: arr(:), val
+    real(8), intent(in) :: arr(:) !< ascending array
+    real(8), intent(in) :: val    !< value to look up
     integer :: i
     !----------------------------------------------------------------------------
     i = searchsorted8(arr, val, outbounds_ok=.true.)
@@ -85,8 +88,9 @@ contains
   !> searchsorted for real(4).
   !====================================================================================
   pure FUNCTION searchsorted4(arr, val, outbounds_ok) result(i)
-    real(4), intent(in) :: arr(:), val
-    logical, optional, intent(in) :: outbounds_ok
+    real(4), intent(in) :: arr(:)                 !< ascending array
+    real(4), intent(in) :: val                    !< value to look up
+    logical, optional, intent(in) :: outbounds_ok !< 0 or size(arr) outside the array instead of -1
     logical :: ob_ok, above, below
     integer :: i, n
     !----------------------------------------------------------------------------
@@ -116,8 +120,9 @@ contains
   !> searchsorted for real(8).
   !====================================================================================
   pure FUNCTION searchsorted8(arr, val, outbounds_ok) result(i)
-    real(8), intent(in) :: arr(:), val
-    logical, optional, intent(in) :: outbounds_ok
+    real(8), intent(in) :: arr(:)                 !< ascending array
+    real(8), intent(in) :: val                    !< value to look up
+    logical, optional, intent(in) :: outbounds_ok !< 0 or size(arr) outside the array instead of -1
     logical :: ob_ok, above, below
     integer :: i, n
     !----------------------------------------------------------------------------
@@ -147,9 +152,10 @@ contains
   !> Bisection of searchsorted4 on arr(l:r), for arr(l) <= x <= arr(r).
   !====================================================================================
   pure recursive FUNCTION BinarySearch4(arr, l, r, x) result(idx)
-    real(4), intent(in) :: arr(:)
-    real(4), intent(in) :: x
-    integer, intent(in) :: l, r
+    real(4), intent(in) :: arr(:) !< ascending array
+    real(4), intent(in) :: x      !< value to look up
+    integer, intent(in) :: l      !< first index of the search range
+    integer, intent(in) :: r      !< last index of the search range
     integer :: idx, mid
     !----------------------------------------------------------------------------
     if (r - l > 1) then
@@ -171,9 +177,10 @@ contains
   !> Bisection of searchsorted8 on arr(l:r), for arr(l) <= x <= arr(r).
   !====================================================================================
   pure recursive FUNCTION BinarySearch8(arr, l, r, x) result(idx)
-    real(8), intent(in) :: arr(:)
-    real(8), intent(in) :: x
-    integer, intent(in) :: l, r
+    real(8), intent(in) :: arr(:) !< ascending array
+    real(8), intent(in) :: x      !< value to look up
+    integer, intent(in) :: l      !< first index of the search range
+    integer, intent(in) :: r      !< last index of the search range
     integer :: idx, mid
     !----------------------------------------------------------------------------
     if (r - l > 1) then
@@ -208,8 +215,11 @@ contains
   !> [lower, upper], equal elements included; lo > up when there are none.
   !====================================================================================
   pure SUBROUTINE get_interval(arr, lower, upper, lo, up)
-    real(8), intent(in) :: arr(:), lower, upper
-    integer, intent(out) ::lo, up
+    real(8), intent(in) :: arr(:) !< ascending array
+    real(8), intent(in) :: lower  !< lower bound
+    real(8), intent(in) :: upper  !< upper bound
+    integer, intent(out) :: lo    !< first index within the bounds
+    integer, intent(out) :: up    !< last index within the bounds
     integer :: n
     !----------------------------------------------------------------------------
     lo = searchsorted(arr, lower, outbounds_ok=.true.) + 1
@@ -233,9 +243,9 @@ contains
   !> Polynomial p(1) x^(m-1) + ... + p(m), m = size(p), at every element of x.
   !====================================================================================
   SUBROUTINE poly3d(x, p, res)
-    real(dp), intent(in), dimension(:,:,:) :: x
-    real(dp), intent(in), dimension(:) :: p
-    real(dp), intent(out), dimension(:,:,:) :: res
+    real(dp), intent(in), dimension(:,:,:) :: x    !< argument
+    real(dp), intent(in), dimension(:) :: p        !< coefficients, highest power first
+    real(dp), intent(out), dimension(:,:,:) :: res !< polynomial at x
     integer :: i
     !----------------------------------------------------------------------------
     res = p(1)
@@ -251,9 +261,9 @@ contains
   !> Written by Martin J. Stift (1990).
   !===============================================================================
   SUBROUTINE lineq(a,b,n)
-    integer :: n
-    real(dp), dimension(n,n) :: a
-    real(dp), dimension(n)   :: b
+    integer :: n                  !< order of the system
+    real(dp), dimension(n,n) :: a !< matrix, overwritten
+    real(dp), dimension(n)   :: b !< right-hand side, returns the solution
 
     real(dp), dimension(n)  :: c
     integer, dimension(n) :: icol
@@ -355,8 +365,9 @@ contains
   !> Written by Åke Nordlund (1979); column-oriented version by Mats Carlsson (1986).
   !===============================================================================
   SUBROUTINE eqsyst(a,b,n)
-    integer :: n
-    real(8) :: a(n,n), b(n)
+    integer :: n      !< order of the system
+    real(8) :: a(n,n) !< matrix, overwritten
+    real(8) :: b(n)   !< right-hand side, returns the solution
     real(8) :: all, bl, alm, bk
     integer :: lastn(n), l, k, m
     !-----------------------------------------------------------------------------
@@ -407,8 +418,9 @@ contains
   !> returns x.
   !===============================================================================
   SUBROUTINE lineq_no_pivot (a, b, n)
-    integer :: n
-    real(8):: a(n,n), b(n)
+    integer :: n     !< order of the system
+    real(8):: a(n,n) !< matrix, returns its LU factors
+    real(8):: b(n)   !< right-hand side, returns the solution
     integer :: i, j, k
     !-----------------------------------------------------------------------------
     do k=1,n-1
@@ -445,11 +457,17 @@ contains
   !> so the transform is computed once rather than repeated per moment/extent.
   !===============================================================================
   SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2, use_pca)
-    real(8), intent(in)  :: x1(:), x2(:) !< sample coordinates, e.g. (lnT, lnNe)
-    real(8), intent(in)  :: d1, d2       !< requested resolution along x1, x2
-    integer, intent(in)  :: npad         !< extra nodes past the data hull, each end
-    real(8), intent(out) :: mu(2), rot(2,2), c0(2), dc(2)
-    integer, intent(out) :: n1, n2
+    real(8), intent(in)  :: x1(:)            !< first sample coordinate, e.g. lnT
+    real(8), intent(in)  :: x2(:)            !< second sample coordinate, e.g. lnNe
+    real(8), intent(in)  :: d1               !< requested resolution along x1
+    real(8), intent(in)  :: d2               !< requested resolution along x2
+    integer, intent(in)  :: npad             !< extra nodes past the data hull, each end
+    real(8), intent(out) :: mu(2)            !< mean of the samples
+    real(8), intent(out) :: rot(2,2)         !< principal axes, one per column
+    real(8), intent(out) :: c0(2)            !< grid origin in principal-axis coordinates
+    real(8), intent(out) :: dc(2)            !< grid spacings along the principal axes
+    integer, intent(out) :: n1               !< nodes along the first principal axis
+    integer, intent(out) :: n2               !< nodes along the second principal axis
     logical, intent(in), optional :: use_pca !< .false. -> axis-aligned (no rotation)
     real(8) :: a, b, d, tr, disc, l1, l2, tiny_b, vn
     real(8) :: pmin1, pmax1, pmin2, pmax2
@@ -523,11 +541,11 @@ contains
   !> 4. Merges overlapping or touching intervals
   !=====================================================================================
   SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
-    real(dp), intent(in) :: windows(:,:)
-    integer, intent(in) :: n_windows
-    real(dp), intent(in) :: dlam
-    type(interval_t), intent(out), allocatable :: merged_intervals(:)
-    integer, intent(out) :: n_merged
+    real(dp), intent(in) :: windows(:,:)                              !< blue (:,1) and red (:,2) edges of the windows [AA]
+    integer, intent(in) :: n_windows                                  !< number of windows
+    real(dp), intent(in) :: dlam                                      !< expansion on each side [AA]
+    type(interval_t), intent(out), allocatable :: merged_intervals(:) !< merged intervals, ascending
+    integer, intent(out) :: n_merged                                  !< number of merged intervals
     type(interval_t), allocatable :: expanded(:), trimmed(:)
     integer :: i
     real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
@@ -580,8 +598,8 @@ contains
   !> Sort an array of intervals by blue edge (ascending).
   !=====================================================================================
   SUBROUTINE sort_intervals(intervals, n)
-    type(interval_t), intent(inout) :: intervals(:)
-    integer, intent(in) :: n
+    type(interval_t), intent(inout) :: intervals(:) !< intervals to sort
+    integer, intent(in) :: n                        !< number of intervals sorted, from the first
     integer :: i, j
     type(interval_t) :: temp
     !-----------------------------------------------------------------------------------

@@ -43,8 +43,9 @@ contains
   !===============================================================================
   elemental real(dp) FUNCTION fischel_sparks(self, ion, e_kT, ne)
     class(level_type), intent(in) :: self
-    real(dp), intent(in) :: e_kT, ne
-    integer, intent(in) :: ion !< ionisation stage (1 is neutral)
+    integer, intent(in) :: ion   !< ionisation stage (1 is neutral)
+    real(dp), intent(in) :: e_kT !< 1 eV / kT
+    real(dp), intent(in) :: ne   !< electron number density [cm^-3]
     real(dp) :: a, a2, r, r2, r3, axl2, p, p2, p3, p4
     real(dp) :: bk_err
     !---------------------------------------------------------------------------
@@ -77,8 +78,10 @@ contains
   !> an H I state with effective quantum number ns, for wcalc and wcalc2.
   !===============================================================================
   PURE SUBROUTINE calc_x_and_k(ns, x1, x2, k)
-    real(dp), intent(in) :: ns !< effective principal quantum number
-    real(dp), intent(out) :: x1, x2, k
+    real(dp), intent(in) :: ns  !< effective principal quantum number
+    real(dp), intent(out) :: x1 !< hard-sphere volume for H perturbers [cm^3], without the 4 pi/3
+    real(dp), intent(out) :: x2 !< hard-sphere volume for He perturbers [cm^3], without the 4 pi/3
+    real(dp), intent(out) :: k  !< charged-perturber factor of Hubeny et al. (1994)
     real(dp) :: ns2, rih
     !---------------------------------------------------------------------------
     ns2 = ns*ns
@@ -106,9 +109,12 @@ contains
   !> Written by Paul Barklem and Kjell Eriksson (2003).
   !===============================================================================
   PURE SUBROUTINE wcalc(nh, nhe, ne, shield, ns, w)
-    real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    real(dp), intent(in) :: ns                   !< effective principal quantum number
-    real(dp), intent(out), dimension(:,:,:) :: w !< occupation probability
+    real(dp), intent(in) , dimension(:,:,:) :: nh     !< neutral H number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: nhe    !< neutral He number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: ne     !< electron number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: shield !< (1+a)^3.15/ne, a = 0.09 ne^(1/6)/sqrt(T) [cm^3]
+    real(dp), intent(in) :: ns                        !< effective principal quantum number
+    real(dp), intent(out), dimension(:,:,:) :: w      !< occupation probability
     real(dp) :: x1, x2, neutr, k1, k2, x, frac, charg, res
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
     integer :: i,j,k, m(3)
@@ -145,11 +151,15 @@ contains
   !===============================================================================
   SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl, beyond_limit)
     class(level_type), target :: self
-    real(4), intent(inout), dimension(:,:,:,:) :: chi !< opacity (frequency, x, y, z), added to
-    real(dp), intent(in), dimension(:) :: lam         !< wavelengths [AA]
-    real(4), intent(in), dimension(:) :: ab           !< bound-free table of the level, interpolated to lam
-    real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    real(dp), intent(in), dimension(:,:,:), optional, target :: wocc, nlvl
+    real(4), intent(inout), dimension(:,:,:,:) :: chi                !< opacity (frequency, x, y, z), added to
+    real(dp), intent(in), dimension(:) :: lam                        !< wavelengths [AA]
+    real(4), intent(in), dimension(:) :: ab                          !< bound-free table of the level, interpolated to lam
+    real(dp), intent(in) , dimension(:,:,:) :: nh                    !< neutral H number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: nhe                   !< neutral He number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: ne                    !< electron number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: shield                !< (1+a)^3.15/ne, as in wcalc [cm^3]
+    real(dp), intent(in), dimension(:,:,:), optional, target :: wocc !< occupation probability (default self%w)
+    real(dp), intent(in), dimension(:,:,:), optional, target :: nlvl !< level population [cm^-3] (default self%n)
     !> .false. leaves out the wavelengths beyond the series limit (default .true.)
     logical, intent(in), optional :: beyond_limit
     real(dp), dimension(:,:,:), pointer :: wp, np
