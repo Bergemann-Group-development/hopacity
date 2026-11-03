@@ -1,7 +1,17 @@
+!===============================================================================
+!> Energy levels of the background opacity data: their partition-function terms,
+!> and the occupation probabilities and bound-free opacity of H I levels.
+!===============================================================================
 MODULE level_mod
   USE prec_mod
   implicit none
 
+  !===============================================================================
+  !> Energy and per-cell populations shared by levels and particles.  xion is a
+  !> level's excitation energy or an ion's ionisation energy [eV].  For a level,
+  !> f is the Boltzmann factor g exp(-xion/kT) and n the number density
+  !> [cm^-3]; for a particle, n is the number density and f = n/n_H.
+  !===============================================================================
   type :: state_type
     real(dp) :: xion=999.99
     real(dp), dimension(:,:,:), allocatable :: n, f
@@ -27,10 +37,15 @@ MODULE level_mod
 contains
 
   !===============================================================================
+  !> Partition-function sum of the hydrogenic series of ion stage ion from
+  !> n = xl up to the pressure cutoff set by ne, in the asymptotic form of
+  !> [Fischel & Sparks (1971)](https://ui.adsabs.harvard.edu/abs/1971ApJ...164..359F),
+  !> eqs. 26 and 27.
+  !===============================================================================
   elemental real(dp) FUNCTION fischel_sparks(self, ion, e_kT, ne)
     class(level_type), intent(in) :: self
     real(dp), intent(in) :: e_kT, ne
-    integer, intent(in) :: ion
+    integer, intent(in) :: ion !< ionisation stage (1 is neutral)
     real(dp) :: a, a2, r, r2, r3, axl2, p, p2, p3, p4
     real(dp) :: bk_err
     !---------------------------------------------------------------------------
@@ -59,8 +74,11 @@ contains
   end FUNCTION fischel_sparks
 
   !===============================================================================
+  !> Hard-sphere volumes x1 (H) and x2 (He) and the charged-perturber factor k of
+  !> an H I state with effective quantum number ns, for wcalc and wcalc2.
+  !===============================================================================
   PURE SUBROUTINE calc_x_and_k(ns, x1, x2, k)
-    real(dp), intent(in) :: ns
+    real(dp), intent(in) :: ns !< effective principal quantum number
     real(dp), intent(out) :: x1, x2, k
     real(dp) :: ns2, rih
     !---------------------------------------------------------------------------
@@ -122,14 +140,18 @@ contains
   END SUBROUTINE wcalc
 
   !===============================================================================
+  !> Adds the bound-free opacity of H I level self to chi, including the
+  !> dissolved-level (pseudo-continuum) part below the series limit that the
+  !> occupation probability formalism gives, as Barklem's HBOP does.
+  !===============================================================================
   SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl, beyond_limit)
     class(level_type), target :: self
-    real(4), intent(inout), dimension(:,:,:,:) :: chi
-    real(dp), intent(in), dimension(:) :: lam
-    real(4), intent(in), dimension(:) :: ab
+    real(4), intent(inout), dimension(:,:,:,:) :: chi !< opacity (frequency, x, y, z), added to
+    real(dp), intent(in), dimension(:) :: lam         !< wavelengths [AA]
+    real(4), intent(in), dimension(:) :: ab           !< bound-free table of the level, interpolated to lam
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
     real(dp), intent(in), dimension(:,:,:), optional, target :: wocc, nlvl
-    ! .false. leaves out the wavelengths beyond the series limit (default .true.)
+    !> .false. leaves out the wavelengths beyond the series limit (default .true.)
     logical, intent(in), optional :: beyond_limit
     real(dp), dimension(:,:,:), pointer :: wp, np
     real(dp), dimension(:), allocatable :: kd

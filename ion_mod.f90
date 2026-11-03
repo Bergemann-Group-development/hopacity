@@ -51,6 +51,10 @@ MODULE ion_mod
     type(ion_type), pointer :: p => null()
   end type ion_pointer_t
 
+  !===============================================================================
+  !> An ionisation stage of an element in HOP's equation of state, linked to the
+  !> stages above and below it and to the molecules it forms.
+  !===============================================================================
   type, extends(particle_type) :: ion_type
     integer :: nmolec=0, mcount
     type(ion_type), pointer :: above => null()
