@@ -1,5 +1,5 @@
 !=======================================================================================
-!> linelist_mod -- structure-of-arrays (SoA) bulk linelist handling.
+!> Line lists in structure-of-arrays (SoA) form: parsing and the line opacity kernels.
 !>
 !> Every line-list line of a composition particle lives in its linelist_type, one per
 !> isotope. Metals and molecules go through the kernels here; the H I lines keep their
@@ -12,17 +12,17 @@
 !> add_particle_opacity), while the low-level kernels still take plain patch work arrays.
 !>
 !> The metal/molecule kernel:
-!>   * The opacity kernel (add_opacity) loops the SPATIAL domain in the outer loop, then
-!>     lines (sorted ascending in wavelength), then frequencies. A monotonic frequency
-!>     cursor ("march") locates each line centre.
-!>   * Works in log(lambda): the thermal Doppler width is constant per cell and the
-!>     Doppler shift is additive, so the profile abscissa is vs = idf*(llam(f) - llc).
-!>   * loggf is folded into the Boltzmann exponential, exp(loggf*ln10 - ex), instead of
-!>     pre-converting to Einstein Bij.
+!>  - The opacity kernel (add_opacity) loops the SPATIAL domain in the outer loop, then
+!>    lines (sorted ascending in wavelength), then frequencies. A monotonic frequency
+!>    cursor ("march") locates each line centre.
+!>  - Works in log(lambda): the thermal Doppler width is constant per cell and the
+!>    Doppler shift is additive, so the profile abscissa is vs = idf*(llam(f) - llc).
+!>  - loggf is folded into the Boltzmann exponential, exp(loggf*ln10 - ex), instead of
+!>    pre-converting to Einstein Bij.
 !>
 !> The orchestration that walks elements/ions/molecules stays in composition_mod
 !> (add_linelist_opacities / init_linelist), which owns the patch thermodynamic arrays
-!> and the departure-coefficient lookup; per particle it now calls add_particle_opacity.
+!> and the departure-coefficient lookup; per particle it calls add_particle_opacity.
 !=======================================================================================
 MODULE linelist_mod
   USE prec_mod
@@ -60,29 +60,20 @@ MODULE linelist_mod
   real(4), parameter  :: voigt_peak = 0.5641895835
 
   ! --- The Voigt kernel ---------------------------------------------------------------
-  !> QLG-bot (HOP/qlg_mod.f90), unconditionally, everywhere. It is the tabulated member of
-  !> the QLG family of the Voigt-QLG letter: three basis functions {q.G, q.Z(0.2), q.L^2}
-  !> at x-degree 1, six fitted constants, G and Z(0.2)/L^2 read from two rank-1 tables at
-  !> one shared snapped index. Synspec's cost for a much smaller flux error -- 5.7e-3 max
-  !> relative on the validation domain, which the kernel-vs-abundance study bounded at
-  !> 0.006 dex per line and 0.0007 dex per element, i.e. below anything this code resolves.
-  !>
-  !> The comparison against the ~22 rival and QLG-family kernels this used to dispatch
-  !> between at runtime -- haw, mclean, moog, siu, synspec, w4, voigt21, the fp64
-  !> reference, and the QLG tiers and ablations -- lives on the `voigt-kernel-zoo` branch,
-  !> together with the voigt_kernel dispatch chain that selected them.
-  !>
-  !> add_opacity_equi sweeps the whole line window at once, which is where QLG-bot's
-  !> advantage lies: the per-line setup is amortised over the window and the point loop
-  !> vectorises. add_opacity walks a non-uniform abscissa and evaluates the same setup one
-  !> point at a time. Both work on the abscissa's own units (grid steps, log(lambda)), with
-  !> the Lorentz and Doppler widths in those units and the line strength folded into the
-  !> setup, so neither scales the damping, the abscissa or the profile per line or point.
-  !>
-  !> voigt_kernel IS READ AND IGNORED. It stays only so that the ~900 namelists and the
-  !> standalone library's hop_set_option that still set it keep loading; there is nothing
-  !> left to select. Delete it once those have been swept.
-  integer, public :: voigt_kernel = 0
+  ! QLG-bot (HOP/qlg_mod.f90) is the Voigt kernel everywhere. It is the tabulated member
+  ! of the QLG family of the Voigt-QLG letter: three basis functions {q.G, q.Z(0.2), q.L^2}
+  ! at x-degree 1, six fitted constants, G and Z(0.2)/L^2 read from two rank-1 tables at
+  ! one shared snapped index. At Synspec's cost its flux error is much smaller: 5.7e-3 max
+  ! relative on the validation domain, which bounds the abundance error at 0.006 dex per
+  ! line and 0.0007 dex per element, below anything this code resolves.
+  !
+  ! add_opacity_equi sweeps the whole line window at once, which is where QLG-bot's
+  ! advantage lies: the per-line setup is amortised over the window and the point loop
+  ! vectorises. add_opacity walks a non-uniform abscissa and evaluates the same setup one
+  ! point at a time. Both work on the abscissa's own units (grid steps, log(lambda)), with
+  ! the Lorentz and Doppler widths in those units and the line strength folded into the
+  ! setup, so neither scales the damping, the abscissa or the profile per line or point.
+  integer, public :: voigt_kernel = 0 !< read and ignored, so that namelists and hop_set_option calls that set it keep working
 
   ! --- profiling work counters (add_opacity); cheap integer increments ----------------
   logical,    public :: ll_profile = .false. !< enable counting
@@ -109,15 +100,21 @@ contains
   !=====================================================================================
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
                             vbar2e4, do_mask, lam_min, lam_max, intervals, ts_iel)
-    type(linelist_type), intent(inout) :: ll
-    character(len=*),    intent(in)    :: buf
-    integer(8),          intent(in)    :: lstart(:), lend(:)
-    integer,             intent(in)    :: n, ion_j
-    real(dp),            intent(in)    :: awgt, xion, vbar2e4
-    logical,             intent(in)    :: is_mol, do_mask
-    real(dp),            intent(in)    :: lam_min, lam_max
-    type(interval_t), intent(in), optional :: intervals(:)
-    integer,          intent(in), optional :: ts_iel
+    type(linelist_type), intent(inout) :: ll               !< line list the records are appended to
+    character(len=*),    intent(in)    :: buf              !< bytes of the block's records
+    integer(8),          intent(in)    :: lstart(:)        !< first byte of each record in buf
+    integer(8),          intent(in)    :: lend(:)          !< last byte of each record in buf
+    integer,             intent(in)    :: n                !< number of records
+    integer,             intent(in)    :: ion_j            !< ionisation stage of the species (1 is neutral)
+    real(dp),            intent(in)    :: awgt             !< atomic weight, unused
+    real(dp),            intent(in)    :: xion             !< ionisation limit [eV]
+    real(dp),            intent(in)    :: vbar2e4          !< compute_vbar2 at 10^4 K [cm^2 s^-2]
+    logical,             intent(in)    :: is_mol           !< molecular species
+    logical,             intent(in)    :: do_mask          !< keep only the records in lam_min..lam_max or the intervals
+    real(dp),            intent(in)    :: lam_min          !< shortest vacuum wavelength kept without intervals [AA]
+    real(dp),            intent(in)    :: lam_max          !< longest vacuum wavelength kept without intervals [AA]
+    type(interval_t), intent(in), optional :: intervals(:) !< vacuum wavelength intervals, sorted and disjoint
+    integer,          intent(in), optional :: ts_iel       !< atomic number of a Turbospectrum species, 0 for a molecule
     real(dp) :: lam_air, lam_vac, lower_ev, loggf, gv_in, grad_in, gstk_in, r_i, r_j
     real(dp) :: sigma, alpha
     character(len=1) :: orb_lo, orb_up
@@ -258,12 +255,27 @@ contains
   SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, grad, gw1, gw2, gstk, unsold, &
                          lev_i, lev_j, itrans, ipart, cwt, dej, iso_out, &
                          loggf, gv_in, grad_in, gstk_in)
-    type(linelist_type), intent(inout) :: ll
-    real(8), intent(in) :: llam0, gpref
-    real(8), intent(in) :: nu0, lower_ev, grad, gw1, gw2, gstk, cwt, dej
-    real(8), intent(in) :: loggf, gv_in, grad_in, gstk_in
-    logical, intent(in) :: unsold
-    integer, intent(in) :: lev_i, lev_j, itrans, ipart, iso_out
+    type(linelist_type), intent(inout) :: ll !< line list
+    real(8), intent(in) :: llam0             !< ln of the vacuum wavelength [AA]
+    real(8), intent(in) :: gpref             !< ln of the line strength prefactor, gpref of linelist_type
+    real(8), intent(in) :: nu0               !< line frequency [Hz]
+    real(8), intent(in) :: lower_ev          !< lower level energy [eV]
+    real(8), intent(in) :: grad              !< radiative damping, as prepare_radiative sets it
+    real(8), intent(in) :: gw1               !< van der Waals constant, as prepare_vanderwaals sets it
+    real(8), intent(in) :: gw2               !< van der Waals exponent, as prepare_vanderwaals sets it
+    real(8), intent(in) :: gstk              !< Stark constant, as prepare_stark sets it
+    real(8), intent(in) :: cwt               !< component weight, 1 for plain lines
+    real(8), intent(in) :: dej               !< upper_ev - lower_ev [eV]
+    real(8), intent(in) :: loggf             !< log gf, for linelist_out.txt
+    real(8), intent(in) :: gv_in             !< van der Waals recipe value, for linelist_out.txt
+    real(8), intent(in) :: grad_in           !< radiative recipe value, for linelist_out.txt
+    real(8), intent(in) :: gstk_in           !< Stark recipe value, for linelist_out.txt
+    logical, intent(in) :: unsold            !< Unsold van der Waals broadening
+    integer, intent(in) :: lev_i             !< lower level of the model atom
+    integer, intent(in) :: lev_j             !< upper level of the model atom
+    integer, intent(in) :: itrans            !< target column in gamma_ij/gamma_ji
+    integer, intent(in) :: ipart             !< population group in lnbase (ion stage)
+    integer, intent(in) :: iso_out           !< isotope number for linelist_out.txt
     integer :: k
     !-----------------------------------------------------------------------------------
     call grow(ll, 1)
@@ -308,9 +320,16 @@ contains
   !=====================================================================================
   SUBROUTINE append_h_line(ll, llam0, nu0, lower_ev, loggf, gv_in, grad_in, gstk_in, &
                            n_lo, n_up)
-    type(linelist_type), intent(inout) :: ll
-    real(8), intent(in) :: llam0, nu0, lower_ev, loggf, gv_in, grad_in, gstk_in
-    integer, intent(in) :: n_lo, n_up
+    type(linelist_type), intent(inout) :: ll !< H I line list
+    real(8), intent(in) :: llam0             !< ln of the vacuum wavelength [AA]
+    real(8), intent(in) :: nu0               !< line frequency [Hz]
+    real(8), intent(in) :: lower_ev          !< lower level energy [eV]
+    real(8), intent(in) :: loggf             !< log gf
+    real(8), intent(in) :: gv_in             !< van der Waals recipe value, for linelist_out.txt
+    real(8), intent(in) :: grad_in           !< radiative recipe value, for linelist_out.txt
+    real(8), intent(in) :: gstk_in           !< Stark recipe value, for linelist_out.txt
+    integer, intent(in) :: n_lo              !< lower principal quantum number
+    integer, intent(in) :: n_up              !< upper principal quantum number
     integer :: k
     !-----------------------------------------------------------------------------------
     call grow(ll, 1)
@@ -347,7 +366,7 @@ contains
   !> llam0 ascending so the kernel's monotonic march is valid across isotope blocks.
   !=====================================================================================
   SUBROUTINE finalize_linelist(ll)
-    type(linelist_type), intent(inout) :: ll
+    type(linelist_type), intent(inout) :: ll !< line list to sort
     integer, allocatable :: idx(:)
     integer :: i
     integer, save :: it_argsort=0, it_permute=0
@@ -419,20 +438,10 @@ contains
   !=====================================================================================
   !> Opacity kernel: spatial-outer, line, frequency-inner; log-lambda march.
   !>
-  !>   chi, eta  : (nf, m1, m2, m3)  accumulated into (the "local" work arrays)
-  !>   cont      : (nf, m1, m2, m3)  continuum reference for the tolerance window
-  !>   logref    : (nf, m1, m2, m3)  log(tol*cont/voigt_peak); log-space tolerance pre-test
-  !>   llam      : (nf)              log(lambda) of the wavelength grid (globally ascending
-  !>                                 unless ll is windowed, then ascending per window)
-  !>   inv_df    : (m1,m2,m3)       inverse Doppler width c/v_th (this ll's isotope)
-  !>   vbar2     : (m1,m2,m3)       mean square velocity (this ll's isotope)
-  !>   lnbase    : (m1,m2,m3, np)    log(n) - log_part + log(idf) per
-  !>                                 population group (idf = this ll's isotope Doppler
-  !>                                 factor; bulk linelist: np=1; model atoms:
-  !>                                 one group per ion stage, selected by ll%ipart)
-  !>   per-cell  : vproj, e_kT, ne, tothi, stark_pe
-  !>   dep_mem   : (m1,m2,m3, nlevel) NLTE departure coefficients (or size 0 if LTE)
-  !>   do_nlte   : whether dep_mem applies to this particle
+  !> A bulk line list has one population group in lnbase; a model atom has one per ion
+  !> stage, selected by ll%ipart.  With i0 and i1, chi, eta, logref and the per-cell
+  !> arrays hold the cells i0:i1 of the first axis, while cont, one_m_eps, chi_scat and
+  !> dep_mem hold the whole patch.
   !>
   !> The wing cutoff is evaluated on the LTE line opacity (phi*Rij), so the profile
   !> extent does not depend on the departure coefficients (no flip-flop between
@@ -445,43 +454,47 @@ contains
   !> there, and add_opacity_equi centres its evaluation window on that end point, so the
   !> chunk receives wing beyond the line's extent. A spectrum then depends on where the
   !> chunks fall. With reaches the kernel instead
-  !>   * visits only lines whose [llam0 - reach, llam0 + reach], widened by the largest
-  !>     |vproj| and half a grid step, overlaps the chunk (select_lines);
-  !>   * evaluates a line whose shifted centre lies outside the chunk about its true
-  !>     centre. Its tolerance reference is tol times the continuum at the nearer chunk
-  !>     end, which differs from the one at the centre only by the continuum slope over
-  !>     the distance; the peak test and the analytic extent use it as for a line inside,
-  !>     and the extent is capped by the reach and clipped to the chunk. The cap only
-  !>     cuts wing below the tolerance level in the states the reach was recorded from.
-  !>     The accumulated-opacity floor is not applied: it depends on the lines
-  !>     processed before in the same chunk, and leaving it out can only widen the window;
-  !>   * treats a line centred inside the chunk exactly as without reaches.
+  !>  - visits only lines whose [llam0 - reach, llam0 + reach], widened by the largest
+  !>    |vproj| and half a grid step, overlaps the chunk (select_lines);
+  !>  - evaluates a line whose shifted centre lies outside the chunk about its true
+  !>    centre. Its tolerance reference is tol times the continuum at the nearer chunk
+  !>    end, which differs from the one at the centre only by the continuum slope over
+  !>    the distance; the peak test and the analytic extent use it as for a line inside,
+  !>    and the extent is capped by the reach and clipped to the chunk. The cap only
+  !>    cuts wing below the tolerance level in the states the reach was recorded from.
+  !>    The accumulated-opacity floor is not applied: it depends on the lines
+  !>    processed before in the same chunk, and leaving it out can only widen the window;
+  !>  - treats a line centred inside the chunk exactly as without reaches.
   !> A list without reaches keeps the whole-slice visit and the nearest-end treatment.
   !=====================================================================================
   SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
                          lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
                          one_m_eps, chi_scat, do_scat, i0, i1, llam_lines)
-    type(linelist_type), intent(inout) :: ll
-    real(dp), dimension(:),       intent(in)    :: llam
-    real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
-    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
-    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, ne, tothi, stark_pe
-    real(4),  dimension(:,:,:),   intent(in)    :: inv_df, vbar2
-    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
-    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
-    logical,  intent(in) :: do_nlte
-    ! line_scattering: precomputed stage-appropriate scattering fraction 1-eps
-    ! on the frequency grid, and the scattering-opacity accumulator (both
-    ! size-0 dummies with do_scat=.false. when disabled)
-    real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
-    real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
-    logical,  intent(in) :: do_scat
-    integer,  intent(in), optional :: i0, i1
-    ! llam_lines: log(lambda) range of the line centres this patch visits. The caller
-    ! sets it to the neighbourhood the selection applied to the patch's window when the
-    ! list was built. A disjoint multi-window list otherwise lets a foreign line clamp
-    ! onto this patch's edge through the forward march, so a window would not reproduce
-    ! its own run.
+    type(linelist_type), intent(inout) :: ll                 !< line list of one isotope; updates used, strength, reach
+    real(dp), dimension(:),       intent(in)    :: llam      !< ln wavelength [AA], ascending (per window if windowed)
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi       !< line opacity (nf,m1,m2,m3), accumulated
+    real(4),  dimension(:,:,:,:), intent(inout) :: eta       !< line emissivity (nf,m1,m2,m3), accumulated
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont      !< continuum opacity, the tolerance reference
+    real(4),  dimension(:,:,:,:), intent(in)    :: logref    !< ln(tol cont / voigt_peak), for the tolerance pre-test
+    real(4),  dimension(:,:,:),   intent(in)    :: vproj     !< Doppler shift of the line centres in ln(lambda)
+    real(4),  dimension(:,:,:),   intent(in)    :: e_kT      !< 1 eV / kT
+    real(4),  dimension(:,:,:),   intent(in)    :: ne        !< electron number density [cm^-3]
+    real(4),  dimension(:,:,:),   intent(in)    :: tothi     !< neutral H number density [cm^-3]
+    real(4),  dimension(:,:,:),   intent(in)    :: stark_pe  !< ne T^(1/6), for the T-dependent Stark recipes
+    real(4),  dimension(:,:,:),   intent(in)    :: inv_df    !< inverse Doppler width c/v_th of this isotope
+    real(4),  dimension(:,:,:),   intent(in)    :: vbar2     !< mean relative speed squared with H [cm^2 s^-2]
+    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase    !< ln n - ln U + ln inv_df per population group
+    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem   !< departure coefficients (m1,m2,m3,nlevel)
+    logical,  intent(in) :: do_nlte                          !< dep_mem applies to this particle
+    real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps !< scattering fraction 1-eps, size 0 without do_scat
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat  !< scattering opacity, accumulated; size 0 without do_scat
+    logical,  intent(in) :: do_scat                          !< split the line_scattering part off into chi_scat
+    integer,  intent(in), optional :: i0                     !< first cell of the first axis (default 1)
+    integer,  intent(in), optional :: i1                     !< last cell of the first axis (default m1)
+    !> log(lambda) range of the line centres this patch visits. The caller sets it to the
+    !> neighbourhood the selection applied to the patch's window when the list was built.
+    !> A disjoint multi-window list otherwise lets a foreign line clamp onto this patch's
+    !> edge through the forward march, so a window would not reproduce its own run.
     real(dp), intent(in), optional :: llam_lines(2)
     integer  :: l0, l1, nsel, isel
     integer, allocatable :: sel(:)
@@ -709,7 +722,7 @@ contains
   !=====================================================================================
   !> add_opacity variant for a grid that is EQUIDISTANT in log(lambda) (constant-R grid;
   !> caller dispatches on spectrum%equidistant). Same physics as add_opacity, but the
-  !> nearest grid index and both wing limits are pure arithmetic -- no forward march and
+  !> nearest grid index and both wing limits are pure arithmetic: no forward march and
   !> no bisection are needed, because the grid spacing dllam is constant. qlg_bot_line_sweep
   !> sizes each line's window and sweeps it in one call, in grid steps.
   !> Windowed (per-line ll%iws/iwe) mode is not supported here.
@@ -717,26 +730,28 @@ contains
   SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, &
                               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
                               one_m_eps, chi_scat, do_scat, i0, i1, llam_lines)
-    type(linelist_type), intent(inout) :: ll
-    real(dp), dimension(:),       intent(in)    :: llam
-    real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
-    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
-    real(4),  dimension(:,:,:),   intent(in)    :: vproj, e_kT, ne, tothi, stark_pe
-    real(4),  dimension(:,:,:),   intent(in)    :: inv_df, vbar2
-    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase
-    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
-    logical,  intent(in) :: do_nlte
-    ! line_scattering: see add_opacity
-    real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps
-    real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat
-    logical,  intent(in) :: do_scat
-    integer,  intent(in), optional :: i0, i1
-    ! llam_lines: log(lambda) range of the line centres this patch visits. The caller
-    ! sets it to the neighbourhood the selection applied to the patch's window when the
-    ! list was built. A disjoint multi-window list otherwise lets a foreign line clamp
-    ! onto this patch's edge through the forward march, so a window would not reproduce
-    ! its own run.
-    real(dp), intent(in), optional :: llam_lines(2)
+    type(linelist_type), intent(inout) :: ll                 !< line list of one isotope; updates used, strength, reach
+    real(dp), dimension(:),       intent(in)    :: llam      !< ln wavelength [AA], ascending (per window if windowed)
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi       !< line opacity (nf,m1,m2,m3), accumulated
+    real(4),  dimension(:,:,:,:), intent(inout) :: eta       !< line emissivity (nf,m1,m2,m3), accumulated
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont      !< continuum opacity, the tolerance reference
+    real(4),  dimension(:,:,:,:), intent(in)    :: logref    !< ln(tol cont / voigt_peak), for the tolerance pre-test
+    real(4),  dimension(:,:,:),   intent(in)    :: vproj     !< Doppler shift of the line centres in ln(lambda)
+    real(4),  dimension(:,:,:),   intent(in)    :: e_kT      !< 1 eV / kT
+    real(4),  dimension(:,:,:),   intent(in)    :: ne        !< electron number density [cm^-3]
+    real(4),  dimension(:,:,:),   intent(in)    :: tothi     !< neutral H number density [cm^-3]
+    real(4),  dimension(:,:,:),   intent(in)    :: stark_pe  !< ne T^(1/6), for the T-dependent Stark recipes
+    real(4),  dimension(:,:,:),   intent(in)    :: inv_df    !< inverse Doppler width c/v_th of this isotope
+    real(4),  dimension(:,:,:),   intent(in)    :: vbar2     !< mean relative speed squared with H [cm^2 s^-2]
+    real(4),  dimension(:,:,:,:), intent(in)    :: lnbase    !< ln n - ln U + ln inv_df per population group
+    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem   !< departure coefficients (m1,m2,m3,nlevel)
+    logical,  intent(in) :: do_nlte                          !< dep_mem applies to this particle
+    real(4),  dimension(:,:,:,:), intent(in)    :: one_m_eps !< scattering fraction 1-eps, size 0 without do_scat
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi_scat  !< scattering opacity, accumulated; size 0 without do_scat
+    logical,  intent(in) :: do_scat                          !< split the line_scattering part off into chi_scat
+    integer,  intent(in), optional :: i0                     !< first cell of the first axis (default 1)
+    integer,  intent(in), optional :: i1                     !< last cell of the first axis (default m1)
+    real(dp), intent(in), optional :: llam_lines(2)          !< ln(lambda) range of the line centres, see add_opacity
     integer  :: l0, l1, nsel, isel
     integer, allocatable :: sel(:)
     integer  :: f0_prev
@@ -946,43 +961,40 @@ contains
   END SUBROUTINE add_opacity_equi
 
   !=====================================================================================
-  !> Per-particle SoA opacity: relocated here (from composition_mod) is the isotope loop
-  !> that turns a particle's thermodynamic state into the kernel's population base and
-  !> Doppler width, then dispatches to add_opacity[_equi]. This is what lets linelist_mod
-  !> consume ion_mod's particle_type directly. The caller (composition_mod) still owns the
-  !> patch thermodynamic arrays, the departure-coefficient lookup and the lines' level
-  !> indices (departure_assign_levels), and passes the resolved dep_mem in (a size-1 zero
-  !> dep_mem and do_nlte=.false. in the LTE case).
-  !>
-  !>   ptc          : the ion or molecule (polymorphic); its ll(0:niso) are the per-isotope
-  !>                  SoA line lists (index 0 = main isotope)
-  !>   temp, vmic   : (m1,m2,m3) temperature and microturbulence (Doppler width inputs)
-  !>   e_kT,ne,tothi,stark_pe,vproj : (m1,m2,m3) per-cell kernel inputs
-  !>   chi, eta     : (nf,m1,m2,m3) accumulated line opacity/emissivity
-  !>   cont, logref : (nf,m1,m2,m3) continuum + log-space tolerance reference
-  !>   llam         : (nf) log(lambda) grid
-  !>   dep_mem      : (m1,m2,m3,nlevel) departure coefficients (dummy (.,.,.,1) when LTE)
+  !> Adds the line opacity of one particle: for each isotope it turns the particle's
+  !> thermodynamic state into the kernel's population base and Doppler width and calls
+  !> add_opacity, or add_opacity_equi on an equidistant grid. The caller (composition_mod)
+  !> owns the patch thermodynamic arrays, the departure-coefficient lookup and the lines'
+  !> level indices (departure_assign_levels), and passes the resolved dep_mem in (a size-1
+  !> zero dep_mem and do_nlte=.false. in the LTE case).
   !=====================================================================================
   SUBROUTINE add_particle_opacity(ptc, temp, vmic, llam, chi, eta, cont, logref, &
                                   vproj, e_kT, ne, tothi, stark_pe, dep_mem, &
                                   do_nlte, equidistant, one_m_eps, chi_scat, i0, i1, &
                                   population, population_scale, llam_lines)
-    class(particle_type), intent(inout) :: ptc
-    real(4),  dimension(:,:,:),   intent(in)    :: temp, vmic, vproj, e_kT, ne, tothi, stark_pe
-    real(dp), dimension(:),       intent(in)    :: llam
-    real(4),  dimension(:,:,:,:), intent(inout) :: chi, eta
-    real(4),  dimension(:,:,:,:), intent(in)    :: cont, logref
-    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem
-    logical,  intent(in) :: do_nlte, equidistant
-    ! line_scattering: stage-appropriate scattering fraction (already the slice
-    ! for this particle's stage) and the shared scattering-opacity accumulator
-    real(4), dimension(:,:,:,:), intent(in),    optional :: one_m_eps
-    real(4), dimension(:,:,:,:), intent(inout), optional :: chi_scat
-    integer, intent(in), optional :: i0, i1
-    ! passed straight to the kernels: this patch's line neighbourhood in log(lambda)
-    real(dp), intent(in), optional :: llam_lines(2)
-    real(dp), dimension(:,:,:), pointer, intent(in), optional :: population
-    real(dp), intent(in), optional :: population_scale
+    class(particle_type), intent(inout) :: ptc                              !< ion or molecule; ll(0:niso) holds its line lists
+    real(4),  dimension(:,:,:),   intent(in)    :: temp                     !< temperature [K]
+    real(4),  dimension(:,:,:),   intent(in)    :: vmic                     !< microturbulence [km/s]
+    real(4),  dimension(:,:,:),   intent(in)    :: vproj                    !< Doppler shift of the line centres in ln(lambda)
+    real(4),  dimension(:,:,:),   intent(in)    :: e_kT                     !< 1 eV / kT
+    real(4),  dimension(:,:,:),   intent(in)    :: ne                       !< electron number density [cm^-3]
+    real(4),  dimension(:,:,:),   intent(in)    :: tothi                    !< neutral H number density [cm^-3]
+    real(4),  dimension(:,:,:),   intent(in)    :: stark_pe                 !< ne T^(1/6), for the T-dependent Stark recipes
+    real(dp), dimension(:),       intent(in)    :: llam                     !< ln wavelength [AA], ascending
+    real(4),  dimension(:,:,:,:), intent(inout) :: chi                      !< line opacity (nf,m1,m2,m3), accumulated
+    real(4),  dimension(:,:,:,:), intent(inout) :: eta                      !< line emissivity (nf,m1,m2,m3), accumulated
+    real(4),  dimension(:,:,:,:), intent(in)    :: cont                     !< continuum opacity, the tolerance reference
+    real(4),  dimension(:,:,:,:), intent(in)    :: logref                   !< ln(tol cont / voigt_peak), for the tolerance pre-test
+    real(4),  dimension(:,:,:,:), intent(in)    :: dep_mem                  !< departure coefficients (m1,m2,m3,nlevel)
+    logical,  intent(in) :: do_nlte                                         !< dep_mem applies to this particle
+    logical,  intent(in) :: equidistant                                     !< llam is equidistant
+    real(4), dimension(:,:,:,:), intent(in),    optional :: one_m_eps       !< scattering fraction 1-eps of its stage
+    real(4), dimension(:,:,:,:), intent(inout), optional :: chi_scat        !< scattering opacity, accumulated
+    integer, intent(in), optional :: i0                                     !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1                                     !< last cell of the first axis (default size(ptc%n,1))
+    real(dp), intent(in), optional :: llam_lines(2)                         !< ln(lambda) range of the line centres, see add_opacity
+    real(dp), dimension(:,:,:), pointer, intent(in), optional :: population !< number density used instead of ptc%n
+    real(dp), intent(in), optional :: population_scale                      !< factor on ptc%n
     real(4),  allocatable :: idf3(:,:,:), vb3(:,:,:), lnbase(:,:,:,:)
     real(4)  :: eps_dummy(0,0,0,0), scat_dummy(0,0,0,0)
     real(dp) :: iso_frac
@@ -1001,7 +1013,7 @@ contains
 
     ! one kernel call per isotope: its own line list ll(kiso), Doppler width, mean
     ! velocity and isotope fraction (the fraction is applied here, per isotope, rather
-    ! than folded into each line's gpref -- see build_linelist)
+    ! than folded into each line's gpref; see gpref in line_types_mod)
     do kiso = 0, ubound(ptc%ll, 1)
       associate(sll => ptc%ll(kiso))
         ll_n = sll%nline
@@ -1132,7 +1144,7 @@ contains
 
 
   !=====================================================================================
-  ! linelist_out.txt writers -- one block per (species, isotope), in the same format
+  ! linelist_out.txt writers: one block per (species, isotope), in the same format
   ! the linelist reader (init_linelist) and tumult's LineList.from_tumult_format
   ! parse:  "'Fe I'" / "'iso' nlines" / records "lam_air evi loggf gvdw grad gstk i j
   ! strength reach". strength is a diagnostic both readers ignore. reach [Angstrom] is
@@ -1145,9 +1157,11 @@ contains
   !> constituent, molecule_mod%generate_isotopic_combinations), so 12CH reads 000012.
   !=====================================================================================
   SUBROUTINE write_ll_header(unit, id, iso, n, iso_digits)
-    integer, intent(in) :: unit, iso, n
-    character(len=*), intent(in) :: id
-    integer, intent(in), optional :: iso_digits
+    integer, intent(in) :: unit                 !< unit to write
+    integer, intent(in) :: iso                  !< isotope number, 0 for the main isotope
+    integer, intent(in) :: n                    !< number of records in the block
+    character(len=*), intent(in) :: id          !< species id, e.g. 'Fe I'
+    integer, intent(in), optional :: iso_digits !< digits of the isotope number
     character(len=32) :: fmt
     !-----------------------------------------------------------------------------------
     write(unit, "(A)") "'"//trim(id)//"'"
@@ -1156,10 +1170,21 @@ contains
     write(unit, fmt) "'", iso, "' ", n
   END SUBROUTINE write_ll_header
 
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
+  !> One linelist_out.txt record.
+  !=====================================================================================
   SUBROUTINE write_ll_record(unit, lam_air, evi, loggf, gvdw, grad, gstk, i, j, strength, reach)
-    integer, intent(in) :: unit, i, j
-    real(8), intent(in) :: lam_air, evi, loggf, gvdw, grad, gstk, strength, reach
+    integer, intent(in) :: unit     !< unit to write
+    integer, intent(in) :: i        !< lower level index
+    integer, intent(in) :: j        !< upper level index
+    real(8), intent(in) :: lam_air  !< air wavelength [AA]
+    real(8), intent(in) :: evi      !< lower level energy [eV]
+    real(8), intent(in) :: loggf    !< log gf
+    real(8), intent(in) :: gvdw     !< van der Waals recipe value
+    real(8), intent(in) :: grad     !< radiative recipe value
+    real(8), intent(in) :: gstk     !< Stark recipe value
+    real(8), intent(in) :: strength !< peak line opacity over the continuum
+    real(8), intent(in) :: reach    !< half-width of the evaluation window [AA]
     !-----------------------------------------------------------------------------------
     write(unit, "(F12.4, F10.4, F9.3, F14.6, 2(ES12.3), 2(I6), ES12.3, ES13.5)") &
       lam_air, evi, loggf, gvdw, grad, gstk, i, j, strength, reach
@@ -1172,8 +1197,8 @@ contains
   !> copies assigned.
   !=====================================================================================
   SUBROUTINE merge_ll_diag(dst, src)
-    type(linelist_type), intent(inout) :: dst
-    type(linelist_type), intent(in) :: src
+    type(linelist_type), intent(inout) :: dst !< line list the diagnostics are merged into
+    type(linelist_type), intent(in) :: src    !< copy of dst
     integer :: n
     !-----------------------------------------------------------------------------------
     n = dst%nline
@@ -1194,11 +1219,11 @@ contains
   !> (0 = main, k = isotope iso_values(k)).
   !=====================================================================================
   SUBROUTINE print_ll_particle(unit, id, iso_values, ll, iso_digits)
-    integer,             intent(in) :: unit
-    character(len=*),    intent(in) :: id
-    integer,             intent(in) :: iso_values(:)
-    type(linelist_type), intent(in) :: ll(0:)
-    integer, intent(in), optional   :: iso_digits
+    integer,             intent(in) :: unit          !< unit to write
+    character(len=*),    intent(in) :: id            !< species id, e.g. 'Fe I'
+    integer,             intent(in) :: iso_values(:) !< isotope numbers of ll(1:)
+    type(linelist_type), intent(in) :: ll(0:)        !< line lists per isotope, 0 the main one
+    integer, intent(in), optional   :: iso_digits    !< digits of the isotope numbers
     integer :: l, kiso, isoval, n
     !-----------------------------------------------------------------------------------
     do kiso=0, ubound(ll,1)
@@ -1232,9 +1257,10 @@ contains
   !> block is a self-consistent input linelist for that species.
   !=====================================================================================
   SUBROUTINE print_ll_atom(unit, ll, ids, s0)
-    integer,             intent(in) :: unit, s0
-    character(len=*),    intent(in) :: ids(:)
-    type(linelist_type), intent(in) :: ll
+    integer,             intent(in) :: unit   !< unit to write
+    integer,             intent(in) :: s0     !< ion stage of ids(1)
+    character(len=*),    intent(in) :: ids(:) !< species id of each ion stage
+    type(linelist_type), intent(in) :: ll     !< line list of the model atom
     integer :: l, s, n, k, nv, iv, isoval
     integer :: ivals(64)
     !-----------------------------------------------------------------------------------
@@ -1613,8 +1639,8 @@ contains
   !> so per-line append_line calls do not reallocate
   !=====================================================================================
   SUBROUTINE reserve_linelist(ll, extra)
-    type(linelist_type), intent(inout) :: ll
-    integer, intent(in) :: extra
+    type(linelist_type), intent(inout) :: ll !< line list
+    integer, intent(in) :: extra             !< number of lines to make room for
     call grow(ll, extra)
     call grow_ext(ll, extra)
   END SUBROUTINE reserve_linelist
@@ -1823,8 +1849,8 @@ contains
   !> An interval includes its boundaries (closed interval [blue, red]).
   !=====================================================================================
   PURE FUNCTION in_any_interval(lam_vac, intervals) result(in_interval)
-    real(dp), intent(in) :: lam_vac
-    type(interval_t), intent(in) :: intervals(:)
+    real(dp), intent(in) :: lam_vac              !< vacuum wavelength [AA]
+    type(interval_t), intent(in) :: intervals(:) !< sorted, disjoint intervals
     logical :: in_interval
     integer :: lo, hi, mid
     !-----------------------------------------------------------------------------------

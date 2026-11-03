@@ -1,3 +1,7 @@
+!===============================================================================
+!> Molecules of HOP's equation of state and the molecular and ionisation
+!> equilibrium.
+!===============================================================================
 MODULE molecule_mod
   USE hop_env_mod, only: os, trace
   USE console_mod
@@ -7,6 +11,10 @@ MODULE molecule_mod
   USE handyfuncs_mod
   implicit none
 
+  !===============================================================================
+  !> A molecule with its constituent ions, dissociation energies and equilibrium
+  !> constant.
+  !===============================================================================
   type, extends(particle_type) :: molec_type
     integer :: nions
     class(ion_pointer_t), allocatable :: ions(:)
@@ -43,15 +51,19 @@ MODULE molecule_mod
     procedure :: canonical_iso
   end type
 
-  logical, public :: irwin_dis=.true.
+  logical, public :: irwin_dis=.true. !< equilibrium constants from the partition functions, not the dc polynomial
 
 contains
 
   !===============================================================================
+  !> Reads the next molecule record from lunit: the header (id, defix, the number of
+  !> Irwin coefficients and optionally g_nuclear, irwin_tmin and xion), then the
+  !> dissociation energies, the dc polynomial and the Irwin coefficients.
+  !===============================================================================
   SUBROUTINE read_molec_data(self, lunit, iostat)
     class(molec_type), intent(inout) :: self
-    integer, intent(in) :: lunit
-    integer, intent(out) :: iostat
+    integer, intent(in) :: lunit   !< unit to read
+    integer, intent(out) :: iostat !< iostat of the header read, nonzero at the end of the data
     integer :: defix, n_irwin, n_de, ios
     character(256) :: line
     !---------------------------------------------------------------------------
@@ -103,8 +115,10 @@ contains
   !===============================================================================
   SUBROUTINE get_dis(self, temp, teta, e_kT, dis)
     class(molec_type), intent(in) :: self
-    real(dp), intent(in), dimension(:,:,:) :: temp, teta, e_kT
-    real(dp), intent(out), dimension(:,:,:) :: dis
+    real(dp), intent(in), dimension(:,:,:) :: temp !< temperature [K]
+    real(dp), intent(in), dimension(:,:,:) :: teta !< 5040 K / T
+    real(dp), intent(in), dimension(:,:,:) :: e_kT !< 1 eV / kT
+    real(dp), intent(out), dimension(:,:,:) :: dis !< ln of the equilibrium constant
     real(dp) :: awgt15, scalar, const_term
     real(dp), parameter :: const_base = log((2*PI*UU/HH**2)**(-1.5) * BK**(-2.5))
     integer :: j, nm1
@@ -134,10 +148,16 @@ contains
   END SUBROUTINE get_dis
 
   !===============================================================================
+  !> Energy of the molecules per volume relative to their free atoms [eV cm^-3]: -n
+  !> times the dissociation energy less the rotational and vibrational energy, with
+  !> the lowered H ionisation energy added for molecules that contain hydrogen.
+  !===============================================================================
   FUNCTION calc_e(self, teta, temp, dxi) result(e)
     class(molec_type), intent(in) :: self
+    real(dp), dimension(:,:,:) :: teta !< 5040 K / T
+    real(dp), dimension(:,:,:) :: temp !< temperature [K]
+    real(dp), dimension(:,:,:) :: dxi  !< ionisation energy lowering per unit charge [eV]
     class(ion_type), pointer :: ion
-    real(dp), dimension(:,:,:) :: teta, temp, dxi
     real(dp), dimension(:,:,:), allocatable :: de, e
     integer :: i
     !---------------------------------------------------------------------------
@@ -173,38 +193,36 @@ contains
   !> dissociation constants are all constants.  With yi = ln f_i for the
   !> neutral fraction of each solve element and ye = ln fe, every molecular
   !> fraction is an explicit function of the unknowns,
-  !>
-  !>   ln f_mol = C_m + sum_i nu_im*yi - (n_m - 1)*ye ,
-  !>
-  !> where the per-cell constant C_m absorbs the dissociation constant, the
-  !> electron pressure, and the Saha factors of charged constituents (H2+).
-  !> The nonlinear system is number conservation for each solve element plus
-  !> charge conservation,
-  !>
-  !>   F_i = f_i*phi_i + sum_m nu_im*f_mol - A_i           = 0
-  !>   F_e = xnecno + sum_i q_i*f_i + sum_m q_m*f_mol - fe = 0 ,
-  !>
-  !> with phi_i (total nuclei per neutral) and q_i (electrons per neutral)
-  !> given by the fixed Saha ladder of element i.  It is solved by a damped
-  !> Newton method in log space: analytic Jacobian, step capped in ln f,
-  !> Armijo backtracking on |F|^2.  One iteration costs nions+nmol+1
-  !> exponentials plus an (nions+1)^2 linear solve; there are no logarithms,
-  !> pointer walks, 3D-array accesses, or array-syntax statements inside the
-  !> iteration, and the working set is O((nions+1)^2) scalars.
+  !> ln f_mol = C_m + sum_i nu_im yi - (n_m - 1) ye, where the per-cell constant C_m
+  !> absorbs the dissociation constant, the electron pressure, and the Saha factors
+  !> of charged constituents (H2+).  The nonlinear system is number conservation for
+  !> each solve element, F_i = f_i phi_i + sum_m nu_im f_mol - A_i = 0, plus charge
+  !> conservation, F_e = xnecno + sum_i q_i f_i + sum_m q_m f_mol - fe = 0, with
+  !> phi_i (total nuclei per neutral) and q_i (electrons per neutral) given by the
+  !> fixed Saha ladder of element i.  It is solved by a damped Newton method in log
+  !> space: analytic Jacobian, step capped in ln f, Armijo backtracking on |F|^2.
   !=========================================================================
   SUBROUTINE molecular_equilibrium(molecules, ions, tmolim, temp, teta, e_kT, &
                                    pe, xnecno, fe, ysave, same_state)
-    class(molec_type), target, intent(inout) :: molecules(:)
-    type(ion_pointer_t), intent(in) :: ions(:)
-    real(dp), intent(in) :: tmolim
-    real(dp), dimension(:,:,:), intent(in) :: temp, teta, e_kT, pe, xnecno
-    real(dp), dimension(:,:,:), intent(inout) :: fe
-    ! caller-owned per-cell seeds, carried across calls: the ne iteration
-    ! re-solves the same cells at nearly the same state, so each cell's own
-    ! previous solution is the best possible Newton start
+    ! One iteration costs nions+nmol+1 exponentials plus an (nions+1)^2 linear
+    ! solve; there are no logarithms, pointer walks, 3D-array accesses, or
+    ! array-syntax statements inside the iteration, and the working set is
+    ! O((nions+1)^2) scalars.
+    class(molec_type), target, intent(inout) :: molecules(:) !< molecules, whose f, n, part and dis are set
+    type(ion_pointer_t), intent(in) :: ions(:)               !< neutral root ion of each molecule-forming element
+    real(dp), intent(in) :: tmolim                           !< temperature [K] from which on there are no molecules
+    real(dp), dimension(:,:,:), intent(in) :: temp           !< temperature [K]
+    real(dp), dimension(:,:,:), intent(in) :: teta           !< 5040 K / T
+    real(dp), dimension(:,:,:), intent(in) :: e_kT           !< 1 eV / kT
+    real(dp), dimension(:,:,:), intent(in) :: pe             !< electron pressure [dyn cm^-2]
+    real(dp), dimension(:,:,:), intent(in) :: xnecno         !< electrons per H nucleus from elements without molecules
+    real(dp), dimension(:,:,:), intent(inout) :: fe          !< electrons per H nucleus
+    !> caller-owned per-cell seeds, carried across calls: the ne iteration
+    !> re-solves the same cells at nearly the same state, so each cell's own
+    !> previous solution is the best possible Newton start
     real(dp), dimension(:,:,:,:), allocatable, intent(inout), optional :: ysave
-    ! temp (and hence teta, e_kT) is identical to the previous call's, so
-    ! temp-only setup (mol%part, mol%dis) may be reused where valid
+    !> temp (and hence teta, e_kT) is identical to the previous call's, so
+    !> temp-only setup (mol%part, mol%dis) may be reused where valid
     logical, intent(in), optional :: same_state
     class(molec_type), pointer :: mol
     type(ion_type), pointer :: pt
@@ -1142,9 +1160,13 @@ contains
   END SUBROUTINE molecular_equilibrium
 
   !===============================================================================
+  !> Allocates the arrays f, n, dis and part with shape m, unless they have it
+  !> already, and registers their memory.
+  !===============================================================================
   SUBROUTINE allocate_molec (self, m)
     class(molec_type) :: self
-    integer :: m(3), mold(3), s, p
+    integer :: m(3) !< array shape
+    integer :: mold(3), s, p
     !---------------------------------------------------------------------------
     if (all(m == self%m)) return
     self%m = m
@@ -1168,6 +1190,9 @@ contains
     self%allocated = .true.
   END SUBROUTINE allocate_molec
 
+  !===============================================================================
+  !> Deallocates f and dis, and n and part unless the opacity or the line list still
+  !> needs them.
   !===============================================================================
   SUBROUTINE deallocate_molec (self)
     class(molec_type) :: self
@@ -1273,7 +1298,7 @@ contains
   !===============================================================================
   INTEGER FUNCTION canonical_iso(self, iso) result(label)
     class(molec_type), intent(in) :: self
-    integer, intent(in) :: iso
+    integer, intent(in) :: iso !< label as the line-list header gives it
     integer, allocatable :: order(:), mass(:)
     integer :: i, rest
     !---------------------------------------------------------------------------
