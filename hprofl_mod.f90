@@ -790,8 +790,8 @@ contains
   END SUBROUTINE prepare_hydrogen_damping
 
   !===============================================================================
-  !> Linear interpolation in arr, tabulated from x0 in steps of dx, at newx; below x0
-  !> it extrapolates the first interval.
+  !> Linear interpolation in arr, tabulated from x0 in steps of dx, at newx; outside the
+  !> table it extrapolates the end interval.
   !===============================================================================
   FUNCTION lyman_interp(arr, dx, x0, newx) result(out)
     real(8), intent(in), dimension(:) :: arr !< table
