@@ -1,8 +1,16 @@
+!===============================================================================
+!> Bound-bound transitions: the transition type, its Einstein coefficients and the
+!> line broadening constants shared by model-atom and line-list lines.
+!===============================================================================
 MODULE bbtrans_mod
   USE prec_mod
   USE const_mod
   implicit none
 
+  !===============================================================================
+  !> A bound-bound transition of a model atom: its rest frequency and wavelengths,
+  !> Einstein coefficients and line broadening constants.
+  !===============================================================================
   type :: bbtrans_type
     real(dp) :: nu0
     real(dp) :: lam0
@@ -11,9 +19,7 @@ MODULE bbtrans_mod
     real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 !< line broadening (damping) constants
     real(dp) :: grad_in=0, gstk_in=0, gv_in=0               !< input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
-    real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, Bij is the
-    !> transition from the lower to the upper
-    !> level
+    real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, ij from the lower to the upper level
     logical :: active=.true., unsold
     integer :: i=0 !< lower level
     integer :: j=0 !< upper level
@@ -26,7 +32,9 @@ MODULE bbtrans_mod
     procedure :: deactivate
   end type
 
-  logical, public :: disable_stk=.false., disable_vdw=.false., disable_rad=.false.
+  logical, public :: disable_stk=.false. !< no Stark broadening
+  logical, public :: disable_vdw=.false. !< no van der Waals broadening
+  logical, public :: disable_rad=.false. !< no radiative damping
   !> Molecular lines may take damping estimates from the molecule's ionisation energy:
   !> the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
   !> and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
@@ -34,9 +42,11 @@ MODULE bbtrans_mod
   !> (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
   !> apply none of these to molecules, and their presets switch them off.
   logical, public :: molecule_damping_estimates=.true.
-  real(4), public, save :: tolerance=1e-4
+  real(4), public, save :: tolerance=1e-4 !< line opacity below tolerance times the continuum is left out
+  !> lines below max(tolerance, line_reject_frac)*tolerance times the line opacity
+  !> already accumulated are left out
   real(4), public, save :: line_reject_frac=0.0
-  real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3
+  real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3 !< 8 pi^2 e^2/(m_e c^3); f_conv gf nu0^2 = g_u A_ul [s^-1]
 
 contains
 
@@ -58,6 +68,9 @@ contains
   ! qlg_bot_phi / qlg_bot_profile for single points).
   !------------------------------------------------------------------------------------
 
+  !====================================================================================
+  !> Damping parameter adamp = Gamma/(4 pi nu0) of the line in each cell, the sum of its
+  !> van der Waals, Stark and radiative damping.
   !====================================================================================
   PURE ELEMENTAL SUBROUTINE line_damping (self, adamp, ne, tothi, vbar2, stark_pe, unsold)
     class(bbtrans_type), intent(in)  :: self
@@ -84,10 +97,8 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
-  !> Line broadening constants for model-atom lines (the type-bound forms) and
-  !> line-list lines (linelist_mod%build_linelist, which calls the scalar forms
-  !> directly).  All results are scaled by over_4pi/nu0.
-  !------------------------------------------------------------------------------------
+  !> Sets the line's Stark constant gstk with prepare_stark.
+  !====================================================================================
   PURE ELEMENTAL SUBROUTINE bb_prepare_Stark(self, gstk, j, cnt_ev, is_mol)
     class(bbtrans_type), intent(inout)  :: self
     real(dp), intent(in) :: gstk, cnt_ev
@@ -97,6 +108,9 @@ contains
     call prepare_stark(self%gstk, gstk, self%nu0, self%lower_ev, j, cnt_ev, is_mol)
   END SUBROUTINE bb_prepare_Stark
 
+  !====================================================================================
+  !> Sets the line's radiative damping grad with prepare_radiative.
+  !====================================================================================
   PURE ELEMENTAL SUBROUTINE bb_prepare_Radiative(self, grad)
     class(bbtrans_type), intent(inout)  :: self
     real(dp), intent(in) :: grad
@@ -104,6 +118,9 @@ contains
     call prepare_radiative(self%grad, grad, self%nu0, self%loggf)
   END SUBROUTINE bb_prepare_Radiative
 
+  !====================================================================================
+  !> Sets the line's van der Waals constants gw1, gw2 and unsold with prepare_vanderwaals.
+  !====================================================================================
   PURE SUBROUTINE bb_prepare_VanderWaals(self, gvdw, lower_ion, cnt_ev, vbar2e4, is_mol)
     class(bbtrans_type), intent(inout)  :: self
     integer, intent(in) :: lower_ion
@@ -114,6 +131,9 @@ contains
                              self%lower_ev, lower_ion, cnt_ev, vbar2e4, is_mol)
   END SUBROUTINE bb_prepare_VanderWaals
 
+  !====================================================================================
+  !> Radiative damping of a line, scaled by 1/(4 pi nu0): grad_in [s^-1], or for
+  !> grad_in = 0 the value g_u A_ul = 8 pi^2 e^2 nu0^2 gf/(m_e c^3) that Korg uses.
   !====================================================================================
   PURE SUBROUTINE prepare_radiative(grad, grad_in, nu0, loggf)
     real(dp), intent(out) :: grad
@@ -132,6 +152,19 @@ contains
     if (disable_rad) grad = 0
   END SUBROUTINE prepare_radiative
 
+  !====================================================================================
+  !> Stark broadening constant of a line, scaled by 1/(4 pi nu0).  gstk_in selects
+  !> the recipe, and a negative result marks the T-dependent ones for line_damping:
+  !>
+  !> | gstk_in  | meaning                                                                         |
+  !> |----------|---------------------------------------------------------------------------------|
+  !> | < -10    | log10 C4 as in SIU, converted with Gray (2005), eqs. 11.26-11.27                |
+  !> | -10 to 0 | log10 gamma_4/n_e at 10^4 K, scaled as T^(1/6)                                  |
+  !> | 0        | Cowley (1971) estimate at 10^4 K, none if the upper level is at or above cnt_ev |
+  !> | > 0      | gamma_4/n_e as given                                                            |
+  !>
+  !> [Gray (2005)](https://ui.adsabs.harvard.edu/abs/2005oasp.book.....G),
+  !> [Cowley (1971)](https://ui.adsabs.harvard.edu/abs/1971Obs....91..139C)
   !====================================================================================
   PURE SUBROUTINE prepare_stark(gstk, gstk_in, nu0, lower_ev, j, cnt_ev, is_mol)
     real(dp), intent(out) :: gstk
@@ -172,6 +205,20 @@ contains
     if (disable_stk) gstk = 0
   END SUBROUTINE prepare_stark
 
+  !====================================================================================
+  !> Van der Waals broadening constants of a line: gw1, scaled by 1/(4 pi nu0), and
+  !> the velocity exponent gw2; unsold marks the recipes that line_damping evaluates
+  !> with the Unsold temperature dependence.  gvdw selects the recipe:
+  !>
+  !> | gvdw     | meaning                                                                              |
+  !> |----------|--------------------------------------------------------------------------------------|
+  !> | >= 20    | ABO cross section [a0^2] at 10^4 m/s (integer part) and velocity exponent (fraction) |
+  !> | < -20    | log10 C6 as in SIU                                                                   |
+  !> | -20 to 0 | log10 gamma_6/n_H at 10^4 K (Turbospectrum 'W')                                      |
+  !> | 0        | none                                                                                 |
+  !> | 0 to 20  | Unsold estimate times gvdw, none if the upper level is at or above cnt_ev            |
+  !>
+  !> Molecular lines take the recipes below 20 only with molecule_damping_estimates.
   !====================================================================================
   PURE SUBROUTINE prepare_vanderwaals(gw1, gw2, unsold, gvdw, nu0, lower_ev, lower_ion, &
                                       cnt_ev, vbar2e4, is_mol)
@@ -233,6 +280,8 @@ contains
   !------------------------------------------------------------------------------------
 
   
+  !====================================================================================
+  !> Marks the line inactive.
   !====================================================================================
   PURE SUBROUTINE deactivate(self)
     class(bbtrans_type), intent(inout) :: self
