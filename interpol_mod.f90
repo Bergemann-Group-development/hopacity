@@ -342,7 +342,8 @@ contains
         end do
         i = min(i, n-1)
       else
-        i = searchsorted(xx, newx(j), outbounds_ok=.true.)
+        ! outside the nodes, extrapolate from the end interval as the sorted scan does
+        i = min(max(searchsorted(xx, newx(j), outbounds_ok=.true.), 1), n-1)
       endif
 
       ! Calculate the interpolation parameter
@@ -420,7 +421,8 @@ contains
         end do
         i = min(i, n-1)
       else
-        i = searchsorted(xx, newx(j), outbounds_ok=.true.)
+        ! outside the nodes, extrapolate from the end interval as the sorted scan does
+        i = min(max(searchsorted(xx, newx(j), outbounds_ok=.true.), 1), n-1)
       endif
 
       ! Calculate the interpolation parameter
