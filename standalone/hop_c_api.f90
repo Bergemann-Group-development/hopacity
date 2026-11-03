@@ -113,6 +113,7 @@ CONTAINS
   ! Error reporting
   !=============================================================================
   !> Record msg and return code, so every failure path is one call.
+  !=============================================================================
   SUBROUTINE fail(msg, code, status)
     character(len=*), intent(in) :: msg
     integer(c_int), intent(in)   :: code
@@ -122,7 +123,9 @@ CONTAINS
     status = code
   END SUBROUTINE fail
 
+  !=============================================================================
   !> Copy a Fortran string into a caller-provided C buffer, NUL-terminated.
+  !=============================================================================
   SUBROUTINE f2c_string(fs, buf, buflen, status)
     character(len=*), intent(in) :: fs
     character(kind=c_char), intent(out) :: buf(*)
@@ -146,9 +149,11 @@ CONTAINS
     buf(n+1) = c_null_char
   END SUBROUTINE f2c_string
 
+  !=============================================================================
   !> Message for the most recent nonzero status ('' if none).  Always succeeds
   !> unless the buffer is too small, in which case the text is truncated and the
   !> status is 5.
+  !=============================================================================
   FUNCTION hop_last_error(buf, buflen) RESULT(status) &
            BIND(c, name='hop_last_error')
     character(kind=c_char), intent(out) :: buf(*)
@@ -158,8 +163,10 @@ CONTAINS
     call f2c_string(last_error, buf, buflen, status)
   END FUNCTION hop_last_error
 
+  !=============================================================================
   !> Space-separated list of the names hop_set_option accepts, so a wrapper can
   !> report or validate them instead of hardcoding its own copy.
+  !=============================================================================
   FUNCTION hop_option_names(buf, buflen) RESULT(status) &
            BIND(c, name='hop_option_names')
     character(kind=c_char), intent(out) :: buf(*)
@@ -209,6 +216,7 @@ CONTAINS
   !> span in the file.
   !>
   !> Model-atom transitions are not included: a standalone HOP state has none.
+  !=============================================================================
   FUNCTION hop_write_linelist(path) RESULT(status) BIND(c, name='hop_write_linelist')
     character(kind=c_char), intent(in) :: path(*)
     integer(c_int) :: status
@@ -388,6 +396,7 @@ CONTAINS
   !> A subroutine rather than a function with a deferred-length result: built with
   !> -fno-realloc-lhs, gfortran hands such a result to callers in this module with
   !> length 0.
+  !=============================================================================
   SUBROUTINE c2f_string(cs, fs)
     character(kind=c_char), intent(in) :: cs(*)
     character(len=:), allocatable, intent(out) :: fs
@@ -528,6 +537,7 @@ CONTAINS
   !=============================================================================
   !> Parse helpers.  Each leaves status alone on success and sets 4 on a value that
   !> will not read as the option's type, so the caller can report which it was.
+  !=============================================================================
   SUBROUTINE parse_real(s, out, status)
     character(len=*), intent(in) :: s
     real(dp), intent(out) :: out
@@ -548,7 +558,9 @@ CONTAINS
     if (ios /= 0) call fail("cannot read '" // trim(s) // "' as an integer", 4, status)
   END SUBROUTINE parse_int
 
+  !=============================================================================
   !> Accepts what a namelist and a Python bool both stringify to.
+  !=============================================================================
   SUBROUTINE parse_logical(s, out, status)
     character(len=*), intent(in) :: s
     logical, intent(out) :: out
@@ -1057,8 +1069,10 @@ CONTAINS
     !$omp end parallel do
 
   CONTAINS
+    !=============================================================================
     !> Cell range [i0, i1] of chunk w of nch over n cells, balanced to +-1 cell.
     !> Empty (i1 < i0) when there are fewer cells than chunks.
+    !=============================================================================
     PURE SUBROUTINE chunk_range(w, nch, n, i0, i1)
       integer, intent(in)  :: w, nch, n
       integer, intent(out) :: i0, i1
@@ -1071,6 +1085,7 @@ CONTAINS
     END SUBROUTINE chunk_range
   END FUNCTION hop_opacity_omp
 
+  !=============================================================================
   !> Read a line list keeping only the lines inside a set of windows, rather than
   !> everything between the first and last wavelength.  hop_init_linelist masks on
   !> [lam(1)-dlam, lam(nlam)+dlam], so a request for fifteen 2.5 A windows spread
@@ -1081,6 +1096,7 @@ CONTAINS
   !>
   !> blue_vac/red_vac are vacuum Angstrom, like interval_t itself; the reader masks
   !> on the vacuum line centre.
+  !=============================================================================
   FUNCTION hop_init_linelist_windows(linelist_file, dlam, nwin, blue_vac, red_vac) &
            RESULT(status) BIND(c, name='hop_init_linelist_windows')
     character(kind=c_char), intent(in) :: linelist_file(*)
@@ -1199,6 +1215,7 @@ CONTAINS
   !> take T and n_e from its .aux file (both ignored by the other formats).
   !> dims returns nx, ny, nz, the ghost zones, has_pe, has_rho, has_feh and the
   !> number of abundances the file carries (92 for MARCS, else 0).
+  !=============================================================================
   FUNCTION hop_atmos_read(atmos_format, atmos_file, snap, use_aux, dims) RESULT(status) &
            BIND(c, name='hop_atmos_read')
     character(kind=c_char), intent(in) :: atmos_format(*), atmos_file(*)
@@ -1233,9 +1250,11 @@ CONTAINS
     end associate
   END FUNCTION hop_atmos_read
 
+  !=============================================================================
   !> One field of the parsed atmosphere as float32, x fastest: ltemp, lpe, lrho
   !> (natural logs, cgs), vx, vy, vz [cm/s], vmic [km/s] (nx*ny*nz values), xx, yy,
   !> zz (the axes), feh (1) or abund (log eps for Z=1..92, MARCS only).
+  !=============================================================================
   FUNCTION hop_atmos_get(name, n, out) RESULT(status) BIND(c, name='hop_atmos_get')
     character(kind=c_char), intent(in) :: name(*)
     integer(c_int), value :: n

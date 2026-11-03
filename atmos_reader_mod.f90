@@ -711,6 +711,7 @@ CONTAINS
 
   !=============================================================================
   !> f is centered on (i-.5,j,k), fifth order stagger
+  !=============================================================================
   SUBROUTINE xup_set (f, fp)
     real(4), dimension(:,:,:), intent(in) :: f
     real(4), dimension(:,:,:), intent(out) :: fp

@@ -392,10 +392,11 @@ CONTAINS
     close(u)
   END SUBROUTINE write_provenance
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> A NUL-terminated C string as the character array the BIND(C) dummies declare.
   !> A scalar result would rely on sequence association, which ifort rejects for a
   !> function result (error #8284).
+  !=============================================================================
   FUNCTION cstr(s) RESULT(c)
     character(len=*), intent(in) :: s
     character(kind=c_char) :: c(len_trim(s)+1)

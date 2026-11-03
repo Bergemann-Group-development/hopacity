@@ -321,9 +321,11 @@ contains
     call trace%end(itimer)
 
   contains
+    !===============================================================================
     !> separable tensor-product cubic Hermite collapse (wavelength -> temp ->
     !> log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
     !> coefficients; one call per table component
+    !===============================================================================
     real(4) function collapse(val, dl, dt, de) result(kap)
       real(4), dimension(:,:,:), intent(in) :: val, dl, dt, de
       real(4) :: v00, v10, v01, v11, gt00, gt10, gt01, gt11
@@ -443,9 +445,11 @@ contains
     call trace%end(itimer)
 
   contains
+    !===============================================================================
     !> separable tensor-product cubic Hermite collapse (wavelength -> temp ->
     !> log ne) at the corner (k,it,je), reusing the host's precomputed Hermite
     !> coefficients; one call per table component
+    !===============================================================================
     real(4) function collapse(val, dl, dt, de) result(kap)
       real(4), dimension(:,:,:), intent(in) :: val, dl, dt, de
       real(4) :: cv00, cv10, cv01, cv11, cgt00, cgt10, cgt01, cgt11

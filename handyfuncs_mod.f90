@@ -259,6 +259,7 @@ contains
   !> sites (spectrum_mod%sort, composition_mod) are one-time setup sorts, not hot
   !> loops.  The middle-element pivot keeps the already-sorted and
   !> concatenated-sorted-runs inputs they pass off the O(n^2) path.
+  !===============================================================================
   RECURSIVE SUBROUTINE sort_asc(a)
     real(8), intent(inout) :: a(:)
     !-----------------------------------------------------------------------------
@@ -307,6 +308,7 @@ contains
 
   !====================================================================================
   !> converts the first ss characters of string to uppercase and returns them as a new string.
+  !====================================================================================
   PURE FUNCTION uppercase(string)
     implicit none
     character(len=*),intent(in) :: string

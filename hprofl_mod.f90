@@ -292,10 +292,12 @@ contains
 
   contains
 
+    !===============================================================================
     !>  The profile at frequency index f, detuning q. Past qt every fine-structure
     !>  component is on the VCS power-law tail (see vcs_fine), evaluated at
     !>  ln|q - dqbar| = ln|d| + ln(1 - vp/d). |vp/d| < 1e-2 there, so the series to
     !>  second order leaves an error below 1e-6 in ln|q|.
+    !===============================================================================
     FUNCTION profile_at (f, q) result(phi)
       integer, intent(in) :: f
       real(8), intent(in) :: q
@@ -920,15 +922,13 @@ contains
 
 
   !===============================================================================
-  !  Calculates S(BETA,P) for Hydrogen lines ie. the Holtsmark profile for
-  !  quasistatic charged particles.  The alpha and beta lines of the first
-  !  three series are explicitly included. All other cases use the H18
-  !  profile. Profiles are normalised to full oscillator strength. Method
-  !  is based on Griem (1960, ApJ 132, 883).
-
-  !  By Deane Peterson and Bob Kurucz.
-
-  !>  STORAGE FOR CORRECTIONS (P,BETA,IND),(P,IND),(P,IND)
+  !> Calculates S(BETA,P) for Hydrogen lines ie. the Holtsmark profile for
+  !> quasistatic charged particles.  The alpha and beta lines of the first
+  !> three series are explicitly included. All other cases use the H18
+  !> profile. Profiles are normalised to full oscillator strength. Method
+  !> is based on [Griem (1960)](https://ui.adsabs.harvard.edu/abs/1960ApJ...132..883G).
+  !>
+  !> Written by Deane Peterson and Bob Kurucz.
   !===============================================================================
   FUNCTION holtsmark(b,p,n,m)
     real(8), intent(in) :: b
@@ -936,6 +936,7 @@ contains
     integer, intent(in) :: n
     integer, intent(in) :: m
     real                :: holtsmark
+    ! storage for corrections (P,BETA,IND),(P,IND),(P,IND)
     real :: propbm(5,15,7),c(5,7),d(5,7), pp(5),beta(15)
 
     real(8) :: wtbm,wtbp,wtpp,sb,dd,cc,wt,pr2,cbm,cbp,wtpm,corr,&

@@ -623,22 +623,28 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   endif
   close(u)
 CONTAINS
+  !===============================================================================
   !> edit descriptor of the index column of a table with n rows
+  !===============================================================================
   SUBROUTINE set_index (n)
     integer, intent(in) :: n
     write(idx, '(a,i0)') 'i', ndigits(n-1)
   END SUBROUTINE set_index
+  !===============================================================================
   !> name right-aligned over a field of width w after its separating blank
+  !===============================================================================
   FUNCTION title (name, w) result (s)
     character(len=*), intent(in) :: name
     integer, intent(in) :: w
     character(len=w+1) :: s
     s = repeat(' ', w+1-len(name))//name
   END FUNCTION title
+  !===============================================================================
   !> x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
   !> characters or wider when it needs more: positional for a decimal exponent
   !> -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
   !> after rounding to p digits.
+  !===============================================================================
   FUNCTION g_format (x, p, w) result (s)
     real(8), intent(in) :: x
     integer, intent(in) :: p, w
@@ -664,8 +670,10 @@ CONTAINS
     allocate(character(len=max(w, len_trim(t))) :: s)
     s = repeat(' ', len(s)-len_trim(t))//trim(t)
   END FUNCTION g_format
+  !===============================================================================
   !> a decimal number without the trailing zeros of its fraction, and without the point
   !> when nothing is left after it
+  !===============================================================================
   FUNCTION strip_zeros (t) result (u)
     character(len=*), intent(in) :: t
     character(len=len(t)) :: u

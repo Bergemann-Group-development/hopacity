@@ -1140,9 +1140,10 @@ contains
   ! tolerance times the continuum, maximised over the states the list was written from
   ! (ll%reach times the vacuum wavelength). init_linelist reads it back so a run can
   ! select lines by it (add_opacity); hydrogen lines record none and write 0.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   !> A molecule's isotopologue label is written with all iso_digits digits (three per
   !> constituent, molecule_mod%generate_isotopic_combinations), so 12CH reads 000012.
+  !=====================================================================================
   SUBROUTINE write_ll_header(unit, id, iso, n, iso_digits)
     integer, intent(in) :: unit, iso, n
     character(len=*), intent(in) :: id
@@ -1283,7 +1284,9 @@ contains
   ! --- small private helpers ---------------------------------------------------------
   !=====================================================================================
 
+  !=====================================================================================
   !> first real number on a record
+  !=====================================================================================
   PURE FUNCTION parse_lam(str) result(lam)
     character(len=*), intent(in) :: str
     real(dp) :: lam
@@ -1292,6 +1295,7 @@ contains
     if (iostat /= 0) lam = huge(1.0_dp)
   END FUNCTION parse_lam
 
+  !=====================================================================================
   !> Decode ordinary numeric records without entering the formatted-I/O runtime once per
   !> transition. Unusual syntax falls back to the list-directed reader, preserving the
   !> input format's existing compatibility. Three columns are required; absent optional
@@ -1299,6 +1303,7 @@ contains
   !> strength and reach a written line list carries, and nvalue counts the numbers read,
   !> so nvalue >= 10 marks a record with a reach. A non-numeric token after the eight
   !> input columns ends the ten-column parse, so the eight are then parsed on their own.
+  !=====================================================================================
   SUBROUTINE parse_record(str, values, iostat, nvalue)
     character(len=*), intent(in) :: str
     real(dp), intent(out) :: values(10)
@@ -1316,6 +1321,7 @@ contains
     read(str, *, iostat=iostat) values(1:8)
   END SUBROUTINE parse_record
 
+  !=====================================================================================
   !> One Turbospectrum record, "lam Elow loggf fdamp gu raddmp [gamst] 'lo' 'up' eqw
   !> eqwerr ['comment' [ilo iup ...]]", in the column order of parse_record: values(1:8)
   !> = lam, Elow, loggf, gvdw (= fdamp), grad (= raddmp), gstk (= gamst, 0 without),
@@ -1324,6 +1330,7 @@ contains
   !> anstee_mod keys on; a record of the old six-number layout has none ('x').
   !> Quoted tokens follow list-directed rules, as Turbospectrum reads them: '' inside
   !> a token is a quote, and '' on its own an empty token.
+  !=====================================================================================
   SUBROUTINE parse_ts_record(str, values, orb_lo, orb_up, iostat)
     character(len=*), intent(in)  :: str
     real(dp),         intent(out) :: values(10)
@@ -1387,9 +1394,11 @@ contains
     iostat = 0
   END SUBROUTINE parse_ts_record
 
+  !=====================================================================================
   !> The next blank-separated token of str at or after p: its text is str(t0:t1)
   !> (without the quotes of a quoted one, t1 < t0 when empty) and p moves past it.
   !> ok is false at the end of the record or on an unterminated quote.
+  !=====================================================================================
   PURE SUBROUTINE next_token(str, p, t0, t1, quoted, ok)
     character(len=*), intent(in)    :: str
     integer,          intent(inout) :: p
@@ -1546,7 +1555,9 @@ contains
     end do
   END SUBROUTINE parse_fields_fast
 
+  !=====================================================================================
   !> first record index whose leading wavelength is >= target (records sorted ascending)
+  !=====================================================================================
   FUNCTION bisect_block(buf, lstart, lend, n, target) result(idx)
     character(len=*), intent(in) :: buf
     integer(8),       intent(in) :: lstart(:), lend(:)
@@ -1567,7 +1578,9 @@ contains
     idx = lo
   END FUNCTION bisect_block
 
+  !=====================================================================================
   !> ensure every SoA array can hold (nline + extra) entries
+  !=====================================================================================
   SUBROUTINE grow(ll, extra)
     type(linelist_type), intent(inout) :: ll
     integer, intent(in) :: extra
@@ -1595,8 +1608,10 @@ contains
     call growl(ll%used,     ll%nline, need)
   END SUBROUTINE grow
 
+  !=====================================================================================
   !> pre-size all arrays (incl. the model-atom extensions) for nline+extra entries,
   !> so per-line append_line calls do not reallocate
+  !=====================================================================================
   SUBROUTINE reserve_linelist(ll, extra)
     type(linelist_type), intent(inout) :: ll
     integer, intent(in) :: extra
@@ -1604,7 +1619,9 @@ contains
     call grow_ext(ll, extra)
   END SUBROUTINE reserve_linelist
 
+  !=====================================================================================
   !> model-atom extension arrays (see append_line)
+  !=====================================================================================
   SUBROUTINE grow_ext(ll, extra)
     type(linelist_type), intent(inout) :: ll
     integer, intent(in) :: extra
@@ -1672,7 +1689,9 @@ contains
     call move_alloc(tmp, a)
   END SUBROUTINE growl
 
+  !=====================================================================================
   !> reorder a(1:n) <- a(idx(1:n))
+  !=====================================================================================
   SUBROUTINE permute8(a, idx)
     real(dp), allocatable, intent(inout) :: a(:)
     integer, intent(in) :: idx(:)
@@ -1725,7 +1744,9 @@ contains
     a(1:n) = tmp
   END SUBROUTINE permutel
 
+  !=====================================================================================
   !> argsort: reorder idx so that key(idx) is ascending (recursive quicksort on indices)
+  !=====================================================================================
   RECURSIVE SUBROUTINE argsort8(key, idx)
     real(dp), intent(in)    :: key(:)
     integer,  intent(inout) :: idx(:)
@@ -1753,10 +1774,11 @@ contains
   END SUBROUTINE argsort8
 
   !=====================================================================================
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   !> First index with a(i) >= x, or n+1 when every entry is below x. Together with
   !> upper_bound8 this brackets a sorted array; an empty bracket gives l0 > l1 and so an
   !> empty line loop, which is the correct result for a patch no line reaches.
+  !=====================================================================================
   PURE INTEGER FUNCTION lower_bound8(a, n, x) result(idx)
     real(8), intent(in) :: a(:)
     integer, intent(in) :: n
@@ -1775,7 +1797,9 @@ contains
     idx = lo
   END FUNCTION lower_bound8
 
+  !=====================================================================================
   !> Last index with a(i) <= x, or 0 when every entry is above x.
+  !=====================================================================================
   PURE INTEGER FUNCTION upper_bound8(a, n, x) result(idx)
     real(8), intent(in) :: a(:)
     integer, intent(in) :: n
@@ -1794,8 +1818,10 @@ contains
     idx = lo - 1
   END FUNCTION upper_bound8
 
+  !=====================================================================================
   !> Check if a wavelength (in vacuum) falls within any of the given intervals.
   !> An interval includes its boundaries (closed interval [blue, red]).
+  !=====================================================================================
   PURE FUNCTION in_any_interval(lam_vac, intervals) result(in_interval)
     real(dp), intent(in) :: lam_vac
     type(interval_t), intent(in) :: intervals(:)

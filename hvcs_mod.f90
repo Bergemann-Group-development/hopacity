@@ -105,6 +105,7 @@ contains
   !====================================================================
   !>  Load the grid files hydrogen_profiles selects, once. Idempotent; call during
   !>  (serial) setup, before any profile evaluation.
+  !====================================================================
   SUBROUTINE ensure_vcs_loaded(dir)
     character(len=*), intent(in), optional :: dir
     character(len=len(vcs_data_dir)) :: d
@@ -199,6 +200,7 @@ contains
   !====================================================================
   !>  True when the tabulated path is enabled, loaded, and the line (n,m) has a
   !>  grid entry.
+  !====================================================================
   LOGICAL FUNCTION vcs_supported(n, m)
     integer, intent(in) :: n, m
     !------------------------------------------------------------------
@@ -208,6 +210,7 @@ contains
   !====================================================================
   !>  True when the table of a supported line (n,m) carries resonance broadening
   !>  along its N(HI) axis.
+  !====================================================================
   LOGICAL FUNCTION vcs_resonance(n, m)
     integer, intent(in) :: n, m
     !------------------------------------------------------------------
@@ -216,6 +219,7 @@ contains
 
   !====================================================================
   !>  True when the table of series n includes radiative damping.
+  !====================================================================
   LOGICAL FUNCTION vcs_radiative(n)
     integer, intent(in) :: n
     !------------------------------------------------------------------
@@ -226,6 +230,7 @@ contains
   !>  Row index of line (n,m) in its series grid, or 0 if absent. Paschen/Brackett
   !>  grids do not start at the alpha member, so we match (nlow,nup) rather than
   !>  assume row = m-n.
+  !====================================================================
   INTEGER FUNCTION vcs_row(n, m) result(r)
     integer, intent(in) :: n, m
     integer :: s, k
@@ -244,6 +249,7 @@ contains
   !====================================================================
   !>  Build (or reuse) the prepared profile for line (n,m) in one cell. Idempotent
   !>  for a repeated (line, cell) stamp, so callers may call it unconditionally.
+  !====================================================================
   SUBROUTINE vcs_prepare(n, m, nu0, temp, ne, nh, c)
     integer, intent(in) :: n, m
     real(8), intent(in) :: nu0
@@ -266,6 +272,7 @@ contains
   !>  Evaluate a prepared profile at fractional frequency detuning q. This is the
   !>  frequency-scan inner loop: everything that does not depend on q lives in
   !>  vcs_prepare, leaving one log10 and one exp per point.
+  !====================================================================
   PURE REAL(8) FUNCTION vcs_eval(c, q) result(phi)
     type(vcs_profile_t), intent(in) :: c
     real(8), intent(in) :: q
@@ -296,6 +303,7 @@ contains
   !>  The power law that vcs_eval continues past the outer table edge (qpol's
   !>  linear log-log extrapolation through the last two nodes), with the area
   !>  normalisation and the Jacobian lam0 folded in: ln(phi_q) = ta + ts*ln|q|.
+  !====================================================================
   SUBROUTINE tail_coef(c)
     type(vcs_profile_t), intent(inout) :: c
     real(8) :: slope, a
@@ -309,6 +317,7 @@ contains
   !====================================================================
   !>  vcs_eval beyond the outer table edge (|q| > q_tail), from ln|q|. Callers
   !>  that sweep many cells at the same frequencies can share ln|q| between them.
+  !====================================================================
   PURE REAL(8) FUNCTION vcs_tail(c, lnq) result(phi)
     type(vcs_profile_t), intent(in) :: c
     real(8), intent(in) :: lnq
@@ -324,6 +333,7 @@ contains
   !>  Interpolate the stored grid over (log NH, log T, log Ne) for one cell,
   !>  yielding the log10 profile lp(:) on the delta-lambda grid, plus lognorm =
   !>  log10 of its area in delta-lambda (used to renormalise to unit area).
+  !====================================================================
   SUBROUTINE vcs_cell_profile(n, m, temp, ne, nh, lp, lognorm, ok)
     integer, intent(in)  :: n, m
     real(4), intent(in)  :: temp, ne, nh
@@ -405,6 +415,7 @@ contains
   !>  tabulated profiles are reproduced with the same scheme. a(:) must be sorted
   !>  ascending; array-element actual arguments (sequence association) supply the
   !>  per-series column.
+  !====================================================================
   REAL(4) FUNCTION qpol(x, a, f, no) result(res)
     integer, intent(in) :: no
     real(4), intent(in) :: x, a(no), f(no)
@@ -445,6 +456,7 @@ contains
   !>  follows is qpol verbatim, and the two bracketings agree: qpol's search
   !>  returns the largest k with a(k) < x, which differs from the truncation only
   !>  when x lands exactly on a node, and there both stencils collapse to f(node).
+  !====================================================================
   PURE REAL(4) FUNCTION qpol_w(x, s, f) result(res)
     real(4), intent(in) :: x
     integer, intent(in) :: s
@@ -480,6 +492,7 @@ contains
   !====================================================================
   !>  qpol4's bracketing interval [a(j),a(j+1)]: the largest j in [1,size(a)-1]
   !>  with a(j) <= x, or 1.
+  !====================================================================
   PURE INTEGER FUNCTION bracket(x, a) result(j)
     real(4), intent(in) :: x, a(:)
     integer :: kk
@@ -499,6 +512,7 @@ contains
   !>  continuous at every node (no wiggly wings from stencil
   !>  shifts). a(:) ascending; inputs on the grid axes are pre-clamped to
   !>  [a(1),a(no)] so no extrapolation occurs. Falls back to qpol for <3 nodes.
+  !====================================================================
   REAL(4) FUNCTION qpol4(x, a, f, no) result(res)
     integer, intent(in) :: no
     real(4), intent(in) :: x, a(no), f(no)

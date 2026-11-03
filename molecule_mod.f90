@@ -1197,6 +1197,7 @@ contains
   !> integer, which drops the leading zeros; the number of constituents restores them.
   !> A constituent without an isotope table is always 000.  Combinations that differ
   !> only in the order of equal atoms share a label, and their fractions are summed.
+  !===============================================================================
   SUBROUTINE generate_isotopic_combinations(self)
     class(molec_type), intent(inout) :: self
     class(ion_type), pointer :: ion
@@ -1269,6 +1270,7 @@ contains
   !> explicit mass for a constituent without an isotope table that equals its
   !> natural mass number (hydrogen written 001) reads as the natural mixture, and the
   !> masses of equal atoms are put in ascending order.
+  !===============================================================================
   INTEGER FUNCTION canonical_iso(self, iso) result(label)
     class(molec_type), intent(in) :: self
     integer, intent(in) :: iso
@@ -1296,6 +1298,7 @@ contains
 
   !===============================================================================
   !> Masses given in ascending atomic number, packed three digits each.
+  !===============================================================================
   INTEGER FUNCTION pack_label(self, mass) result(label)
     class(molec_type), intent(in) :: self
     integer, intent(inout) :: mass(:)

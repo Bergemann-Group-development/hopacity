@@ -83,8 +83,9 @@ SUBROUTINE ensure_anstee_loaded ()
   close (lunit)
   loaded = .true.
 CONTAINS
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> One table: comment lines starting with '*', then rows i0..i1 of columns j0..j1.
+  !=============================================================================
   SUBROUTINE read_table (k, i0, i1, j0, j1)
     integer, intent(in) :: k, i0, i1, j0, j1
     character(len=256) :: line
@@ -207,16 +208,18 @@ SUBROUTINE anstee_cross_section (iel, ion, lam_air, elo, eion, lev_lo, lev_up, &
     end if
   end if
 CONTAINS
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Effective principal quantum number of a level at energy e [eV].
+  !=============================================================================
   PURE FUNCTION nstar (e) RESULT (n)
     real(dp), intent(in) :: e
     real(dp) :: n
     n = 1._dp / sqrt((eion - e) / RYD_EV)
   END FUNCTION nstar
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Bilinear interpolation in table pair k at (n1 = row orbital, n2 = column
   !> orbital), when both lie within the table's ranges.
+  !=============================================================================
   SUBROUTINE from_table (k, n1, n2, lo1, hi1, lo2, hi2)
     integer,  intent(in) :: k
     real(dp), intent(in) :: n1, n2, lo1, hi1, lo2, hi2
@@ -231,9 +234,10 @@ CONTAINS
           + (tab(i2,i1+1,k+1)*(1-f2) + tab(i2+1,i1+1,k+1)*f2) * f1
     found = .true.
   END SUBROUTINE from_table
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> The special line of section s within 0.05 AA and 0.02 eV, the earliest in
   !> the file when several qualify.
+  !=============================================================================
   SUBROUTINE from_special (s)
     type(special_t), intent(in) :: s
     integer :: lo, hi, mid, i, best

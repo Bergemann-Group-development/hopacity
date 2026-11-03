@@ -324,7 +324,9 @@ contains
       call check_energy(hll%lev_j(l), hll%lower_ev(l) + H_E*hll%nu0(l))
     end do
   CONTAINS
+    !===============================================================================
     !> level n is an H I level of the atom
+    !===============================================================================
     LOGICAL FUNCTION bound(n)
       integer, intent(in) :: n
       bound = n <= size(self%atom%ev)
@@ -406,7 +408,9 @@ contains
         error stop 'assign_levels: a line-list level index names a level of another stage'
     END SUBROUTINE check_level
 
+    !===============================================================================
     !> TS's acceptance window: e lies within the factor ts_ev_factor of level_ev
+    !===============================================================================
     LOGICAL FUNCTION within(level_ev, e)
       real(8), intent(in) :: level_ev, e
       within = level_ev*ts_ev_factor >= e .and. e >= level_ev/ts_ev_factor
@@ -1422,10 +1426,12 @@ contains
     call trace%end(itimer)
 
   contains
+    !===============================================================================
     !> A Turbospectrum species code: Z.AAA for an atom, or two-digit atomic numbers in
     !> ascending order followed by their three-digit masses for a molecule (0607.012014
     !> is 12C14N, 000 the natural mixture).  Gives the composition id, the atomic
     !> number (0 for a molecule) and the mass part as an isotope label.
+    !===============================================================================
     subroutine ts_species (code, ion, id, iel, label, found)
       character(len=*), intent(in) :: code
       integer, intent(in) :: ion
@@ -1478,9 +1484,11 @@ contains
       end do
     end subroutine ts_species
 
+    !===============================================================================
     !> the byte range [b0,b1) of the open list as buf, with its record boundaries;
     !> the offsets are into the slice, which is what build_linelist and add_h_block
     !> index with
+    !===============================================================================
     subroutine read_slice (b0, b1)
       integer(8), intent(in) :: b0, b1
       !-------------------------------------------------------------------------
@@ -1490,7 +1498,9 @@ contains
       call trace%end(it_read)
     end subroutine read_slice
 
+    !===============================================================================
     !> allocate the per-isotope SoA linelist array ll(0:niso) once (0 = main isotope)
+    !===============================================================================
     subroutine ensure_ll_allocated(p)
       class(particle_type), intent(inout) :: p
       integer :: niso
@@ -1501,6 +1511,7 @@ contains
       allocate(p%ll(0:niso))
     end subroutine ensure_ll_allocated
 
+    !===============================================================================
     !> hydrogen block -> particle%ll(0), with the principal quantum numbers that select
     !> the Stark profile (append_h_line). Two column layouts are accepted, selected by
     !> hlinedata:
@@ -1512,6 +1523,7 @@ contains
     !>     -- i,j are the principal quantum numbers when both are given, else derived
     !>        from the level energies with the ionisation energy of hydrogen.
     !> The broadening columns are inert: hydrogen_line supplies the widths.
+    !===============================================================================
     subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &
                            intervals_arg, use_intervals_arg)
       class(particle_type), pointer :: particle
@@ -2289,7 +2301,9 @@ contains
     call trace%end(itimer)
 
   contains
+    !===============================================================================
     !> hydrogen's electron contribution per H nucleus (H- has j=0: -f)
+    !===============================================================================
     subroutine h_electrons(s)
       real(dp), dimension(:,:,:), intent(out) :: s
       integer :: jj

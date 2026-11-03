@@ -407,8 +407,10 @@ contains
       call trace%end(itimer2)
     endif
   contains
+    !===============================================================================
     !> The absorption factor times xkap_scale, which the scaled table leaves out,
     !> capped at the real(4) maximum so that the conversion cannot overflow
+    !===============================================================================
     pure real(4) function scaled_factor(fk)
       real(dp), intent(in) :: fk
       scaled_factor = real(min(fk*self%xkap_scale, real(huge(1.0), dp)), 4)
