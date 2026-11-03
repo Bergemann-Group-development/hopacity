@@ -1,18 +1,21 @@
+!===============================================================================
 !>  Tabulated hydrogen line profiles, selected at runtime with hydrogen_profiles:
 !>
-!>  'stehle'  Stark profiles of Stehle & Hutcheon (1999, A&AS 140, 93; Model
-!>            Microfield Method for electrons and ions), convolved with thermal
-!>            Doppler broadening, for Balmer and Paschen lines up to n=20 and 21,
-!>            with the Lemke tables for the Brackett series. Converted from
-!>            Korg.jl's copy of CDS VI/98A onto the Lemke grid; beyond a line's
-!>            last tabulated density the profile is kept fixed in dnu/F0
-!>            (Holtsmark scaling). They contain no resonance broadening and no
-!>            radiative damping.
-!>  'lemke'   VCS (Vidal-Cooper-Smith) profiles of M. Lemke (1997, A&AS 122,
-!>            285), convolved with thermal Doppler broadening, radiative damping
-!>            and, along an N(HI) axis for H alpha to H delta, Ali & Griem
-!>            resonance broadening.
-!>  'analytic' no table; the Griem+VCS Stark profiles of hprofl_mod.
+!>  - 'stehle': Stark profiles of
+!>    [Stehle & Hutcheon (1999)](https://ui.adsabs.harvard.edu/abs/1999A&AS..140...93S)
+!>    (Model Microfield Method for electrons and ions), convolved with thermal
+!>    Doppler broadening, for Balmer and Paschen lines up to n=20 and 21,
+!>    with the Lemke tables for the Brackett series. Converted from
+!>    Korg.jl's copy of CDS VI/98A onto the Lemke grid; beyond a line's
+!>    last tabulated density the profile is kept fixed in dnu/F0
+!>    (Holtsmark scaling). They contain no resonance broadening and no
+!>    radiative damping.
+!>  - 'lemke': VCS (Vidal-Cooper-Smith) profiles of
+!>    [Lemke (1997)](https://ui.adsabs.harvard.edu/abs/1997A&AS..122..285L),
+!>    convolved with thermal Doppler broadening, radiative damping
+!>    and, along an N(HI) axis for H alpha to H delta, Ali & Griem
+!>    resonance broadening.
+!>  - 'analytic': no table; the Griem+VCS Stark profiles of hprofl_mod.
 !>
 !>  The reader and interpolation are ported from the SIU/lineform routines
 !>  READ_HYDPROF and HYDL_AG_CON (T. Gehren / F. Grupp / M. Bergemann) and the
@@ -29,6 +32,7 @@
 !>  line centre; hprofl_mod applies the fine-structure component pattern on
 !>  top (vcs_fine), as it does in the analytic path, and the populations
 !>  (nlo*Bij).
+!===============================================================================
 MODULE hvcs_mod
   USE const_mod, only: cc
   USE interpol_mod, only: pchip_slopes, hermite_value
@@ -44,7 +48,7 @@ MODULE hvcs_mod
   integer, parameter :: NNHH   = 13 !< hydrogen-density (resonance) nodes
   integer, parameter :: NNHMAX = 18 !< max lines per series
   integer, parameter :: NSER   = 3  !< Balmer, Paschen, Brackett
-  !>  Longest axis qpol4 is ever handed (NH, T or Ne) -- sizes its scratch.
+  !>  Longest axis qpol4 is ever handed (NH, T or Ne); it sizes its scratch.
   integer, parameter :: NNAXMAX = max(NNHH, max(NNHT, NNHE))
 
   !>  Per-series grid + axes (log10 quantities), loaded once at setup.
@@ -71,21 +75,24 @@ MODULE hvcs_mod
   logical, save :: vcs_loaded = .false.
 
   !  Runtime controls (exposed in the composition_params namelist).
-  character(len=16), public :: hydrogen_profiles = 'stehle'
-  character(len=4096), public :: vcs_data_dir = './input/vcs'
+  character(len=16), public :: hydrogen_profiles = 'stehle'   !< profile tables: 'stehle', 'lemke' or 'analytic'
+  character(len=4096), public :: vcs_data_dir = './input/vcs' !< folder of the profile tables
 
   real(8), parameter :: AA_PER_S = cc*1.d8   !< speed of light [AA/s]
   real(8), parameter :: LN10 = 2.30258509299404568402d0
 
+  !===============================================================================
   !>  One cell's worth of prepared profile: the (NH,T,Ne) interpolation of the
   !>  grid, which is constant over a whole frequency scan. Callers that sweep
   !>  frequency hold one of these as a LOCAL (vcs_prepare once, vcs_eval per
-  !>  point) -- keeping it off module scope is what keeps the inner loop clear of
-  !>  threadprivate/TLS lookups, which on macOS gfortran cost a
-  !>  pthread_getspecific per reference. The (line, cell) stamp makes prepare
+  !>  point). The (line, cell) stamp makes prepare
   !>  idempotent, so a caller that keeps one per cell and line (rt_patch's hvcs)
   !>  builds each only once.
+  !===============================================================================
   type, public :: vcs_profile_t
+    ! Keeping the profile off module scope keeps the inner loop clear of
+    ! threadprivate/TLS lookups, which on macOS gfortran cost a
+    ! pthread_getspecific per reference.
     real(4) :: lp(NNHW) = 0.0  !< log10 profile on the delta-lambda grid
     real(8) :: lognorm  = 0.d0 !< log10 of its area in delta-lambda
     real(8) :: lam0     = 0.d0 !< line centre wavelength [AA]
@@ -107,7 +114,7 @@ contains
   !>  (serial) setup, before any profile evaluation.
   !====================================================================
   SUBROUTINE ensure_vcs_loaded(dir)
-    character(len=*), intent(in), optional :: dir
+    character(len=*), intent(in), optional :: dir !< folder of the tables (default vcs_data_dir)
     character(len=len(vcs_data_dir)) :: d
     !------------------------------------------------------------------
     if (vcs_loaded) return
@@ -202,7 +209,8 @@ contains
   !>  grid entry.
   !====================================================================
   LOGICAL FUNCTION vcs_supported(n, m)
-    integer, intent(in) :: n, m
+    integer, intent(in) :: n !< lower principal quantum number
+    integer, intent(in) :: m !< upper principal quantum number
     !------------------------------------------------------------------
     vcs_supported = vcs_loaded .and. (vcs_row(n,m) > 0)
   END FUNCTION vcs_supported
@@ -212,7 +220,8 @@ contains
   !>  along its N(HI) axis.
   !====================================================================
   LOGICAL FUNCTION vcs_resonance(n, m)
-    integer, intent(in) :: n, m
+    integer, intent(in) :: n !< lower principal quantum number
+    integer, intent(in) :: m !< upper principal quantum number
     !------------------------------------------------------------------
     vcs_resonance = nhhnr(vcs_row(n,m), n-1) > 1
   END FUNCTION vcs_resonance
@@ -221,7 +230,7 @@ contains
   !>  True when the table of series n includes radiative damping.
   !====================================================================
   LOGICAL FUNCTION vcs_radiative(n)
-    integer, intent(in) :: n
+    integer, intent(in) :: n !< lower principal quantum number of the series
     !------------------------------------------------------------------
     vcs_radiative = radiative(n-1)
   END FUNCTION vcs_radiative
@@ -251,10 +260,13 @@ contains
   !>  for a repeated (line, cell) stamp, so callers may call it unconditionally.
   !====================================================================
   SUBROUTINE vcs_prepare(n, m, nu0, temp, ne, nh, c)
-    integer, intent(in) :: n, m
-    real(8), intent(in) :: nu0
-    real(4), intent(in) :: temp, ne, nh
-    type(vcs_profile_t), intent(inout) :: c
+    integer, intent(in) :: n                !< lower principal quantum number
+    integer, intent(in) :: m                !< upper principal quantum number
+    real(8), intent(in) :: nu0              !< line frequency [Hz]
+    real(4), intent(in) :: temp             !< temperature [K]
+    real(4), intent(in) :: ne               !< electron number density [cm^-3]
+    real(4), intent(in) :: nh               !< neutral H number density [cm^-3]
+    type(vcs_profile_t), intent(inout) :: c !< prepared profile
     real(4) :: lognorm
     !------------------------------------------------------------------
     if (c%n == n .and. c%m == m .and. c%nu0 == nu0 .and. c%t == temp .and. &
@@ -269,13 +281,13 @@ contains
   END SUBROUTINE vcs_prepare
 
   !====================================================================
-  !>  Evaluate a prepared profile at fractional frequency detuning q. This is the
-  !>  frequency-scan inner loop: everything that does not depend on q lives in
-  !>  vcs_prepare, leaving one log10 and one exp per point.
+  !>  Evaluate a prepared profile at fractional frequency detuning q.
   !====================================================================
   PURE REAL(8) FUNCTION vcs_eval(c, q) result(phi)
-    type(vcs_profile_t), intent(in) :: c
-    real(8), intent(in) :: q
+    ! This is the frequency-scan inner loop: everything that does not depend on q
+    ! lives in vcs_prepare, leaving one log10 and one exp per point.
+    type(vcs_profile_t), intent(in) :: c !< prepared profile
+    real(8), intent(in) :: q             !< (nu-nu0)/nu0
     real(8) :: dlam_AA, deltaw, p
     !------------------------------------------------------------------
     if (.not. c%ok) then
@@ -319,8 +331,8 @@ contains
   !>  that sweep many cells at the same frequencies can share ln|q| between them.
   !====================================================================
   PURE REAL(8) FUNCTION vcs_tail(c, lnq) result(phi)
-    type(vcs_profile_t), intent(in) :: c
-    real(8), intent(in) :: lnq
+    type(vcs_profile_t), intent(in) :: c !< prepared profile
+    real(8), intent(in) :: lnq           !< ln|q|
     !------------------------------------------------------------------
     if (c%ok) then
       phi = exp(c%ta + c%ts*lnq)
@@ -451,8 +463,8 @@ contains
   !====================================================================
   !>  qpol specialised to the delta-lambda axis of series s, which read_vcs_grid
   !>  lays down as a UNIFORM log10 ladder (nw_vcs(i,s) = dw0 + (i-1)*ddw). The
-  !>  bracketing index is therefore one multiply instead of qpol's binary search
-  !>  -- worth having, as this runs once per frequency point. The arithmetic that
+  !>  bracketing index is therefore one multiply instead of qpol's binary search,
+  !>  which matters because this runs once per frequency point. The arithmetic that
   !>  follows is qpol verbatim, and the two bracketings agree: qpol's search
   !>  returns the largest k with a(k) < x, which differs from the truncation only
   !>  when x lands exactly on a node, and there both stencils collapse to f(node).

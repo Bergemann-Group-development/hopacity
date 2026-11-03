@@ -1,3 +1,6 @@
+!===============================================================================
+!> Opacity-sampled background line opacity of the metals, read from an absmet table.
+!===============================================================================
 MODULE osmet_mod
   USE hop_env_mod, only: os, trace
   USE console_mod
@@ -7,9 +10,15 @@ MODULE osmet_mod
   USE interpol_mod, only: pchip_mono
   implicit none
 
-  real(dp) :: eosmet=0.5
-  integer :: mnu=154000, mtem=17, mp6=18
+  real(dp) :: eosmet=0.5 !< fraction of the absmet line opacity from ions, for its scattering fraction
+  integer :: mnu=154000  !< largest number of wavelengths of a table; the number read after init
+  integer :: mtem=17     !< temperatures of a table record
+  integer :: mp6=18      !< pressures of a table record
 
+  !===============================================================================
+  !> An absmet table: log10 of the line opacity per gram on a grid of wavelength,
+  !> temperature and van der Waals pressure p6.
+  !===============================================================================
   type :: osmet_type
     real(dp), dimension(:), pointer, contiguous :: lam
     real(dp), dimension(:), allocatable :: p6, temp
@@ -23,16 +32,16 @@ MODULE osmet_mod
     procedure :: compute_epsilon
   end type
 
-  type(osmet_type), public :: osmet
+  type(osmet_type), public :: osmet !< the absmet table of the run
 
 contains
 
   !===============================================================================
-  !> initialises osmet type.
+  !> Reads the absmet table absmet_file, in either byte order.
   !===============================================================================
   SUBROUTINE init (self, absmet_file)
     class(osmet_type) :: self
-    character(len=*), intent(in) :: absmet_file
+    character(len=*), intent(in) :: absmet_file !< path of the table
     integer :: lunit, iostat, maxp6, maxtem
     logical :: native_ok
     real(4) :: orig_ostabl(mp6, mtem)
@@ -108,11 +117,17 @@ contains
   END SUBROUTINE init
 
   !===============================================================================
+  !> Adds the table's line opacity to chi, interpolated linearly in log10 opacity over
+  !> p6 and temperature and in opacity over wavelength.  Cells and wavelengths outside
+  !> the table get none.
+  !===============================================================================
   SUBROUTINE add_line_opacities(self, lam, p6, temp, rho, chi)
     class(osmet_type), intent(inout) :: self
-    real(8), dimension(:), intent(in) :: lam
-    real(8), dimension(:,:,:), intent(in) :: p6, temp, rho
-    real(4), dimension(:,:,:,:), intent(inout) :: chi
+    real(8), dimension(:), intent(in) :: lam          !< wavelengths [AA]
+    real(8), dimension(:,:,:), intent(in) :: p6       !< log10 van der Waals pressure (H I, He I, H2) [dyn cm^-2]
+    real(8), dimension(:,:,:), intent(in) :: temp     !< temperature [K]
+    real(8), dimension(:,:,:), intent(in) :: rho      !< density [g cm^-3]
+    real(4), dimension(:,:,:,:), intent(inout) :: chi !< opacity (frequency, x, y, z) [cm^-1], added to
     real(8) :: p, t
     real(4) :: a1, b1, c1, d1, a2, b2, c2, d2, r
     real(4) :: ab1, cd1, ab2, cd2, abcd1, abcd2
@@ -187,11 +202,16 @@ contains
   END SUBROUTINE add_line_opacities
 
   !===============================================================================
+  !> Thermal fraction epsln = C/(C+A) of the table's line opacity, with the van
+  !> Regemorter collision rate C of psemi, blended between neutral and ionised lines
+  !> by eosmet.
+  !===============================================================================
   SUBROUTINE compute_epsilon(self, nu, temp, ne, epsln)
     class(osmet_type), intent(inout) :: self
-    real(8), dimension(:), intent(in) :: nu
-    real(8), dimension(:,:,:), intent(in) :: temp, ne
-    real(4), dimension(:,:,:,:), intent(inout) :: epsln
+    real(8), dimension(:), intent(in) :: nu             !< frequencies [Hz]
+    real(8), dimension(:,:,:), intent(in) :: temp       !< temperature [K]
+    real(8), dimension(:,:,:), intent(in) :: ne         !< electron number density [cm^-3]
+    real(4), dimension(:,:,:,:), intent(inout) :: epsln !< thermal fraction (frequency, x, y, z)
     real(8), dimension(:,:,:,:), allocatable, target :: beta, ecnst
     real(8), dimension(:), pointer :: vbeta, vecnst
     real(8), dimension(:), allocatable :: psemi1, psemi2, wnum3
@@ -241,15 +261,15 @@ contains
   !===============================================================================
   !> Scattering fraction 1-eps of line opacity carried by one ionization stage
   !> (z=1 neutral p-function, z>=2 charged): the van Regemorter recipe of
-  !> compute_epsilon without the eosmet blend -- the stage of a line-list line
-  !> is known exactly, so no neutral/ion mixing fraction is needed.  Needs no
-  !> absmet table, hence a plain module procedure.
+  !> compute_epsilon without the eosmet blend, because the stage of a line-list line
+  !> is known exactly.  It needs no absmet table, so it is a plain module procedure.
   !===============================================================================
   SUBROUTINE compute_epsilon_stage(z, nu, temp, ne, one_m_eps)
-    integer, intent(in) :: z
-    real(8), dimension(:), intent(in) :: nu
-    real(8), dimension(:,:,:), intent(in) :: temp, ne
-    real(4), dimension(:,:,:,:), intent(inout) :: one_m_eps
+    integer, intent(in) :: z                                !< ionisation stage (1 is neutral)
+    real(8), dimension(:), intent(in) :: nu                 !< frequencies [Hz]
+    real(8), dimension(:,:,:), intent(in) :: temp           !< temperature [K]
+    real(8), dimension(:,:,:), intent(in) :: ne             !< electron number density [cm^-3]
+    real(4), dimension(:,:,:,:), intent(inout) :: one_m_eps !< scattering fraction (frequency, x, y, z)
     real(8), dimension(:,:,:,:), allocatable, target :: beta
     real(8), dimension(:), pointer :: vbeta, vpsem
     real(8), dimension(:,:,:,:), allocatable, target :: psem
@@ -292,13 +312,14 @@ contains
   END SUBROUTINE compute_epsilon_stage
 
   !===============================================================================
-  !>  thermal p-FUNCTION for semic empirical collision rates
-  !>  reference: sobel'man - 'atomic physics ii.  '
+  !> Thermal average P of the Gaunt factor in the semi-empirical (van Regemorter)
+  !> collision rate, at b = h nu/kT, after Sobelman: tabulated in log10 b between 0.01
+  !> and 10, with the high- and low-temperature limits outside.
   !===============================================================================
   SUBROUTINE psemi(z,b,out)
-    integer, intent(in) :: z
-    real(8), intent(in), dimension(:) :: b
-    real(8), intent(out), dimension(:) :: out
+    integer, intent(in) :: z                  !< ionisation stage (1 is neutral), 0 or less gives 0
+    real(8), intent(in), dimension(:) :: b    !< h nu/kT
+    real(8), intent(out), dimension(:) :: out !< P
     real(8), dimension(10), parameter :: betref = [-2.0,-1.699,-1.398,-1.0,-0.699,-0.398,0.0,0.301,0.602,1.0]
     real(8), dimension(10), parameter :: pnref  = [1.160,0.956,0.758,0.493,0.331,0.209,0.100,0.063,0.040,0.023]
     real(8), dimension(10), parameter :: pcref  = [1.160,0.977,0.788,0.554,0.403,0.290,0.214,0.201,0.200,0.200]

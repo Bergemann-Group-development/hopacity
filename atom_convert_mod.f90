@@ -3,11 +3,11 @@
 !> format that atom_mod%read_pandas reads.
 !>
 !> dispatch.x reads every model atom through read_pandas: a MULTI atom is parsed
-!> here, written as <run_dir>/atoms/<id>.txt and read back, so the copy in the run
+!> here, written as `<run_dir>/atoms/<id>.txt` and read back, so the copy in the run
 !> directory is the atom the run used.  atom_convert.x (HOP/standalone) is the same
 !> conversion as a program for the Python layer.
 !>
-!> The parsing follows the MULTI conventions dispatch has always applied:
+!> The parsing follows these MULTI conventions:
 !>  - level energies are given in cm^-1; a line's vacuum wavelength follows from
 !>    its level energies and is written as an air wavelength, which read_pandas
 !>    converts back;
@@ -37,6 +37,9 @@ MODULE atom_convert_mod
   implicit none
   private
 
+  !===============================================================================
+  !> A MULTI model atom as parsed, in the columns of the table format.
+  !===============================================================================
   type, public :: classic_atom_t
     character(len=20) :: id = ''
     real(8) :: abnd = 0, awgt = 0
@@ -76,7 +79,8 @@ CONTAINS
 !> Convert the MULTI atom in_file to the table format in out_file.
 !===============================================================================
 SUBROUTINE convert_classic_atom (in_file, out_file)
-  character(len=*), intent(in) :: in_file, out_file
+  character(len=*), intent(in) :: in_file  !< MULTI atom
+  character(len=*), intent(in) :: out_file !< table-format atom written
   type(classic_atom_t) :: atom
   !-----------------------------------------------------------------------------
   call read_classic_atom(in_file, atom)
@@ -87,8 +91,8 @@ END SUBROUTINE convert_classic_atom
 !> Parse the MULTI atom in atom_file.
 !===============================================================================
 SUBROUTINE read_classic_atom (atom_file, atom)
-  character(len=*), intent(in) :: atom_file
-  type(classic_atom_t), intent(out) :: atom
+  character(len=*), intent(in) :: atom_file !< MULTI atom
+  type(classic_atom_t), intent(out) :: atom !< parsed atom
   type(line_rec_t), allocatable :: lines(:)
   integer :: latom, ios, nline, ncont, nrfix, i
   logical :: exists, abort
@@ -251,7 +255,7 @@ END SUBROUTINE split_components
 
 !===============================================================================
 !> The bound-free records: tabulated (qmax < 0) or hydrogenic.  A second record
-!> for the same lower level is ignored, as dispatch always did.
+!> for the same lower level is ignored.
 !===============================================================================
 SUBROUTINE read_continua (latom, atom, ncont, abort)
   integer, intent(in) :: latom, ncont
@@ -540,8 +544,9 @@ END SUBROUTINE union_grid
 !> from Python agree; the run that converts a MULTI atom uses the rounded values.
 !===============================================================================
 SUBROUTINE write_pandas_atom (atom, out_file, source)
-  type(classic_atom_t), intent(in) :: atom
-  character(len=*), intent(in) :: out_file, source
+  type(classic_atom_t), intent(in) :: atom !< atom to write
+  character(len=*), intent(in) :: out_file !< table-format atom written
+  character(len=*), intent(in) :: source   !< name of the converted file, for the header
   integer :: u, i, k, wl, wk
   ! field widths without the separating blank
   integer, parameter :: w_awgt=8, w_n=6, w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, &
@@ -640,7 +645,7 @@ CONTAINS
     s = repeat(' ', w+1-len(name))//name
   END FUNCTION title
   !===============================================================================
-  !> x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
+  !> x to p significant digits as Python's `'{:.<p>g}'` writes it, right-aligned in w
   !> characters or wider when it needs more: positional for a decimal exponent
   !> -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
   !> after rounding to p digits.
