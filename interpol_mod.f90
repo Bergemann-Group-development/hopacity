@@ -26,7 +26,8 @@ MODULE interpol_mod
 
   !===============================================================================
   !> Monotone piecewise cubic Hermite (PCHIP) interpolation of yy(xx) to newx, with
-  !> the node slopes of pchip_slopes.  newx must lie within [xx(1), xx(n)].
+  !> the node slopes of pchip_slopes.  Outside [xx(1), xx(n)] it extrapolates the
+  !> cubic of the end interval.
   !>
   !> Written by Richard Hoppe (2023).
   !===============================================================================
