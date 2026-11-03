@@ -256,11 +256,11 @@ contains
   !> Broadening parameters carry the same over_4pi/nu0 scaling as the prepare_* routines.
   !-------------------------------------------------------------------------------------
   SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, grad, gw1, gw2, gstk, unsold, &
-                         lev_i, lev_j, itrans, ipart, wA, cwt, dej, iso_out, &
+                         lev_i, lev_j, itrans, ipart, cwt, dej, iso_out, &
                          loggf, gv_in, grad_in, gstk_in)
     type(linelist_type), intent(inout) :: ll
     real(8), intent(in) :: llam0, gpref
-    real(8), intent(in) :: nu0, lower_ev, grad, gw1, gw2, gstk, wA, cwt, dej
+    real(8), intent(in) :: nu0, lower_ev, grad, gw1, gw2, gstk, cwt, dej
     real(8), intent(in) :: loggf, gv_in, grad_in, gstk_in
     logical, intent(in) :: unsold
     integer, intent(in) :: lev_i, lev_j, itrans, ipart, iso_out
@@ -292,7 +292,6 @@ contains
     ll%gstk_in(k)    = gstk_in
     ll%itrans(k)   = itrans
     ll%ipart(k)    = ipart
-    ll%wA(k)       = wA
     ll%cwt(k)      = cwt
     ll%dej(k)      = dej
     ll%iso_out(k)  = iso_out
@@ -411,7 +410,6 @@ contains
       call permutei(ll%iws,     idx)
       call permutei(ll%iwe,     idx)
       call permutei(ll%icen,    idx)
-      call permute4(ll%wA,      idx)
       call permute4(ll%cwt,     idx)
       call permute4(ll%dej,     idx)
     end if
@@ -1618,7 +1616,6 @@ contains
     call growi(ll%iws,     ll%nline, need)
     call growi(ll%iwe,     ll%nline, need)
     call growi(ll%icen,    ll%nline, need)
-    call grow4(ll%wA,      ll%nline, need)
     call grow4(ll%cwt,     ll%nline, need)
     call grow4(ll%dej,     ll%nline, need)
   END SUBROUTINE grow_ext

@@ -63,7 +63,6 @@ MODULE line_types_mod
     integer,  allocatable :: iws(:), iwe(:)
     integer,  allocatable :: icen(:)    !< window centre index (f0 seed; grid is symmetric)
     integer,  allocatable :: itrans(:)  !< target column in gamma_ij/gamma_ji (patch subset)
-    real(4),  allocatable :: wA(:)      !< Einstein Aij (x component weight) for rates
     real(4),  allocatable :: cwt(:)     !< component weight (wphi measure; 1 for plain lines)
     real(4),  allocatable :: dej(:)     !< upper_ev - lower_ev = H_E*nu0 [eV] (preconditioning)
     integer,  allocatable :: iso_out(:) !< isotope number for the linelist_out.txt grouping

@@ -19,7 +19,7 @@ MODULE bbtrans_mod
     real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 !< line broadening (damping) constants
     real(dp) :: grad_in=0, gstk_in=0, gv_in=0               !< input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
-    real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, ij from the lower to the upper level
+    real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, ij from the lower to the upper level; Bij and Bji include h/(4 pi)
     logical :: active=.true., unsold
     integer :: i=0 !< lower level
     integer :: j=0 !< upper level
@@ -55,10 +55,11 @@ contains
     class(bbtrans_type), intent(inout) :: self
     real(8), intent(in) :: f, gij
     !----------------------------------------------------------------------------------
-    ! Einstein coefficients include an additional factor of h_4pi for convenience
+    ! Aji is the Einstein coefficient of spontaneous emission [1/s] and Aij = Aji/gij.
+    ! Bij and Bji carry the factor h/4pi of the line opacity, which
+    ! add_bound_bound_opacities forms as n_i*Bij times the profile.
     self%Aij = f_conv * f * self%nu0**2
-    self%Aij = self%Aij * h_4pi
-    self%Bij = c2_2h / self%nu0**3 * self%Aij
+    self%Bij = c2_2h / self%nu0**3 * (self%Aij * h_4pi)
     self%Aji = self%Aij * gij
     self%Bji = self%Bij * gij
   END SUBROUTINE init_einstein_coefficients
