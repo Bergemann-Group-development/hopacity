@@ -40,7 +40,7 @@ MODULE trans_mod
     real(4), dimension(:), pointer, contiguous :: q => null()  !< frequencies [Doppler units]
     real(8), dimension(:), pointer, contiguous :: wq => null() !< frequency quadrature weight [Doppler units]
 
-    real(4),dimension(:,:,:,:), pointer :: phi => null() !< actual line profile data
+    real(4),dimension(:,:,:,:), pointer :: phi => null()            !< actual line profile data
     real(4),dimension(:,:,:), pointer, contiguous :: wphi => null() !< normalization such that
     ! \Sigma_mu=1^{nrays} \Sigma_nu=1^{nnu} phi(nu,v(mu)) = 1
     ! in case of strong velocities this does not automatically follow from
@@ -64,7 +64,7 @@ MODULE trans_mod
     character(len=20) :: bf_type !< either 'detail' or 'hydrogenic'
 
     !real(8) :: nu0 ! ionization edge frequency
-    real(4) :: alpha0 !< cross section at ionization threshold [cm^2]
+    real(4) :: alpha0                                             !< cross section at ionization threshold [cm^2]
     real(4), dimension(:), pointer, contiguous :: alpha => null() !< cross sections [cm^2]
     real(8), dimension(:), pointer, contiguous :: alpha_input => null()
 

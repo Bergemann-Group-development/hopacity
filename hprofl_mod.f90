@@ -143,8 +143,8 @@ MODULE hprofl_mod
   !> dqmax the largest |dq|. bpo marks the lines whose self-broadening follows Barklem,
   !> Piskunov & O'Mara (2000) instead of Ali & Griem.
   type, public :: hline_t
-    integer  :: n=0, m=0          !< lower and upper principal quantum numbers
-    real(dp) :: nu0=0             !< rest frequency [Hz]
+    integer  :: n=0, m=0 !< lower and upper principal quantum numbers
+    real(dp) :: nu0=0    !< rest frequency [Hz]
     real(dp) :: grad=0, gstk=0, gw1=0, gw2=0, gw3=0
     logical  :: bpo=.false.
     integer  :: io=0
@@ -171,7 +171,7 @@ MODULE hprofl_mod
   end type hcell_t
 
   ! Lyman alpha wing regions, in relative detuning q
-  real(8), parameter :: LyA0 = 82259.105 !< wavenumber
+  real(8), parameter :: LyA0 = 82259.105                    !< wavenumber
   real(8), parameter :: rayqcut = (1e8/1400.d0 - LyA0)/LyA0 !<Changed from 1240 to 1400 by BPz 04/10-2007
   real(8), parameter :: redthresh = 20000./LyA0 - 1d0
   real(8), parameter :: q4000 = -4000./LyA0

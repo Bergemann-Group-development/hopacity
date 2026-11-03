@@ -242,10 +242,10 @@ contains
   !> Coded by Richard Hoppe, July 2023
   !===============================================================================
   SUBROUTINE pchip_mono4(xx, yy, newx, newy, sorted, newdydx)
-    real(4), intent(in) :: xx(:)            !< X values of the data points
-    real(4), intent(in) :: yy(:)            !< Y values of the data points
-    real(4), intent(in) :: newx(:)          !< X values to interpolate at
-    real(4), intent(out) :: newy(:)         !< Interpolated Y values
+    real(4), intent(in) :: xx(:)                 !< X values of the data points
+    real(4), intent(in) :: yy(:)                 !< Y values of the data points
+    real(4), intent(in) :: newx(:)               !< X values to interpolate at
+    real(4), intent(out) :: newy(:)              !< Interpolated Y values
     real(4), intent(out), optional :: newdydx(:) !< Derivative at interpolation points
     real(4), save, allocatable :: dydx(:)   ! derivative
     real(4), save, allocatable :: dx(:)
@@ -323,10 +323,10 @@ contains
   !> Coded by Richard Hoppe, July 2023
   !===============================================================================
   SUBROUTINE pchip_mono8(xx, yy, newx, newy, sorted)
-    real(8), intent(in) :: xx(:)            !< X values of the data points
-    real(8), intent(in) :: yy(:)            !< Y values of the data points
-    real(8), intent(in) :: newx(:)          !< X values to interpolate at
-    real(8), intent(out) :: newy(:)         !< Interpolated Y values
+    real(8), intent(in) :: xx(:)    !< X values of the data points
+    real(8), intent(in) :: yy(:)    !< Y values of the data points
+    real(8), intent(in) :: newx(:)  !< X values to interpolate at
+    real(8), intent(out) :: newy(:) !< Interpolated Y values
     real(8), save, allocatable :: dydx(:)   ! derivative
     real(8), save, allocatable :: dx(:)
     real(8), save, allocatable :: dy(:)
@@ -396,10 +396,10 @@ contains
   !> Coded by Richard Hoppe, July 2023
   !===============================================================================
   SUBROUTINE pchip_mono4_reg_period(yy, new_x0, new_dx, newy, newdydx)
-    real(4), intent(in) :: yy(:)            !< Y values of the data points
-    real(8), intent(in) :: new_x0           !< Starting x value in grid units
-    real(8), intent(in) :: new_dx           !< Spacing of new x values in grid units
-    real(4), intent(out) :: newy(:)         !< Interpolated Y values
+    real(4), intent(in) :: yy(:)                 !< Y values of the data points
+    real(8), intent(in) :: new_x0                !< Starting x value in grid units
+    real(8), intent(in) :: new_dx                !< Spacing of new x values in grid units
+    real(4), intent(out) :: newy(:)              !< Interpolated Y values
     real(4), intent(out), optional :: newdydx(:) !< Derivative per grid unit at interpolation points
     real(4), save, allocatable :: dydx(:)   ! derivative
     real(4), save, allocatable :: dy(:)
@@ -597,8 +597,8 @@ contains
 
   !===============================================================================
   SUBROUTINE interp1d_reg_period (yy, new_x0, new_dx, newy)
-    real(8), intent(in) :: new_x0    !< Starting x value in grid units
-    real(8), intent(in) :: new_dx    !< Spacing of new x values in grid units
+    real(8), intent(in) :: new_x0 !< Starting x value in grid units
+    real(8), intent(in) :: new_dx !< Spacing of new x values in grid units
     real(4), dimension(:), intent(in) :: yy
     real(4), dimension(:), intent(out) :: newy
     real(4) :: ratio, delta

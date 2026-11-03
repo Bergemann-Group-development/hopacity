@@ -7,9 +7,9 @@ MODULE bbtrans_mod
     real(dp) :: nu0
     real(dp) :: lam0
     real(dp) :: lam_air
-    integer :: nnu !< number of frequencies in the line
+    integer :: nnu                                          !< number of frequencies in the line
     real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 !< line broadening (damping) constants
-    real(dp) :: grad_in=0, gstk_in=0, gv_in=0 !< input values for line broadening
+    real(dp) :: grad_in=0, gstk_in=0, gv_in=0               !< input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
     real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, Bij is the
     !> transition from the lower to the upper

@@ -31,11 +31,11 @@ MODULE line_types_mod
     !> per-isotope population base (bulk path) or via append_line's gpref (model atoms).
     real(4),  allocatable :: gpref(:)
     ! broadening (already scaled by over_4pi/nu0, as bbtrans_mod's prepare_* routines)
-    real(4),  allocatable :: grad(:)       !< radiative damping
-    real(4),  allocatable :: gw1(:)      !< van der Waals coefficient
-    real(4),  allocatable :: gw2(:)      !< van der Waals exponent
-    real(4),  allocatable :: gstk(:)       !< Stark constant (sign encodes recipe)
-    logical,  allocatable :: unsold(:)   !< .true. -> Unsold vdW, .false. -> Barklem
+    real(4),  allocatable :: grad(:)   !< radiative damping
+    real(4),  allocatable :: gw1(:)    !< van der Waals coefficient
+    real(4),  allocatable :: gw2(:)    !< van der Waals exponent
+    real(4),  allocatable :: gstk(:)   !< Stark constant (sign encodes recipe)
+    logical,  allocatable :: unsold(:) !< .true. -> Unsold vdW, .false. -> Barklem
     ! bookkeeping
     integer,  allocatable :: lev_i(:)    !< NLTE lower level index (filled at opacity time)
     integer,  allocatable :: lev_j(:)    !< NLTE upper level index
@@ -62,12 +62,12 @@ MODULE line_types_mod
     !> (the union grid of an NLTE run is per-line ascending but not globally sorted, so
     !> the marching cursor is replaced by a bisection inside each window).
     integer,  allocatable :: iws(:), iwe(:)
-    integer,  allocatable :: icen(:)     !< window centre index (f0 seed; grid is symmetric)
-    integer,  allocatable :: itrans(:)   !< target column in gamma_ij/gamma_ji (patch subset)
-    real(4),  allocatable :: wA(:)       !< Einstein Aij (x component weight) for rates
-    real(4),  allocatable :: cwt(:)      !< component weight (wphi measure; 1 for plain lines)
-    real(4),  allocatable :: dej(:)      !< upper_ev - lower_ev = H_E*nu0 [eV] (preconditioning)
-    integer,  allocatable :: iso_out(:)  !< isotope number for the linelist_out.txt grouping
+    integer,  allocatable :: icen(:)    !< window centre index (f0 seed; grid is symmetric)
+    integer,  allocatable :: itrans(:)  !< target column in gamma_ij/gamma_ji (patch subset)
+    real(4),  allocatable :: wA(:)      !< Einstein Aij (x component weight) for rates
+    real(4),  allocatable :: cwt(:)     !< component weight (wphi measure; 1 for plain lines)
+    real(4),  allocatable :: dej(:)     !< upper_ev - lower_ev = H_E*nu0 [eV] (preconditioning)
+    integer,  allocatable :: iso_out(:) !< isotope number for the linelist_out.txt grouping
     ! --- hydrogen extension (the H I linelist, see append_h_line) ---------------------
     !> principal quantum numbers of the lower and upper level, which select the Stark
     !> profile; lev_i/lev_j start equal to them and take the departure-set level indices

@@ -90,8 +90,8 @@ contains
   !===============================================================================
   PURE SUBROUTINE wcalc(nh, nhe, ne, shield, ns, w)
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    real(dp), intent(in) :: ns  !< effective principal quantum number
-    real(dp), intent(out), dimension(:,:,:) :: w  !< occupation probability
+    real(dp), intent(in) :: ns                   !< effective principal quantum number
+    real(dp), intent(out), dimension(:,:,:) :: w !< occupation probability
     real(dp) :: x1, x2, neutr, k1, k2, x, frac, charg, res
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
     integer :: i,j,k, m(3)

@@ -38,21 +38,21 @@ MODULE hvcs_mod
 
   !  VCS table grid dimensions (from the SIU lf_param.inc); the product
   !  NNHW*NNHT*NNHE == 2288 is asserted against every profile block on read.
-  integer, parameter :: NNHW   = 44   !< wavelength (delta-lambda) points
-  integer, parameter :: NNHT   = 4    !< temperature nodes
-  integer, parameter :: NNHE   = 13   !< electron-density nodes
-  integer, parameter :: NNHH   = 13   !< hydrogen-density (resonance) nodes
-  integer, parameter :: NNHMAX = 18   !< max lines per series
-  integer, parameter :: NSER   = 3    !< Balmer, Paschen, Brackett
+  integer, parameter :: NNHW   = 44 !< wavelength (delta-lambda) points
+  integer, parameter :: NNHT   = 4  !< temperature nodes
+  integer, parameter :: NNHE   = 13 !< electron-density nodes
+  integer, parameter :: NNHH   = 13 !< hydrogen-density (resonance) nodes
+  integer, parameter :: NNHMAX = 18 !< max lines per series
+  integer, parameter :: NSER   = 3  !< Balmer, Paschen, Brackett
   !>  Longest axis qpol4 is ever handed (NH, T or Ne) -- sizes its scratch.
   integer, parameter :: NNAXMAX = max(NNHH, max(NNHT, NNHE))
 
   !>  Per-series grid + axes (log10 quantities), loaded once at setup.
   real(4), save :: grid_vcs(NNHW,NNHH,NNHT,NNHE,NNHMAX,NSER) = 0.0
-  real(4), save :: nw_vcs(NNHW,NSER) = 0.0   !< log10 delta-lambda [AA]
-  real(4), save :: nt_vcs(NNHT,NSER) = 0.0   !< log10 T
-  real(4), save :: ne_vcs(NNHE,NSER) = 0.0   !< log10 Ne
-  real(4), save :: nh_vcs(NNHH,NSER) = 0.0   !< log10 N(HI)
+  real(4), save :: nw_vcs(NNHW,NSER) = 0.0 !< log10 delta-lambda [AA]
+  real(4), save :: nt_vcs(NNHT,NSER) = 0.0 !< log10 T
+  real(4), save :: ne_vcs(NNHE,NSER) = 0.0 !< log10 Ne
+  real(4), save :: nh_vcs(NNHH,NSER) = 0.0 !< log10 N(HI)
   !>  Node slopes along the T axis (qpol4's) of the lines without an N(HI) axis,
   !>  where the T interpolation reads the grid directly.
   real(4), save :: tslope_vcs(NNHW,NNHT,NNHE,NNHMAX,NSER) = 0.0
@@ -86,10 +86,10 @@ MODULE hvcs_mod
   !>  idempotent, so a caller that keeps one per cell and line (rt_patch's hvcs)
   !>  builds each only once.
   type, public :: vcs_profile_t
-    real(4) :: lp(NNHW) = 0.0     !< log10 profile on the delta-lambda grid
-    real(8) :: lognorm  = 0.d0    !< log10 of its area in delta-lambda
-    real(8) :: lam0     = 0.d0    !< line centre wavelength [AA]
-    real(8) :: q_tail   = 0.d0    !< |q| of the outer table edge; beyond it a power law
+    real(4) :: lp(NNHW) = 0.0  !< log10 profile on the delta-lambda grid
+    real(8) :: lognorm  = 0.d0 !< log10 of its area in delta-lambda
+    real(8) :: lam0     = 0.d0 !< line centre wavelength [AA]
+    real(8) :: q_tail   = 0.d0 !< |q| of the outer table edge; beyond it a power law
     real(8) :: ta = 0.d0, ts = 0.d0   ! ... phi = exp(ta + ts*ln|q|), see vcs_tail
     integer :: n = -1, m = -1     !< stamp: line ...
     real(8) :: nu0 = -1.d0        ! ...

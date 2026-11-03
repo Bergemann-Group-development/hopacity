@@ -67,9 +67,9 @@ MODULE qlg
   public :: qlg_init
   public :: qlg_toy_sweep, qlg_bot_sweep, qlg_mid_sweep, qlg_top_sweep
   public :: qlg_ref_f64
-  public :: qlg_bot_phi, qlg_bot_profile          !< local addition, see the bottom of this file
-  public :: qlg_bot_coef, qlg_bot_eval             !< local addition, as is qlg_bot_coef_t
-  public :: qlg_bot_cell, qlg_bot_line, qlg_bot_line_eval, qlg_bot_line_sweep   !< local addition
+  public :: qlg_bot_phi, qlg_bot_profile                                      !< local addition, see the bottom of this file
+  public :: qlg_bot_coef, qlg_bot_eval                                        !< local addition, as is qlg_bot_coef_t
+  public :: qlg_bot_cell, qlg_bot_line, qlg_bot_line_eval, qlg_bot_line_sweep !< local addition
 
   !> QLG-bot's per-line setup for one damping a (local addition, see qlg_bot_coef)
   type, public :: qlg_bot_coef_t
@@ -88,8 +88,8 @@ MODULE qlg
   real(4), parameter :: OVERPI = 0.3183098862, GNORM = 0.4697186
   real(4), parameter :: SQL2 = 0.8325546112
   real(8), parameter :: DLN2 = 0.69314718055994531d0
-  real(8), parameter :: ISQPI8 = 0.564189583547756287d0   !< 1/sqrt(pi)
-  real(4), parameter :: ISQPI  = 0.5641895835              !< 1/sqrt(pi), fp32 (local addition)
+  real(8), parameter :: ISQPI8 = 0.564189583547756287d0 !< 1/sqrt(pi)
+  real(4), parameter :: ISQPI  = 0.5641895835           !< 1/sqrt(pi), fp32 (local addition)
 
   !-------------------------------------------------------------------------------------
   !> minimax p2(f) ~ 2^-f on f in [0,1); G = 2^-u as p2(u-n) * 2^-n. See fexp2.

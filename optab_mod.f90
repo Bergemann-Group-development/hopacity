@@ -37,9 +37,9 @@ MODULE optab_mod
   !> down to every rt_patch that samples it (composition_type%pca).
   !=============================================================================
   type :: pca_transform_type
-    real(8) :: mu(2)=0            !< mean of (lnT, lnNe)
-    real(8) :: rot(2,2)=0          !< PC directions (unit eigenvectors as columns)
-    real(8) :: c0(2)=0, dc(2)=1    !< min coordinate & spacing along each PC axis
+    real(8) :: mu(2)=0          !< mean of (lnT, lnNe)
+    real(8) :: rot(2,2)=0       !< PC directions (unit eigenvectors as columns)
+    real(8) :: c0(2)=0, dc(2)=1 !< min coordinate & spacing along each PC axis
   end type
 
   !=============================================================================
@@ -51,10 +51,10 @@ MODULE optab_mod
   !=============================================================================
   type :: sample_optab_type
     integer :: nnu=0, ntemp=0, nne=0
-    type(pca_transform_type) :: pca       !< (lnT, lnNe) -> table-axis coordinates
-    real(8), dimension(:), allocatable :: lam                 !< (nnu) irregular wavelength nodes
-    real(4), dimension(:,:,:), allocatable :: val             !< (nnu,ntemp,nne) /chi500
-    real(4), dimension(:,:,:), allocatable :: dl, dt, de      !< precomputed node slopes
+    type(pca_transform_type) :: pca                      !< (lnT, lnNe) -> table-axis coordinates
+    real(8), dimension(:), allocatable :: lam            !< (nnu) irregular wavelength nodes
+    real(4), dimension(:,:,:), allocatable :: val        !< (nnu,ntemp,nne) /chi500
+    real(4), dimension(:,:,:), allocatable :: dl, dt, de !< precomputed node slopes
     !> Second, scattering component with its own node slopes, /chi500.
     !>   background table: val is the true absorption and scat the coherent
     !>     scattering, kept DISJOINT and summed only after interpolation.  Both

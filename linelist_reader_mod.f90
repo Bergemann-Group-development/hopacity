@@ -43,15 +43,15 @@ MODULE linelist_reader_mod
 
   !> One species block: its header, its records' byte range, and how they are addressed.
   type, public :: ll_block_t
-    character(len=80) :: id = ''      !< the species line (Tumult) or the label line (Turbospectrum), verbatim
-    character(len=32) :: siso = ''    !< isotope token (Tumult) or whole species code (Turbospectrum)
-    logical           :: ts = .false. !< a Turbospectrum block
-    integer           :: ion = 0      !< ionisation stage a Turbospectrum header states
-    integer           :: nrec = 0     !< record count the header declares
-    integer(8)        :: dstart = 0   !< first byte of the first record
-    integer(8)        :: dend = 0     !< one past the last byte of the block
-    integer           :: width = 0    !< bytes per record incl. newline; 0 when ragged
-    real(dp)          :: lam_first = 0d0, lam_last = 0d0   !< air Angstrom
+    character(len=80) :: id = ''                         !< the species line (Tumult) or the label line (Turbospectrum), verbatim
+    character(len=32) :: siso = ''                       !< isotope token (Tumult) or whole species code (Turbospectrum)
+    logical           :: ts = .false.                    !< a Turbospectrum block
+    integer           :: ion = 0                         !< ionisation stage a Turbospectrum header states
+    integer           :: nrec = 0                        !< record count the header declares
+    integer(8)        :: dstart = 0                      !< first byte of the first record
+    integer(8)        :: dend = 0                        !< one past the last byte of the block
+    integer           :: width = 0                       !< bytes per record incl. newline; 0 when ragged
+    real(dp)          :: lam_first = 0d0, lam_last = 0d0 !< air Angstrom
   end type ll_block_t
 
   !> An open line-list file, positioned at the next block header.
@@ -65,8 +65,8 @@ MODULE linelist_reader_mod
   public :: ll_open, ll_close, ll_next_block, ll_block_range, ll_whole_block
   public :: ll_read_slice, ll_read_ranges, ll_index_records, ll_has_records
 
-  integer, parameter :: HDR_CHUNK = 4096   !< enough for two headers and one record
-  integer, parameter :: PROBE_LEN = 32     !< bytes read to parse a record's wavelength
+  integer, parameter :: HDR_CHUNK = 4096 !< enough for two headers and one record
+  integer, parameter :: PROBE_LEN = 32   !< bytes read to parse a record's wavelength
   character, parameter :: NL = char(10)
 
 CONTAINS

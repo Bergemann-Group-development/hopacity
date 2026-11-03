@@ -85,11 +85,11 @@ MODULE linelist_mod
   integer, public :: voigt_kernel = 0
 
   ! --- profiling work counters (add_opacity); cheap integer increments ----------------
-  logical,    public :: ll_profile = .false.   !< enable counting
-  integer(8), public :: ll_nvisit = 0          !< active line-visits (cell x line)
-  integer(8), public :: ll_npass  = 0          !< lines passing the ex/strength cutoff
-  integer(8), public :: ll_nvoigt = 0          !< Voigt evaluations (centre + wings)
-  integer(8), public :: ll_nmarch = 0          !< cursor advance steps
+  logical,    public :: ll_profile = .false. !< enable counting
+  integer(8), public :: ll_nvisit = 0        !< active line-visits (cell x line)
+  integer(8), public :: ll_npass  = 0        !< lines passing the ex/strength cutoff
+  integer(8), public :: ll_nvoigt = 0        !< Voigt evaluations (centre + wings)
+  integer(8), public :: ll_nmarch = 0        !< cursor advance steps
 
 contains
 

@@ -427,9 +427,9 @@ contains
   !> so the transform is computed once rather than repeated per moment/extent.
   !===============================================================================
   SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2, use_pca)
-    real(8), intent(in)  :: x1(:), x2(:)     !< sample coordinates, e.g. (lnT, lnNe)
-    real(8), intent(in)  :: d1, d2           !< requested resolution along x1, x2
-    integer, intent(in)  :: npad             !< extra nodes past the data hull, each end
+    real(8), intent(in)  :: x1(:), x2(:) !< sample coordinates, e.g. (lnT, lnNe)
+    real(8), intent(in)  :: d1, d2       !< requested resolution along x1, x2
+    integer, intent(in)  :: npad         !< extra nodes past the data hull, each end
     real(8), intent(out) :: mu(2), rot(2,2), c0(2), dc(2)
     integer, intent(out) :: n1, n2
     logical, intent(in), optional :: use_pca !< .false. -> axis-aligned (no rotation)

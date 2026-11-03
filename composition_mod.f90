@@ -86,8 +86,8 @@ MODULE composition_mod
     !> PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
     !> ferried from init_tabulated_comp down to each rt_patch's opac table
     type(pca_transform_type) :: pca
-    real(dp), allocatable :: set_da(:,:)       !< (atomic number, output set)
-    logical, allocatable :: set_element(:,:)   !< explicit manifest entries
+    real(dp), allocatable :: set_da(:,:)     !< (atomic number, output set)
+    logical, allocatable :: set_element(:,:) !< explicit manifest entries
     type(set_population_t), allocatable :: set_pop(:)
   contains
     procedure :: init => injon
@@ -137,16 +137,16 @@ MODULE composition_mod
   !> is shared by every patch and every ray-aligned copy.
   type, public :: departure_atom_t
     character(len=4096) :: file=''
-    real(8), allocatable :: ev(:)        !< 100*stage + energy above the stage's ground [eV]
-    real(8), allocatable :: level_ev(:)  !< energy above the atom's ground [eV]
-    integer, allocatable :: line_lo(:), line_up(:)  !< level indices of each transition
-    real(8), allocatable :: line_lam(:)  !< vacuum wavelength of each transition [AA]
+    real(8), allocatable :: ev(:)                  !< 100*stage + energy above the stage's ground [eV]
+    real(8), allocatable :: level_ev(:)            !< energy above the atom's ground [eV]
+    integer, allocatable :: line_lo(:), line_up(:) !< level indices of each transition
+    real(8), allocatable :: line_lam(:)            !< vacuum wavelength of each transition [AA]
     type(departure_atom_t), pointer :: next => null()
   end type departure_atom_t
 
   type, public :: departure_pointer_t
-    character(len=6) :: key=''  !< species key: element symbol ('Mg') or molecule formula ('H2O')
-    logical :: is_set=.false.   !< an unset key must never match anything
+    character(len=6) :: key='' !< species key: element symbol ('Mg') or molecule formula ('H2O')
+    logical :: is_set=.false.  !< an unset key must never match anything
     real(4), pointer :: mem(:,:,:,:) => null()
     type(departure_atom_t), pointer :: atom => null()
     integer :: nlevel=0
