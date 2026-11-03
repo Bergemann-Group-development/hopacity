@@ -28,7 +28,9 @@ MODULE trans_mod
     ! keeps of a transition shares them with the atom instead of duplicating them
     ! for every window, direction and depth slab.  The patch indexes them with the
     ! global frequency index of its own range.
-    real(8), dimension(:), pointer, contiguous :: wnu => null() ! frequency quadrature weight [Hz]
+    ! frequency quadrature weight of the rate integrals: dnu/nu for a line, whose
+    ! rates take Aij as a factor, and dnu/(h/4pi*nu) for a continuum (atom_mod)
+    real(8), dimension(:), pointer, contiguous :: wnu => null()
 
   contains
     procedure :: check_range
