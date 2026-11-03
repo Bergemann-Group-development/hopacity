@@ -157,7 +157,7 @@ contains
   !> integer part spliced straight into the exponent field.  Used by QLG-toy, QLG-mid and
   !> QLG-top.  The clamp at U_CAP = 127 is what makes the splice safe; past it 2^-u has
   !> underflowed in fp32 anyway.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE fexp2(u, E)
     real(4), intent(in) :: u
     real(4), intent(out) :: E
@@ -179,7 +179,7 @@ contains
   !> numbers.  Eq. (6) of the paper, on Whiting's half-width.  The smallest member for
   !> which both counts are minimal at its accuracy; stated in the paper to be read, and
   !> kept here so that it can be run.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_toy_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
     integer, intent(in)  :: n
@@ -218,7 +218,7 @@ contains
   !> sqrt-free rational half-width of Eq. (4).  The tabulated member: G and Z_0.2/L^2 are
   !> read from TGX and TH2X at one shared snapped index, so call qlg_init first.
   !> Maximum relative error over the validation domain, compiled in fp32: 5.6923e-3.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_bot_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
     integer, intent(in)  :: n
@@ -262,7 +262,7 @@ contains
   !> multiply by G stands between fexp2 and the result, which is what keeps a G-coupled
   !> correction as cheap as a pure-L one of the same L-power count.
   !> Maximum relative error, compiled in fp32: 9.2002e-4.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_mid_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
     integer, intent(in)  :: n
@@ -307,7 +307,7 @@ contains
   !> into three Horner chains in L -- pure L, G L, G^2 -- so the whole correction costs one
   !> evaluation of G, one of G^2, and thirteen FMAs.
   !> Maximum relative error, compiled in fp32: 3.1790e-5.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_top_sweep (a, v0, dv, n, K)
     real(4), intent(in)  :: a, v0, dv
     integer, intent(in)  :: n
@@ -360,7 +360,7 @@ contains
   !> milliseconds.  Entry points that must make it: SRC/composition_patch_mod.f90 after
   !> reading &linelist_params, and the standalone library's hop_init.
   !> Both tables are built in fp64 and rounded once, on the same grid u_i = (i/XSCL)^2.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE qlg_init
     integer :: i
     real(8) :: x
@@ -380,7 +380,7 @@ contains
   !> analytic limits at one fixed damping ratio, divided by the correction envelope q.
   !> The four anchor constants belong to that r* and are quoted to full fp64.  Evaluated
   !> against qlg_ref_f64 below, which is this file's own reference-grade Voigt in double.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   FUNCTION qlg_wr02 (u) result (w)
     real(8), intent(in) :: u
     real(8), parameter  :: A2  = 0.18741813853432507d0   ! a* : a/Gamma_exact(a) = 0.2
@@ -407,7 +407,7 @@ contains
   !> either.  Public, so that a caller can check a member against it, and used
   !> internally by qlg_init to build TH2X.  It is not one of the four members -- it costs
   !> roughly an order of magnitude more than any of them and no point loop should call it.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_ref_f64 (a, v0, dv, n, K)
     real(8), intent(in)  :: a, v0, dv
     integer, intent(in)  :: n
@@ -497,7 +497,7 @@ contains
   !>
   !> ELEMENTAL is legal over the PURE qlg_bot_sweep, and is used: rt_patch_mod and
   !> hprofl_mod both apply these to array sections.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   ELEMENTAL FUNCTION qlg_bot_phi (a, v) result (h)
     real(4), intent(in) :: a, v
     real(4) :: h, K1(1)
@@ -511,7 +511,7 @@ contains
   !> for damping a, and qlg_bot_eval(c, v) is the profile at one point. It equals
   !> qlg_bot_phi(a, v) up to rounding: the compiler may contract the two forms into
   !> fused multiply-adds differently, which is why qlg_bot_phi still calls the sweep.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   ELEMENTAL FUNCTION qlg_bot_coef (a) result (c)
     real(4), intent(in) :: a
     type(qlg_bot_coef_t) :: c
@@ -534,7 +534,7 @@ contains
   !> D (a + sqrt(ln2)/d) with d = 1 + 0.606 a, is e/(gL e + SQ) with e = D + 0.606 gL
   !> in units of x, so a caller on x needs neither a = gL/D nor v = x/D. qlg_bot_coef is
   !> the case D = 1, S = sqrt(pi), which is qlg_bot_sweep's setup operation for operation.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE bot_setup (gL, D, SQ, S, c)
     real(4), intent(in) :: gL, D, SQ, S
     type(qlg_bot_coef_t), intent(out) :: c
@@ -572,7 +572,7 @@ contains
 
   !=====================================================================================
   !> The Doppler-width terms of qlg_bot_line, once per cell rather than once per line.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   ELEMENTAL FUNCTION qlg_bot_cell (D) result (w)
     real(4), intent(in) :: D
     type(qlg_bot_cell_t) :: w
@@ -612,7 +612,7 @@ contains
   !> Against exact Voigt profiles (Re w, a = 1e-4..1e7, q = 1..1e14, fp32) the window
   !> never ends inside the true tolerance crossing; it is the true one at the median,
   !> 14 % wider at the 99th percentile and at most 1.8 times wider (a ~ 0.3-3).
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_bot_line (w, gL, S, ref, lnq, c, hw)
     type(qlg_bot_cell_t), intent(in) :: w
     real(4), intent(in)  :: gL, S, ref, lnq
@@ -642,7 +642,7 @@ contains
   !> centre correctly in each window and departs from uniform only across it. The anchor
   !> is read before the extent is known, which keeps the load off the path from the
   !> setup's division to the sweep.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE SUBROUTINE qlg_bot_line_sweep (w, gL, S, ref, lnq, nf, llam, llc, pos, idl, cap, &
                                       fa, fb, hw, K)
     type(qlg_bot_cell_t), intent(in) :: w
@@ -678,7 +678,7 @@ contains
   !> nu/nu0 Jacobian.  Kept as a separate routine rather than folded into the call sites
   !> because that tail is exactly what distinguishes the NLTE rate integrals' convention
   !> from the opacity path's, and it is easy to drop.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   ELEMENTAL FUNCTION qlg_bot_profile (a, q, vpr, idf) result (h)
     real(4), intent(in) :: a, q, vpr, idf
     real(4) :: h, v, K1(1)

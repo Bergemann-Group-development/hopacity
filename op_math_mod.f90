@@ -503,7 +503,7 @@ contains
   !> 2. Clamps the lower edge to a physically valid wavelength
   !> 3. Sorts the expanded intervals
   !> 4. Merges overlapping or touching intervals
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
     real(dp), intent(in) :: windows(:,:)
     integer, intent(in) :: n_windows
@@ -560,7 +560,7 @@ contains
 
   !=====================================================================================
   !> Sort an array of intervals by blue edge (ascending).
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE sort_intervals(intervals, n)
     type(interval_t), intent(inout) :: intervals(:)
     integer, intent(in) :: n

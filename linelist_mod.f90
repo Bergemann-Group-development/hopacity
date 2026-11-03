@@ -106,7 +106,7 @@ contains
   !> fdamp itself; anstee_mod repeats that lookup, and a cross-section it finds is
   !> stored packed as an ABO value, so that gv_in, and the linelist_out.txt written
   !> from it, state the broadening the line was given.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE build_linelist(ll, buf, lstart, lend, n, awgt, ion_j, xion, is_mol, &
                             vbar2e4, do_mask, lam_min, lam_max, intervals, ts_iel)
     type(linelist_type), intent(inout) :: ll
@@ -254,7 +254,7 @@ contains
   !> Append a single line with explicit (already prepared) parameters; used to convert
   !> model-atom bound-bound transitions (atom_mod%build_ll) into a linelist_type.
   !> Broadening parameters carry the same over_4pi/nu0 scaling as the prepare_* routines.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE append_line(ll, llam0, nu0, lower_ev, gpref, grad, gw1, gw2, gstk, unsold, &
                          lev_i, lev_j, itrans, ipart, cwt, dej, iso_out, &
                          loggf, gv_in, grad_in, gstk_in)
@@ -305,7 +305,7 @@ contains
   !> identification is stored: add_h_opacities rebuilds the Stark, resonance and van der
   !> Waals widths from (n_lo, n_up, nu0) with hydrogen_line and Bij from loggf, so
   !> gpref/grad/gw1/gw2/gstk stay 0. lev_i/lev_j start as n_lo/n_up.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE append_h_line(ll, llam0, nu0, lower_ev, loggf, gv_in, grad_in, gstk_in, &
                            n_lo, n_up)
     type(linelist_type), intent(inout) :: ll
@@ -345,7 +345,7 @@ contains
   !=====================================================================================
   !> After all blocks for a particle have been appended, sort every parallel array by
   !> llam0 ascending so the kernel's monotonic march is valid across isotope blocks.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE finalize_linelist(ll)
     type(linelist_type), intent(inout) :: ll
     integer, allocatable :: idx(:)
@@ -457,7 +457,7 @@ contains
   !>     processed before in the same chunk, and leaving it out can only widen the window;
   !>   * treats a line centred inside the chunk exactly as without reaches.
   !> A list without reaches keeps the whole-slice visit and the nearest-end treatment.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE add_opacity(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, e_kT, &
                          lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
                          one_m_eps, chi_scat, do_scat, i0, i1, llam_lines)
@@ -713,7 +713,7 @@ contains
   !> no bisection are needed, because the grid spacing dllam is constant. qlg_bot_line_sweep
   !> sizes each line's window and sweeps it in one call, in grid steps.
   !> Windowed (per-line ll%iws/iwe) mode is not supported here.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE add_opacity_equi(ll, llam, chi, eta, cont, logref, vproj, inv_df, vbar2, &
                               e_kT, lnbase, ne, tothi, stark_pe, dep_mem, do_nlte, &
                               one_m_eps, chi_scat, do_scat, i0, i1, llam_lines)
@@ -962,7 +962,7 @@ contains
   !>   cont, logref : (nf,m1,m2,m3) continuum + log-space tolerance reference
   !>   llam         : (nf) log(lambda) grid
   !>   dep_mem      : (m1,m2,m3,nlevel) departure coefficients (dummy (.,.,.,1) when LTE)
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE add_particle_opacity(ptc, temp, vmic, llam, chi, eta, cont, logref, &
                                   vproj, e_kT, ne, tothi, stark_pe, dep_mem, &
                                   do_nlte, equidistant, one_m_eps, chi_scat, i0, i1, &
@@ -1060,7 +1060,7 @@ contains
 
   !=====================================================================================
   !> index of the grid point in llam(ws:we) (ascending) closest to llc
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   PURE FUNCTION bisect_nearest(llam, ws, we, llc) result(f0)
     real(dp), dimension(:), intent(in) :: llam
     integer,  intent(in) :: ws, we
@@ -1095,7 +1095,7 @@ contains
   !> A per-chunk list is rebuilt on every call rather than stored: it costs one pass over
   !> the narrowed slice, a small fraction of one depth point's visit, and needs no state
   !> tied to how a run's patches divide the grid.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE select_lines(ll, llam, vproj, l0, l1, sel, nsel, hb)
     type(linelist_type), intent(in) :: ll
     real(dp), intent(in) :: llam(:)
@@ -1170,7 +1170,7 @@ contains
   !> same linelist (a composition and one of its per-patch copies), so dst ends up with
   !> the maximum over every copy merged into it, and take over the departure levels the
   !> copies assigned.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE merge_ll_diag(dst, src)
     type(linelist_type), intent(inout) :: dst
     type(linelist_type), intent(in) :: src
@@ -1192,7 +1192,7 @@ contains
   !> All linelist_out.txt blocks of one composition particle: for each isotope (main
   !> first), a header plus the records that were used. ll is the per-isotope SoA array
   !> (0 = main, k = isotope iso_values(k)).
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE print_ll_particle(unit, id, iso_values, ll, iso_digits)
     integer,             intent(in) :: unit
     character(len=*),    intent(in) :: id
@@ -1230,7 +1230,7 @@ contains
   !> numbers are taken from iso_out directly (ascending, so the main block leads). evi
   !> is relative to the stage ground level and i/j are the atom level indices, so a
   !> block is a self-consistent input linelist for that species.
-  !-------------------------------------------------------------------------------------
+  !=====================================================================================
   SUBROUTINE print_ll_atom(unit, ll, ids, s0)
     integer,             intent(in) :: unit, s0
     character(len=*),    intent(in) :: ids(:)

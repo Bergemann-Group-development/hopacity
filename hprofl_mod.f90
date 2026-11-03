@@ -610,7 +610,7 @@ contains
   !> Stark, natural, resonance and van der Waals widths, and the fine-structure
   !> pattern. Depends only on its arguments and the disable_*/hydrogen_BPO switches,
   !> so callers may rebuild it wherever it is needed instead of storing it.
-  !------------------------------------------------------------------------------------
+  !====================================================================================
   FUNCTION hydrogen_line (n, m, nu0) result(h)
     integer, intent(in) :: n, m
     real(dp), intent(in) :: nu0
@@ -717,7 +717,7 @@ contains
   !====================================================================================
   !> Fill a model-atom hydrogen transition (bbtrans_type, n and m in self%i, self%j)
   !> with the hydrogen_line parameters, and load the VCS tables if they are enabled.
-  !------------------------------------------------------------------------------------
+  !====================================================================================
   SUBROUTINE prepare_hydrogen_damping (self)
     class(bbtrans_type), intent(inout) :: self
     type(hline_t) :: h

@@ -695,7 +695,7 @@ contains
   !> (1, 1.5, 2, 3, 4, 6, 8) per decade, mirrored about zero.
   !> The endpoints are snapped to the nearest preferred mantissa.
   !> Output q has the shape  [-q_n, ..., -q_1, 0, q_1, ..., q_n].
-  ! ----------------------------------------------------------------------
+  ! ==============================================================================
   PURE SUBROUTINE symmetric_log_grid(q0, qmax, q)
     real(8),              intent(in)  :: q0, qmax
     real(8), allocatable, intent(out) :: q(:)

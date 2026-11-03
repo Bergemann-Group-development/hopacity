@@ -246,11 +246,11 @@ CONTAINS
     call collect_lines(nout)
   END FUNCTION hop_linelist_count
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> The collection itself.  lam_air is Angstrom (as in the line-list files), evi the
   !> lower-level energy [eV], strength the ratio above, and ispec a 0-based index into
   !> the list hop_linelist_species reports.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_get_linelist(n, lam_air, evi, loggf, strength, ispec) RESULT(status) &
            BIND(c, name='hop_get_linelist')
     integer(c_int), value :: n
@@ -276,11 +276,11 @@ CONTAINS
     ispec   (1:n) = ll_ispec(1:n) - 1        ! 0-based for the C caller
   END FUNCTION hop_get_linelist
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> The species ids the ispec column indexes, newline separated in index order.  Ids
   !> carry the ionization stage ('Fe I', 'Fe II', 'TiO'), so they cannot be separated
   !> by blanks the way hop_option_names does it.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_linelist_species(buf, buflen) RESULT(status) &
            BIND(c, name='hop_linelist_species')
     character(kind=c_char), intent(out) :: buf(*)
@@ -301,12 +301,12 @@ CONTAINS
     call f2c_string(text, buf, buflen, status)
   END FUNCTION hop_linelist_species
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Walk the solved composition and gather every reported line.  The order is the one
   !> m3d_patch_t%print_linelist writes linelist_out.txt in -- each element's ions, then
   !> the molecules -- so the two agree line for line, which is what makes the dump a
   !> usable check on this.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE collect_lines(nout)
     integer(c_int), intent(out) :: nout
     integer :: i, j, pass, ntot
@@ -343,9 +343,9 @@ CONTAINS
     nout = ntot
   END SUBROUTINE collect_lines
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> One particle's reported lines, from its line lists (one per isotope).
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE take_particle(ptc, pass, ntot)
     class(particle_type), intent(in) :: ptc
     integer, intent(in) :: pass
@@ -366,10 +366,10 @@ CONTAINS
     end do
   END SUBROUTINE take_particle
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Record one line.  ispec is the particle's index in ll_species, claimed lazily so a
   !> species that reports nothing takes no slot.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE emit(id, ispec, pass, ntot, lam_air, evi, loggf, strength)
     character(len=*), intent(in) :: id
     integer, intent(inout) :: ispec, ntot
@@ -413,12 +413,12 @@ CONTAINS
     end do
   END SUBROUTINE c2f_string
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Species lookup shared by hop_keep_species/hop_get_species.  Guards the bare
   !> element id case ('Fe' without an ionization stage): particle_by_id would
   !> crash on its unguarded second read, so only blank-free ids that name a
   !> molecule are allowed through.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE species_lookup (c, nm, particle, status)
     class(composition_type), target :: c
     character(len=*), intent(in) :: nm
@@ -486,11 +486,11 @@ CONTAINS
     status = 0
   END FUNCTION hop_init
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Atmosphere-provided abundances, log eps indexed by atomic number, for the next
   !> hop_init: what a dispatch run applies with atmos_params use_abnd=T.  Elements
   !> beyond n keep the standard value.  n=0 clears a previous vector.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_set_external_abundances(n, abund) RESULT(status) &
            BIND(c, name='hop_set_external_abundances')
     integer(c_int), value :: n
@@ -794,13 +794,13 @@ CONTAINS
     end select
   END FUNCTION hop_get_field
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Mark a species ('Fe I', 'CH', ...) so its number density survives the solve.
   !> Call after hop_init and before hop_load_state; the mark is set on the master
   !> instance, so every subsequent solve retains the species.  Mirrors dispatch's
   !> save_species pre-init marking: in_opac is read only by the deallocate keep-
   !> checks, so this does not change any opacity.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_keep_species(name) RESULT(status) BIND(c, name='hop_keep_species')
     character(kind=c_char), intent(in) :: name(*)
     integer(c_int) :: status
@@ -816,11 +816,11 @@ CONTAINS
     if (status == 0) particle%in_opac = .true.
   END FUNCTION hop_keep_species
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Number density [1/cm3] of a species in the loaded state.  The species must
   !> have been kept (hop_keep_species) before the hop_load_state call -- or be
   !> one HOP retains anyway (continuum-opacity and line-list species).
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_get_species(name, n, out) RESULT(status) &
            BIND(c, name='hop_get_species')
     character(kind=c_char), intent(in) :: name(*)
@@ -853,12 +853,12 @@ CONTAINS
     if (allocated(master)) grph = master%grph
   END FUNCTION hop_get_grph
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Microturbulence [km/s] of the loaded state.  vmic enters only the line
   !> broadening (composition%add_linelist_opacities), never the EOS, so it can
   !> be changed on a solved state instead of re-solving it.  A negative value is
   !> thermal-only broadening.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_set_vmic(n, vmic) RESULT(status) BIND(c, name='hop_set_vmic')
     integer(c_int), value :: n
     real(c_float), value :: vmic
@@ -1141,14 +1141,14 @@ CONTAINS
     call master%init_linelist(file_f, dlam, lam8, merged(1:nmerged))
   END FUNCTION hop_init_linelist_windows
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Read one line-list file into the master instance, keeping only lines inside
   !> [lam(1)-dlam, lam(nlam)+dlam] (pass nlam=0 for no wavelength mask).  Mirrors
   !> the composition%init_linelist calls dispatch makes at setup, one per file in
   !> linelist_folder; repeated calls accumulate.  Must be called after hop_init and
   !> BEFORE hop_load_state: the solve works on a fresh copy of master, and
   !> particle%ll is allocatable, so the copy carries the lines along.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   FUNCTION hop_init_linelist(linelist_file, dlam, nlam, lam) RESULT(status) &
            BIND(c, name='hop_init_linelist')
     character(kind=c_char), intent(in) :: linelist_file(*)

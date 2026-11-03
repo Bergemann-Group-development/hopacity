@@ -257,10 +257,10 @@ PROGRAM hop_prune
 
 CONTAINS
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> Read one namelist group from the input; a missing optional group keeps the
   !> defaults, a malformed one stops with a report of its unknown keys.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE read_group(name, required)
     character(len=*), intent(in) :: name
     logical, intent(in), optional :: required
@@ -313,11 +313,11 @@ CONTAINS
     comp_verbose = verbose
   END SUBROUTINE read_composition
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> n depth indices spread evenly over 1..nz (all of them for n <= 0 or n >= nz),
   !> the sampling tumult.linestrength.read_marcs established: rounded linspace
   !> over the full index range, duplicates removed.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE sample_depths(nz, n, idx)
     integer, intent(in) :: nz, n
     integer, allocatable, intent(out) :: idx(:)
@@ -345,12 +345,12 @@ CONTAINS
     call move_alloc(kept, idx)
   END SUBROUTINE sample_depths
 
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   !> The inputs as read, echoed group by group the way a run echoes its own, plus a
   !> &prune_result group with what the program derived from them: the format, the
   !> depths it sampled, the vmic and [Fe/H] the EOS saw, the vacuum windows and the
   !> number of transitions written.
-  !-----------------------------------------------------------------------------
+  !=============================================================================
   SUBROUTINE write_provenance(path)
     character(len=*), intent(in) :: path
     character(len=16) :: atmos_format_used

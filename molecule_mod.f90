@@ -795,11 +795,11 @@ contains
     call trace%end(itimer)
 
   contains
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> The molecule's current auction allocation encoded as one integer: the
     !> element it locked (limel) when it holds a lock, else 0.  Single-sourced
     !> so the round-to-round comparison and the store into plim cannot drift.
-    !---------------------------------------------------------------------------
+    !===========================================================================
     integer function alloc_code(mm)
       integer, intent(in) :: mm
       if (lockf(mm) >= 0d0) then
@@ -809,14 +809,14 @@ contains
       endif
     end function alloc_code
 
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> Damped Newton on the full coupled system from the current yv, for at
     !> most nit iterations: analytic Jacobian, step capped in ln f, Armijo
     !> backtracking on |F|^2.  Leaves yv, fi, fm, Fv, norm2, fe_c consistent
     !> with the last accepted state and mutates the shared Newton scratch
     !> (Amat, stp, yt, fit, fmt, errf, norm2t); ok reports scaled-residual
     !> convergence.
-    !---------------------------------------------------------------------------
+    !===========================================================================
     subroutine newton_solve(nit, ok)
       integer, intent(in)  :: nit
       logical, intent(out) :: ok
@@ -946,13 +946,13 @@ contains
       end do
     end subroutine newton_solve
 
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> Solve element ii's scalar conservation equation over yv(ii), all other
     !> unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
     !> Newton on ln H - ln A: ln of a positive sum of increasing exponentials
     !> is increasing and convex with slope in [1, nu_max], so this converges
     !> globally; the step cap only guards exp overflow.
-    !---------------------------------------------------------------------------
+    !===========================================================================
     subroutine solve_element(ii)
       integer, intent(in) :: ii
       real(dp) :: yy1, HH, dHH, bb, ss, ddy
@@ -990,12 +990,12 @@ contains
       dH_last = dHH ! d H/d y at the solution, reused as J22 by solve_pair
     end subroutine solve_element
 
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> Jointly solve the two conservation equations of elements i1 and i2
     !> (everything else fixed): the inner loop keeps F_i2 = 0 exactly via
     !> solve_element, the outer Newton moves yv(i1) along the constraint with
     !> the Schur-complement slope J11 - J12^2/J22 of the pair's SPD Jacobian.
-    !---------------------------------------------------------------------------
+    !===========================================================================
     subroutine solve_pair(i1, i2)
       integer, intent(in) :: i1, i2
       real(dp) :: H1, J11, J12, J22, bb, ss, ddy, slope
@@ -1051,11 +1051,11 @@ contains
       call solve_element(i2)
     end subroutine solve_pair
 
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
     !> Also updates the host fe_c to exp(yy(np1)), so that after the accepted
     !> line-search evaluation fe_c always matches the current state.
-    !---------------------------------------------------------------------------
+    !===========================================================================
     subroutine eval(yy, fatom, fmol, resid, nrm)
       real(dp), intent(in)  :: yy(:)
       real(dp), intent(out) :: fatom(:), fmol(:), resid(:), nrm
@@ -1096,10 +1096,10 @@ contains
       end do
     end subroutine eval
 
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> Find the solve-list index of the neutral root of constituent ion c, and
     !> the charge that c carries relative to it
-    !---------------------------------------------------------------------------
+    !===========================================================================
     subroutine constituent_root(c, idx, charge)
       type(ion_type), pointer, intent(in) :: c
       integer, intent(out) :: idx, charge

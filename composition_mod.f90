@@ -204,7 +204,7 @@ contains
 
   !===============================================================================
   !> Set the species key of a departure set.  An empty id leaves the set unmatched.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE departure_set_key(self, id)
     class(departure_pointer_t) :: self
     character(len=*), intent(in) :: id
@@ -220,7 +220,7 @@ contains
   !> symbol and a blank-free id is a whole molecule.  The match is at species level:
   !> key 'Mg' covers Mg I, Mg II, ... -- dep%atom%ev spans every stage, tagged 100*stage --
   !> but never MgH or Mn I.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   LOGICAL FUNCTION departure_matches(self, ptc) RESULT(hit)
     class(departure_pointer_t), intent(in) :: self
     class(particle_type), intent(in) :: ptc
@@ -239,7 +239,7 @@ contains
   !> The levels and transitions of the table-format model atom in file, read on the
   !> first request and shared afterwards.  The format is the one atom_mod%read_pandas
   !> reads; level and transition indices are 0-based in the file.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   FUNCTION departure_atom(file) RESULT(atom)
     character(len=*), intent(in) :: file
     type(departure_atom_t), pointer :: atom
@@ -306,7 +306,7 @@ contains
   !> index is checked against the line's energy (lower_ev, and lower_ev + h nu0 for the
   !> upper end) to TS's relative tolerance; a mismatch stops the run.  A line with an n
   !> beyond the atom's H I levels is set to -1 and stays in LTE.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE departure_assign_h_levels(self, hll)
     class(departure_pointer_t), intent(in) :: self
     type(linelist_type), intent(inout) :: hll
@@ -361,7 +361,7 @@ contains
   !> above the atom's ground, the line's lower_ev shifted by the atom's energy of the
   !> stage's first level, so the window is wider for ions.  An end that finds no level
   !> is set to -1, which leaves the line in LTE, as does an end left at 0.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE departure_assign_levels(self, ptc)
     class(departure_pointer_t), intent(in) :: self
     class(particle_type), intent(inout) :: ptc
@@ -1143,7 +1143,7 @@ contains
 
   !===============================================================================
   !> Whether a particle, or any ion stage of an element, holds line-list lines.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   LOGICAL FUNCTION has_lines (p)
     class(particle_type), intent(in) :: p
     !-----------------------------------------------------------------------------
@@ -1168,7 +1168,7 @@ contains
   !> the hydrogen extension of the H I store, which handles both the embedded H I
   !> block layout and the dedicated 'Hlinedata' column layout (selected by the
   !> hlinedata flag); its block is read whole and masked there.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE init_linelist (self, linelist_file, dlam, lam, intervals)
     class(composition_type), target :: self
     class(particle_type), pointer :: particle
@@ -1589,7 +1589,7 @@ contains
   !===============================================================================
   !> add_linelist_opacities -- line opacity orchestrator. The H I lines use the
   !> Stark-profile kernel add_h_opacities; metals and molecules the linelist_mod kernel.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures, &
                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
                                     i_set, window_lam, chi_lines, eta_lines, lte_of)
@@ -1901,7 +1901,7 @@ contains
   !> self made after init_linelist, into self. The kernels write them per copy, which
   !> keeps the hot loops free of shared writes; merging every copy into the composition
   !> they were made from gives the maximum over all of them.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE merge_line_diagnostics(self, src)
     class(composition_type), target :: self
     class(composition_type), intent(in) :: src
@@ -2487,11 +2487,11 @@ contains
     deallocate(x,xold,a,b,fx,fa,fb)
 
   contains
-    !---------------------------------------------------------------------------
+    !===========================================================================
     !> Stable root of the Saha quadratic ne^2 = s*(a - ne) for one donor
     !> species of number density a and Saha function s, branch-selected so
     !> that neither 4*a/s nor the subtraction can overflow or cancel
-    !---------------------------------------------------------------------------
+    !===========================================================================
     function donor_ne(a, s) result(nel)
       real(dp), intent(in) :: a, s
       real(dp) :: nel
@@ -2509,7 +2509,7 @@ contains
   !===============================================================================
   !> Hummer-Mihalas charged-perturber shielding parameter; depends on (temp, ne),
   !> so it must be refreshed whenever the state changes
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE compute_shield(self)
     class(composition_type), target :: self
     !---------------------------------------------------------------------------
@@ -2526,7 +2526,7 @@ contains
   !> (linear, not log).  Refreshes the (temp, ne)-dependent inputs itself, so it
   !> is safe to call at any point of the ne iteration; the Boltzmann factors
   !> lvl%f are reused when temp is unchanged (same_temp).
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE Hoccupation_partition(self, nh, nhe, part)
     class(composition_type), target :: self
     real(dp), intent(in), dimension(:,:,:) :: nh, nhe
@@ -2578,7 +2578,7 @@ contains
   !> fills.  A legacy-format absdat gives H I its partition-function terms as
   !> levels instead (four in input/absdat/MULTI_absdat.txt), and a line list with higher upper
   !> levels raises HI%nk after the levels exist, so any other count is replaced.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE size_H_levels(HI)
     class(ion_type), pointer :: HI
     !---------------------------------------------------------------------------
@@ -2592,7 +2592,7 @@ contains
   !===============================================================================
   !> Free the H I levels.  Their per-cell arrays (f and w of
   !> Hoccupation_partition, n of init_H_levels) leave the memory registry with them.
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE release_H_levels(HI)
     class(ion_type), pointer :: HI
     class(level_type), pointer :: lvl
@@ -4095,7 +4095,7 @@ contains
   !===============================================================================
   !> Write the used line-list lines of every ion and molecule to unit, in the
   !> linelist_out.txt format (linelist_mod%print_ll_particle).
-  !-------------------------------------------------------------------------------
+  !===============================================================================
   SUBROUTINE write_linelists (self, unit)
     class(composition_type), target :: self
     integer, intent(in) :: unit
