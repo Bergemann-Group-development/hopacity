@@ -12,24 +12,16 @@ MODULE optab_mod
   implicit none
 
   !=============================================================================
-  !> Externally-read binned opacity table (special case): 2D (log temp, log rho)
-  !> interpolation, one independent lookup per wavelength bin. Node derivatives
-  !> along both axes are precomputed once in build_derivatives (called from init)
-  !> so interpolate is a pure Hermite evaluation with stored slopes.
+  !> Externally-read binned opacity table (special case): chi and src on a
+  !> (log temp, log rho) grid, one per wavelength bin.
   !=============================================================================
   type :: optab_type
     real(4), dimension(:), allocatable :: ltemp, lrho
     real(4), dimension(:,:,:), allocatable :: chi, src
-    real(4), dimension(:,:,:), allocatable :: dchi_t !< monotone node slopes d chi/d ln T
-    real(4), dimension(:,:,:), allocatable :: dchi_r !< monotone node slopes d chi/d ln rho
-    real(4), dimension(:,:,:), allocatable :: dsrc_t !< monotone node slopes d src/d ln T
-    real(4), dimension(:,:,:), allocatable :: dsrc_r !< monotone node slopes d src/d ln rho
     integer :: lunit, ntemp, nrho, nbin
     logical :: initialised=.false.
   contains
     procedure :: init
-    procedure :: build_derivatives => optab_build_derivatives
-    procedure :: interpolate
   end type
 
   !=============================================================================
@@ -93,8 +85,8 @@ contains
 
   !===============================================================================
   !> Reads the binned table, the dimensions from `<opac_table>.txt` and the axes and
-  !> values from `<opac_table>.bin`, precomputes the node slopes, and makes sp a grid
-  !> of the bin numbers 1 to nbin.
+  !> values from `<opac_table>.bin`, and makes sp a grid of the bin numbers 1 to
+  !> nbin.
   !===============================================================================
   SUBROUTINE init (self, opac_table, sp)
     class(optab_type) :: self
@@ -119,91 +111,11 @@ contains
     read(lunit) self%ltemp, self%lrho, self%chi, self%src
     close(lunit)
 
-    call self%build_derivatives()
-
     sp%nnu = self%nbin
     sp%name = 'bins'
     call sp%reset(lam=[(dble(i), i=1, self%nbin)])
     self%initialised = .true.
   END SUBROUTINE init
-
-  !===============================================================================
-  !> Precompute monotone node slopes of the binned table along the (irregular)
-  !> log-temperature and log-density axes, for both chi and src.
-  !===============================================================================
-  SUBROUTINE optab_build_derivatives (self)
-    class(optab_type) :: self
-    !---------------------------------------------------------------------------
-    allocate(self%dchi_t, self%dchi_r, self%dsrc_t, self%dsrc_r, mold=self%chi)
-    call node_slopes_dim(self%ltemp, self%chi, 2, self%dchi_t)
-    call node_slopes_dim(self%lrho , self%chi, 3, self%dchi_r)
-    call node_slopes_dim(self%ltemp, self%src, 2, self%dsrc_t)
-    call node_slopes_dim(self%lrho , self%src, 3, self%dsrc_r)
-  END SUBROUTINE optab_build_derivatives
-
-  !===============================================================================
-  !> Interpolate the binned table at the requested (temp, rho). Separable 2D
-  !> tensor-product cubic Hermite (collapse log-temp then log-rho) using the
-  !> precomputed node slopes; mixed partials are ignored. chi and eta are
-  !> shaped (nbin, ncells...) with the bin as the first, contiguous index.
-  !===============================================================================
-  SUBROUTINE interpolate (self, chi, eta, temp, rho)
-    class(optab_type) :: self
-    real(4), contiguous, dimension(:,:,:,:), target :: chi !< opacity (nbin, x, y, z)
-    real(4), contiguous, dimension(:,:,:,:), target :: eta !< emissivity src*chi (nbin, x, y, z)
-    real(4), contiguous, dimension(:,:,:), target :: temp  !< temperature [K]
-    real(4), contiguous, dimension(:,:,:), target :: rho   !< mass density [g cm^-3]
-    real(4), dimension(:), pointer :: chip, etap
-    real(4), dimension(:), pointer :: temp1, rho1
-    integer :: c, f, it, ir, ncells, ntot, nb
-    real(4) :: lt, lr, ht, hr, tt, tr, pt, pr
-    real(4) :: tc0, tc1, tcm0, tcm1, rc0, rc1, rcm0, rcm1
-    real(4) :: v0, v1, g0, g1, cval, sval
-    integer, save :: itimer=0
-    !---------------------------------------------------------------------------
-    call trace%begin('optab_mod%interpolate', itimer=itimer)
-    temp1(1:size(temp)) => temp(:,:,:)
-    rho1 (1:size(rho))  => rho (:,:,:)
-    nb = self%nbin
-    ncells = size(temp1)
-    ntot = size(chi)
-    chip(1:ntot) => chi
-    etap(1:ntot) => eta
-
-    do c=1, ncells
-      lt = log(temp1(c))
-      lr = log(rho1(c))
-      it = min(max(searchsorted(self%ltemp, lt, outbounds_ok=.true.), 1), self%ntemp-1)
-      ir = min(max(searchsorted(self%lrho , lr, outbounds_ok=.true.), 1), self%nrho -1)
-      ht = self%ltemp(it+1) - self%ltemp(it)
-      hr = self%lrho (ir+1) - self%lrho (ir)
-      tt = (lt - self%ltemp(it)) / ht
-      tr = (lr - self%lrho (ir)) / hr
-      call hermite_coefs(tt, ht, pt, tc0, tc1, tcm0, tcm1)
-      call hermite_coefs(tr, hr, pr, rc0, rc1, rcm0, rcm1)
-      do f=1, nb
-        ! collapse log-temp for the two rho nodes ir, ir+1 (chi)
-        v0 = tc0*self%chi(f,it,ir  ) + tc1*self%chi(f,it+1,ir  ) &
-           + tcm0*self%dchi_t(f,it,ir  ) + tcm1*self%dchi_t(f,it+1,ir  )
-        v1 = tc0*self%chi(f,it,ir+1) + tc1*self%chi(f,it+1,ir+1) &
-           + tcm0*self%dchi_t(f,it,ir+1) + tcm1*self%dchi_t(f,it+1,ir+1)
-        g0 = (1.-pt)*self%dchi_r(f,it,ir  ) + pt*self%dchi_r(f,it+1,ir  )
-        g1 = (1.-pt)*self%dchi_r(f,it,ir+1) + pt*self%dchi_r(f,it+1,ir+1)
-        cval = rc0*v0 + rc1*v1 + rcm0*g0 + rcm1*g1
-        ! same for src
-        v0 = tc0*self%src(f,it,ir  ) + tc1*self%src(f,it+1,ir  ) &
-           + tcm0*self%dsrc_t(f,it,ir  ) + tcm1*self%dsrc_t(f,it+1,ir  )
-        v1 = tc0*self%src(f,it,ir+1) + tc1*self%src(f,it+1,ir+1) &
-           + tcm0*self%dsrc_t(f,it,ir+1) + tcm1*self%dsrc_t(f,it+1,ir+1)
-        g0 = (1.-pt)*self%dsrc_r(f,it,ir  ) + pt*self%dsrc_r(f,it+1,ir  )
-        g1 = (1.-pt)*self%dsrc_r(f,it,ir+1) + pt*self%dsrc_r(f,it+1,ir+1)
-        sval = rc0*v0 + rc1*v1 + rcm0*g0 + rcm1*g1
-        chip(f + (c-1)*nb) = cval
-        etap(f + (c-1)*nb) = sval * cval
-      end do
-    end do
-    call trace%end(itimer)
-  END SUBROUTINE interpolate
 
   !===============================================================================
   !> Precompute monotone node slopes of the 3D sampling table along wavelength
