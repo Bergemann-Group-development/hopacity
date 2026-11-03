@@ -1,3 +1,6 @@
+!===============================================================================
+!> Atoms, ions and molecules of HOP's equation of state, with their partition functions.
+!===============================================================================
 MODULE ion_mod
   USE hop_env_mod, only: os
   USE prec_mod
@@ -5,6 +8,9 @@ MODULE ion_mod
   USE line_types_mod, only: linelist_type
   implicit none
 
+  !===============================================================================
+  !> A state with an atomic weight awgt [u], for thermal velocities.
+  !===============================================================================
   type, extends(state_type) :: massive_type
     real(dp) :: awgt
   contains
@@ -12,11 +18,18 @@ MODULE ion_mod
     procedure :: compute_vbar2
   end type
 
+  !===============================================================================
+  !> An isotope: mass number iso and abundance fraction frac.
+  !===============================================================================
   type, extends(massive_type) :: isotope_type
     integer  :: iso=0
     real(dp) :: frac=1.0
   end type isotope_type
 
+  !===============================================================================
+  !> A species (atom, ion or molecule) with its partition function, levels, line lists
+  !> and isotopes.
+  !===============================================================================
   type, extends(isotope_type) :: particle_type
     real(dp), dimension(:,:,:), allocatable :: part
     integer :: j=1 !< ionisation stage (1 is neutral)
@@ -32,8 +45,8 @@ MODULE ion_mod
     !> partition function is continued as a power law anchored on the polynomial
     !> at irwin_tmin and 1.5*irwin_tmin. Irwin's own atomic and diatomic fits
     !> start at 1000 K, but a polyatomic Q curves far too strongly there for a
-    !> power law to follow -- extrapolating one from 1000/1500 K undershoots the
-    !> true Q by a factor of several at 300 K -- so a fit that reaches lower
+    !> power law to follow: extrapolating one from 1000/1500 K undershoots the
+    !> true Q by a factor of several at 300 K.  A fit that reaches lower
     !> declares it here and keeps the polynomial down to its own limit.
     real(dp) :: irwin_tmin = 1000
     logical :: in_linelist=.false., in_opac=.false.
@@ -43,10 +56,16 @@ MODULE ion_mod
     procedure :: irwin_poly
   end type
 
+  !===============================================================================
+  !> A pointer to a particle, for arrays of particles.
+  !===============================================================================
   type particle_pointer_t
     class(particle_type), pointer :: p => null()
   end type
 
+  !===============================================================================
+  !> A pointer to an ion, for arrays of ions.
+  !===============================================================================
   type ion_pointer_t
     type(ion_type), pointer :: p => null()
   end type ion_pointer_t
@@ -74,14 +93,18 @@ MODULE ion_mod
     procedure :: deallocate => deallocate_particle
   end type
 
-  logical, public :: debye_shield=.True.
+  logical, public :: debye_shield=.True. !< lower the ionisation energies by Debye shielding
 
 contains
 
   !===============================================================================
+  !> Allocates the arrays f, n, saha and part with shape m, unless they have it
+  !> already, and registers their memory.
+  !===============================================================================
   SUBROUTINE allocate_particle (self, m)
     class(ion_type) :: self
-    integer :: m(3), mold(3), s, p
+    integer :: m(3) !< array shape
+    integer :: mold(3), s, p
     !---------------------------------------------------------------------------
     if (all(m == self%m)) return
     self%m = m
@@ -106,6 +129,9 @@ contains
   END SUBROUTINE allocate_particle
 
   !===============================================================================
+  !> Deallocates f and saha, and n and part unless the opacity or the line list still
+  !> needs them.
+  !===============================================================================
   SUBROUTINE deallocate_particle (self)
     class(ion_type) :: self
     integer :: m(3), s, p
@@ -127,9 +153,13 @@ contains
   END SUBROUTINE deallocate_particle
 
   !===============================================================================
+  !> ln of the partition function from the Irwin polynomial in ln T.  Below irwin_tmin
+  !> it continues as a power law through the values at irwin_tmin and 1.5 irwin_tmin,
+  !> above 16000 K linearly in T through the values at 10000 and 16000 K.
+  !===============================================================================
   elemental FUNCTION irwin_partf (self, temp) result(ulog)
     class(particle_type), intent(in) :: self
-    real(dp), intent(in) :: temp
+    real(dp), intent(in) :: temp !< temperature [K]
     real(dp) :: ulog1, ulog2, ulog, tt1, tt2
     !---------------------------------------------------------------------------
     if (temp < self%irwin_tmin) then
@@ -148,9 +178,11 @@ contains
   END FUNCTION irwin_partf
 
   !===============================================================================
+  !> The Irwin polynomial, coefficients in self%irwin from the highest power down.
+  !===============================================================================
   pure FUNCTION irwin_poly (self, temp) result(u)
     class(particle_type), intent(in) :: self
-    real(dp), intent(in) :: temp
+    real(dp), intent(in) :: temp !< ln of the temperature [K]
     real(dp) :: u
     integer :: i
     !---------------------------------------------------------------------------
@@ -161,9 +193,12 @@ contains
   END FUNCTION irwin_poly
 
   !====================================================================================
+  !> Inverse relative Doppler width c / sqrt(2kT/m + vmic^2).
+  !====================================================================================
   pure elemental function inverse_doppler_factor(self, temp, vmic) result(inv_df)
     class(massive_type), intent(in) :: self
-    real(4), intent(in)  :: temp, vmic
+    real(4), intent(in)  :: temp !< temperature [K]
+    real(4), intent(in)  :: vmic !< microturbulence [km/s]
     real(4) :: dop, inv_df
     real(4), parameter :: const=2.0d0*BK/UU
     !---------------------------------------------------------------------------------
@@ -173,9 +208,12 @@ contains
   end function inverse_doppler_factor
 
   !====================================================================================
+  !> Mean relative speed squared of the particle and hydrogen, 8kT/(pi mu) [cm^2 s^-2],
+  !> with mu the reduced mass, for van der Waals broadening.
+  !====================================================================================
   pure elemental function compute_vbar2(self, temp) result(vbar2)
     class(massive_type), intent(in) :: self
-    real(4),  intent(in)  :: temp
+    real(4),  intent(in)  :: temp !< temperature [K]
     real(4) :: vbar2
     real(4), parameter :: const=8.0d0*BK/(PI*UU), inv_MH=UU/MH
     !---------------------------------------------------------------------------------
