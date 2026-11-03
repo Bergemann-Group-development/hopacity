@@ -1868,9 +1868,9 @@ contains
       ! LTE species live in the sampled table, except those named in lte_of
       if (skip_lte .and. .not. associated(dep) .and. .not. in_lte_of(ptc)) return
 
-      ! the per-isotope population base / Doppler width construction and the kernel
-      ! dispatch now live in linelist_mod (add_particle_opacity); we own only the patch
-      ! work arrays, the departure lookup and the level assignment, and hand dep%mem in.
+      ! add_particle_opacity builds the per-isotope population base and Doppler width and
+      ! calls the kernels; this routine owns the patch work arrays, the departure lookup
+      ! and the level assignment, and hands dep%mem in.
       call self%set_population(ptc%id, set_index, set_n, set_scale)
       if (associated(dep)) then
         ! NLTE species: departure-coefficient source, no scattering split
