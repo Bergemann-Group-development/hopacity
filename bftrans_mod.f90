@@ -1,3 +1,8 @@
+!===============================================================================
+!> Continuous opacity of the components of the absdat file: bound-free and free-free
+!> absorption and collision-induced absorption, tabulated in wavelength and
+!> temperature.
+!===============================================================================
 MODULE bftrans_mod
   USE prec_mod
   USE op_math_mod
@@ -10,6 +15,10 @@ MODULE bftrans_mod
   implicit none
   private
 
+  !===============================================================================
+  !> One absdat component: its cross-section table, the particles it belongs to, and
+  !> how the table is interpolated and scaled to an opacity.
+  !===============================================================================
   type, public :: bftrans_type
     integer :: k, ntt, nnu
     type(level_type) :: level
@@ -42,10 +51,12 @@ MODULE bftrans_mod
     procedure :: deactivate
   end type
 
-  logical, public :: H_occupation_probability=.true.
+  logical, public :: H_occupation_probability=.true. !< H I bound-free opacity with occupation probabilities (wcalc2)
 
 contains
   
+  !====================================================================================
+  !> Leaves the component out of the opacity.
   !====================================================================================
   PURE SUBROUTINE deactivate(self)
     class(bftrans_type), intent(inout) :: self
@@ -65,7 +76,7 @@ contains
   !===============================================================================
   SUBROUTINE set_table(self, xkap)
     class(bftrans_type), intent(inout) :: self
-    real(dp), dimension(:,:), intent(in) :: xkap
+    real(dp), dimension(:,:), intent(in) :: xkap !< absorption table (nnu, ntt) as read
     !---------------------------------------------------------------------------
     self%log_table = merge(self%ilogt, self%ilogl, self%ntt > 1)
     self%xkap_scale = maxval(xkap)
@@ -80,14 +91,21 @@ contains
   END SUBROUTINE set_table
 
   !===============================================================================
+  !> Finds for each wavelength the first table node of its interpolation stencil and
+  !> the Lagrange weights in wavelength: quadratic with kvadl, except next to a
+  !> discontinuity of the table (ldisk) and at its ends, linear otherwise.
+  !> Wavelengths outside the table where it may not be extrapolated (minex, maxex) get
+  !> no stencil.
+  !===============================================================================
   SUBROUTINE load_lam_interp_weights(self, lam, active, fs, fe, iw, quad, lagrange)
     class(bftrans_type), target :: self
-    real(dp), dimension(:), intent(in) :: lam
-    logical, intent(out) :: active
-    integer, intent(out) :: fs, fe
-    integer, dimension(:), intent(inout) :: iw
-    logical, dimension(:), intent(inout) :: quad
-    real(4), dimension(:,:), intent(inout) :: lagrange
+    real(dp), dimension(:), intent(in) :: lam          !< wavelengths [AA]
+    logical, intent(out) :: active                     !< some wavelength has a stencil
+    integer, intent(out) :: fs                         !< first wavelength with a stencil
+    integer, intent(out) :: fe                         !< last wavelength with a stencil
+    integer, dimension(:), intent(inout) :: iw         !< first table node of each stencil, unset where none
+    logical, dimension(:), intent(inout) :: quad       !< quadratic stencil
+    real(4), dimension(:,:), intent(inout) :: lagrange !< weights (3, size(lam)) of the stencil nodes
     real(dp), dimension(:), pointer, contiguous :: xx
     real(dp) :: x
     integer :: nf
@@ -180,6 +198,8 @@ contains
   END SUBROUTINE load_lam_interp_weights
 
   !===============================================================================
+  !> Lagrange weights of the three nodes xxx for quadratic interpolation at newx.
+  !===============================================================================
   PURE FUNCTION quadratic_weight(xxx,newx) result(w)
     real(dp), dimension(3), intent(in) :: xxx
     real(dp), intent(in) :: newx
@@ -192,6 +212,8 @@ contains
   end FUNCTION quadratic_weight
 
   !===============================================================================
+  !> Weights of the two nodes xx for linear interpolation at newx.
+  !===============================================================================
   PURE FUNCTION linear_weight(xx,newx) result(w)
     real(dp), dimension(2), intent(in) :: xx
     real(dp), intent(in) :: newx
@@ -203,20 +225,32 @@ contains
   end FUNCTION linear_weight
 
   !===============================================================================
+  !> Adds fakt times the table, interpolated to each cell's temperature (or 5040/T
+  !> with iteta) and to the wavelengths fs:fe, to chi.  Linear extrapolation in
+  !> temperature never exceeds the edge of the table, and cells outside the table where
+  !> it may not be extrapolated (minet, maxet) get nothing.  With lam3 the table is
+  !> multiplied by lam^3.  An 'H BF' component with H_occupation_probability goes to
+  !> wcalc2, which brings in the occupation probabilities, and ignores fakt.
+  !===============================================================================
   SUBROUTINE interp_xkap(self, chi, temp, teta, fakt, lam, fs, fe, iw, quad, lagrange, &
                          ne, nhe, shield, i0, i1)
     class(bftrans_type), target :: self
+    real(4), dimension(:,:,:,:), intent(inout) :: chi          !< opacity (wavelength, x, y, z), added to; whole tile or i0:i1
+    real(dp), intent(in), dimension(:,:,:), target :: temp     !< temperature [K]
+    real(dp), intent(in), dimension(:,:,:), target :: teta     !< 5040 K / T
+    real(dp), intent(inout), dimension(:,:,:) :: fakt          !< absorption factor, from absorption_factor
+    real(dp), intent(in), dimension(:) :: lam                  !< wavelengths [AA]
+    integer, intent(in) :: fs                                  !< first wavelength with a stencil
+    integer, intent(in) :: fe                                  !< last wavelength with a stencil
+    integer, dimension(:), intent(in) :: iw                    !< first table node of each stencil
+    logical, dimension(:), intent(in) :: quad                  !< quadratic stencil
+    real(4), dimension(:,:), intent(in) :: lagrange            !< stencil weights
+    real(dp), intent(in), dimension(:,:,:), optional :: ne     !< electron number density [cm^-3], for 'H BF'
+    real(dp), intent(in), dimension(:,:,:), optional :: nhe    !< neutral He number density [cm^-3], for 'H BF'
+    real(dp), intent(in), dimension(:,:,:), optional :: shield !< (1+a)^3.15/ne as in wcalc [cm^3], for 'H BF'
+    integer, intent(in), optional :: i0                        !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1                        !< last cell of the first axis (default size(temp,1))
     class(level_type), pointer :: lvl
-    real(4), dimension(:,:,:,:), intent(inout) :: chi
-    real(dp), intent(in), dimension(:,:,:), target :: temp, teta
-    real(dp), intent(inout), dimension(:,:,:) :: fakt
-    real(dp), intent(in), dimension(:) :: lam
-    integer, intent(in) :: fs, fe
-    integer, dimension(:), intent(in) :: iw
-    logical, dimension(:), intent(in) :: quad
-    real(4), dimension(:,:), intent(in) :: lagrange
-    real(dp), intent(in), dimension(:,:,:), optional :: ne, nhe, shield
-    integer, intent(in), optional :: i0, i1
     real(dp), dimension(:,:,:), pointer :: newt
     real(4), dimension(:,:), pointer, contiguous :: tab
     real(4), dimension(:), allocatable :: ab, lam3
@@ -420,12 +454,35 @@ contains
   include 'exp_neg.inc'
 
   !===============================================================================
+  !> The factor fakt by which the component's table is multiplied to an opacity, with
+  !> n the number density of the component's particle ion, n2 that of ion2, and U the
+  !> partition function:
+  !>
+  !> | key                                     | fakt                                                |
+  !> |-----------------------------------------|-----------------------------------------------------|
+  !> | 'H- BF'                                 | n                                                   |
+  !> | 'H- FF', 'H2-', 'HE-'                   | n Pe                                                |
+  !> | 'H BF'                                  | 2.0898e-26 / (2 k^5) n_k of level k                 |
+  !> | 'H FF'                                  | 2.0898e-26 kT / (2 Ryd) n exp(-(xion - dxi)/kT) / U |
+  !> | 'H+H', 'H+HE', 'H2+H', 'H2+H2', 'H2+HE' | n n2                                                |
+  !> | 'H2+'                                   | 1e-40 n n2                                          |
+  !> | Pe-dependent (pedep)                    | n Pe, for Peach tables times 1e-40 e_kT / EE        |
+  !> | molecular                               | n awgt / N_A, the mass density                      |
+  !> | regular bound-free                      | g n exp(-E/kT) / U of the absorbing level           |
+  !>
+  !> 'H BF' with H_occupation_probability leaves fakt unchanged; interp_xkap does not
+  !> use it then.
+  !===============================================================================
   SUBROUTINE absorption_factor(self, e_kT, teta, pe, dxi, fakt, i0, i1)
     class(bftrans_type), intent(in) :: self
+    real(dp), dimension(:,:,:), intent(in) :: e_kT    !< 1 eV / kT
+    real(dp), dimension(:,:,:), intent(in) :: teta    !< 5040 K / T, unused
+    real(dp), dimension(:,:,:), intent(in) :: pe      !< electron pressure [dyn cm^-2]
+    real(dp), dimension(:,:,:), intent(in) :: dxi     !< ionisation energy lowering [eV]
+    real(dp), dimension(:,:,:), intent(inout) :: fakt !< absorption factor, set in cells i0:i1
+    integer, intent(in), optional :: i0               !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1               !< last cell of the first axis (default size(fakt,1))
     class(particle_type), pointer :: ion
-    real(dp), dimension(:,:,:), intent(in) :: e_kT, teta, pe, dxi
-    real(dp), dimension(:,:,:), intent(inout) :: fakt
-    integer, intent(in), optional :: i0, i1        !< optional cell range on dim 1 (threading)
     real(dp) :: scalar
     integer :: lo, hi
     integer :: itimer=0
@@ -474,15 +531,25 @@ contains
   END SUBROUTINE absorption_factor
 
   !===============================================================================
+  !> Adds the component's opacity at the wavelengths lam to chi: absorption_factor times
+  !> the table as interp_xkap interpolates it.  A deactivated component adds nothing.
+  !===============================================================================
   SUBROUTINE add_absorption(self, chi, lam, temp, e_kT, teta, pe, dxi, ne, nhe, shield, sorted, i0, i1)
     class(bftrans_type), intent(in), target :: self
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
-    real(dp), dimension(:,:,:), intent(in) :: temp, e_kT, teta, pe, dxi
-    real(dp), dimension(:,:,:), intent(in), optional :: ne, nhe, shield
-    integer, intent(in), optional :: i0, i1        !< optional cell range on dim 1 (threading)
-    real(dp), dimension(:), intent(in) :: lam
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi !< opacity (wavelength, x, y, z), added to; whole tile or i0:i1
+    real(dp), dimension(:,:,:), intent(in) :: temp                !< temperature [K]
+    real(dp), dimension(:,:,:), intent(in) :: e_kT                !< 1 eV / kT
+    real(dp), dimension(:,:,:), intent(in) :: teta                !< 5040 K / T
+    real(dp), dimension(:,:,:), intent(in) :: pe                  !< electron pressure [dyn cm^-2]
+    real(dp), dimension(:,:,:), intent(in) :: dxi                 !< ionisation energy lowering [eV]
+    real(dp), dimension(:,:,:), intent(in), optional :: ne        !< electron number density [cm^-3], for 'H BF'
+    real(dp), dimension(:,:,:), intent(in), optional :: nhe       !< neutral He number density [cm^-3], for 'H BF'
+    real(dp), dimension(:,:,:), intent(in), optional :: shield    !< (1+a)^3.15/ne as in wcalc [cm^3], for 'H BF'
+    integer, intent(in), optional :: i0                           !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1                           !< last cell of the first axis (default size(temp,1))
+    real(dp), dimension(:), intent(in) :: lam                     !< wavelengths [AA]
+    logical, optional :: sorted                                   !< unused
     real(dp), dimension(:,:,:), allocatable :: fakt
-    logical, optional :: sorted
     logical :: active
     integer :: nf
     integer :: fs, fe, lo, hi
