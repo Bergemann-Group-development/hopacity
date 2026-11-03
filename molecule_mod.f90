@@ -10,19 +10,19 @@ MODULE molecule_mod
   type, extends(particle_type) :: molec_type
     integer :: nions
     class(ion_pointer_t), allocatable :: ions(:)
-    ! atomic number of each constituent, parallel to ions(:)
+    !> atomic number of each constituent, parallel to ions(:)
     integer, allocatable :: z(:)
     real(dp) :: dc(5) !< dissociation_constants
-    ! Total nuclear spin statistical weight, prod over constituent nuclei of
-    ! (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
-    ! the tabulated partition function counts nuclear spin states, as modern
-    ! molecular line lists do (the BT2/Barber H2O g column carries the 3:1
-    ! ortho/para weight, so its Q must carry the matching factor 4 = 2*2*1).
-    ! The line-opacity path therefore uses %part as-is, while get_dis divides
-    ! it out to reach the nuclear-spin-free convention the atomic partition
-    ! functions use. The factor cancels identically in the equilibrium
-    ! constant anyway (it appears once in Q_mol and once in prod Q_atom), so
-    ! this only keeps the two sides on the same footing; it is never physics.
+    !> Total nuclear spin statistical weight, prod over constituent nuclei of
+    !> (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
+    !> the tabulated partition function counts nuclear spin states, as modern
+    !> molecular line lists do (the BT2/Barber H2O g column carries the 3:1
+    !> ortho/para weight, so its Q must carry the matching factor 4 = 2*2*1).
+    !> The line-opacity path therefore uses %part as-is, while get_dis divides
+    !> it out to reach the nuclear-spin-free convention the atomic partition
+    !> functions use. The factor cancels identically in the equilibrium
+    !> constant anyway (it appears once in Q_mol and once in prod Q_atom), so
+    !> this only keeps the two sides on the same footing; it is never physics.
     real(dp) :: g_nuclear = 1
     ! The molecule's ionisation energy in eV is its %xion, the limit the line-list
     ! Cowley Stark and Unsold van der Waals estimates are hydrogenic in (prepare_stark,

@@ -25,16 +25,16 @@ MODULE ion_mod
     integer :: niso=1
     class(isotope_type), dimension(:), pointer :: isotope => null()
     type(level_type), allocatable :: levels(:)
-    ! line-list lines, one structure-of-arrays store per isotope (index 0 = main)
+    !> line-list lines, one structure-of-arrays store per isotope (index 0 = main)
     type(linelist_type), allocatable :: ll(:)
     real(dp), allocatable, dimension(:) :: irwin
-    ! lowest temperature the Irwin polynomial is fitted over. Below it the
-    ! partition function is continued as a power law anchored on the polynomial
-    ! at irwin_tmin and 1.5*irwin_tmin. Irwin's own atomic and diatomic fits
-    ! start at 1000 K, but a polyatomic Q curves far too strongly there for a
-    ! power law to follow -- extrapolating one from 1000/1500 K undershoots the
-    ! true Q by a factor of several at 300 K -- so a fit that reaches lower
-    ! declares it here and keeps the polynomial down to its own limit.
+    !> lowest temperature the Irwin polynomial is fitted over. Below it the
+    !> partition function is continued as a power law anchored on the polynomial
+    !> at irwin_tmin and 1.5*irwin_tmin. Irwin's own atomic and diatomic fits
+    !> start at 1000 K, but a polyatomic Q curves far too strongly there for a
+    !> power law to follow -- extrapolating one from 1000/1500 K undershoots the
+    !> true Q by a factor of several at 300 K -- so a fit that reaches lower
+    !> declares it here and keeps the polynomial down to its own limit.
     real(dp) :: irwin_tmin = 1000
     logical :: in_linelist=.false., in_opac=.false.
     logical :: allocated=.false.
@@ -62,8 +62,8 @@ MODULE ion_mod
     real(dp) :: acolc, tcolc, aradc, xradc, adic, bdic, t0c, t1c
     real(dp), dimension(:,:,:), allocatable :: saha
     logical :: fixed_part = .false.
-    ! ion%part depends on more state than temp (H I under mhd_eos carries the
-    ! ne-dependent occupation-weighted partition); vetoes temp-only caching
+    !> ion%part depends on more state than temp (H I under mhd_eos carries the
+    !> ne-dependent occupation-weighted partition); vetoes temp-only caching
     logical :: state_dependent_part = .false.
   contains
     procedure :: allocate => allocate_particle

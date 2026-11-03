@@ -13,7 +13,7 @@ MODULE hprofl_mod
     0.0008912, 0.0250700, 0.2230000, 1.0200000], [4,3])
 
 
-  !  Einstein A-value sums for H lines
+  !>  Einstein A-value sums for H lines
   real(4), dimension(100), parameter :: asum = [&
     0.000E+00, 4.696E+08, 9.980E+07, 3.017E+07, 1.155E+07, 5.189E+06,  &
     2.616E+06, 1.437E+06, 8.444E+05, 5.234E+05, 3.389E+05, 2.275E+05,  &
@@ -33,7 +33,7 @@ MODULE hprofl_mod
     2.096E+01, 1.994E+01, 1.898E+01, 1.808E+01, 1.722E+01, 1.642E+01,  &
     1.566E+01, 1.495E+01, 1.427E+01, 1.363E+01]
 
-  !  For Lyman lines only the s-p transition is allowed.
+  !>  For Lyman lines only the s-p transition is allowed.
   real(4), dimension(100), parameter :: asumlyman = [&
     0.000E+00, 6.265E+08, 1.897E+08, 8.126E+07, 4.203E+07, 2.450E+07,  &
     1.236E+07, 8.249E+06, 5.782E+06, 4.208E+06, 3.158E+06, 2.430E+06,  &
@@ -53,7 +53,7 @@ MODULE hprofl_mod
     5.706E+03, 5.522E+03, 5.346E+03, 5.177E+03, 5.015E+03, 4.860E+03,  &
     4.711E+03, 4.569E+03, 4.432E+03, 4.300E+03]
 
-  !  Fine structure components for alpha lines in nu*10**-7
+  !>  Fine structure components for alpha lines in nu*10**-7
   real(4), dimension(34), parameter :: stalph = [&
     -730.,  370.,  188.,  515.,  327.,  619., -772.,  &
     -473., -369.,  120.,  256.,  162.,  285., -161.,  &
@@ -66,14 +66,14 @@ MODULE hprofl_mod
     1.,2.,1.,2.,1.,2.,1.,2.,3.,1.,2.,1.,2.,1.,4.,6.,1.,  &
     2.,3.,4.,1.,2.,1.,2.,1.,4.,6.,1.,7.,6.,4.,4.,4.,5.]
 
-  !  Fine structure for M.EQ.INFINITY IN nu*10**-7
+  !>  Fine structure for M.EQ.INFINITY IN nu*10**-7
   real(4), dimension(5,4), parameter :: stcomp = reshape([&
     0.,    0.,    0.,    0.,    0.,  &
     468.,  576., -522.,    0.,    0.,  &
     260.,  290.,  -33., -140.,    0.,  &
     140.,  150.,   18.,  -27.,  -51.], [5,4])*1e7
 
-  !  Weights for fine structure components
+  !>  Weights for fine structure components
   real(4), dimension(5,4), parameter :: stcpwt = reshape([&
     1., 0., 0., 0., 0., &
     1., 1., 2., 0., 0., &
@@ -88,8 +88,8 @@ MODULE hprofl_mod
 
   !  Store log10(I(d omega)) for N(H) = 1e14 cm^-3.
 
-  !     LYMAN ALPHA QUASI H2+ PROFILE
-  !     DELTA WAVENO =  -15000+100*(N-1) N=1,111   UP TO -4000
+  !>     LYMAN ALPHA QUASI H2+ PROFILE
+  !>     DELTA WAVENO =  -15000+100*(N-1) N=1,111   UP TO -4000
   real(8), dimension(111), parameter :: lymanh2plus = [&
     -15.14, -15.06, -14.97, -14.88, -14.80, -14.71, -14.62, -14.53,  &
     -14.44, -14.36, -14.27, -14.18, -14.09, -14.01, -13.92, -13.83,  &
@@ -106,8 +106,8 @@ MODULE hprofl_mod
     -11.22, -11.21, -11.20, -11.19, -11.18, -11.17, -11.15, -11.14,  &
     -11.13, -11.12, -11.11, -11.10, -11.09, -11.08, -11.07] - 14.
 
-  !     LYMAN ALPHA QUASI H2 PROFILE
-  !     DELTA WAVENO = -22000+200*(N-1)  N=1,91  -4000
+  !>     LYMAN ALPHA QUASI H2 PROFILE
+  !>     DELTA WAVENO = -22000+200*(N-1)  N=1,91  -4000
   real(8), dimension(91), parameter :: lymanh2 = [&
     -13.43, -13.32, -13.21, -13.10, -12.98, -12.86, -12.79, -12.72,  &
     -12.65, -12.58, -12.51, -12.47, -12.45, -12.45, -12.48, -12.51,  &
@@ -122,11 +122,11 @@ MODULE hprofl_mod
     -12.78, -12.76, -12.74, -12.72, -12.70, -12.68, -12.65, -12.62,  &
     -12.59, -12.56, -12.53] - 14.
 
-  !  Data for self-broadening from calculations of Barklem, Piskunov and
-  !  O'Mara (2000, A&A 363, 1091).
-  !  SIGMA is in m^2.
-  !  BALFAC = (4/Pi)**(alf/2) Gamma(2-2/alf) the leading factor for
-  !  computing the width. 1E6 factor is due to SI -> CGS.
+  !>  Data for self-broadening from calculations of Barklem, Piskunov and
+  !>  O'Mara (2000, A&A 363, 1091).
+  !>  SIGMA is in m^2.
+  !>  BALFAC = (4/Pi)**(alf/2) Gamma(2-2/alf) the leading factor for
+  !>  computing the width. 1E6 factor is due to SI -> CGS.
   real(4), dimension(3), parameter :: sigma  = [3.304E-18, 6.497E-18, 1.178E-17]*1.e4
   real(4), dimension(3), parameter :: alf    = [    0.677,     0.455,     0.380]
   real(4), dimension(3), parameter :: balfac = [  0.97875,   0.97659,   0.97794]*1.e6

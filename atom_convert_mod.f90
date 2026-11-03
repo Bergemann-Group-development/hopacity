@@ -44,14 +44,14 @@ MODULE atom_convert_mod
     real(8), allocatable :: ev(:), g(:)               !< [eV]
     integer, allocatable :: ion(:)
     character(len=64), allocatable :: label(:)
-    ! bound-bound records as written, components already split
+    !> bound-bound records as written, components already split
     integer, allocatable :: li(:), lj(:), nq(:), parent(:)
     real(8), allocatable :: lam_vac(:), loggf(:), grad(:), gvdw(:), gstk(:), qmax(:), q0(:)
-    ! bound-free nodes, each continuum from its threshold to shorter wavelengths
+    !> bound-free nodes, each continuum from its threshold to shorter wavelengths
     integer, allocatable :: bf_i(:), bf_j(:)
     real(8), allocatable :: bf_lam(:), bf_alpha(:)  !< [AA], [cm^2]
     logical :: excited_bf = .false.
-    ! collision records on one temperature grid
+    !> collision records on one temperature grid
     real(8), allocatable :: temp(:), col_val(:,:)
     character(len=8), allocatable :: col_key(:)
     integer, allocatable :: col_l(:), col_u(:)

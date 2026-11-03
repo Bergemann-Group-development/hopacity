@@ -30,8 +30,8 @@ MODULE atmos_reader_mod
     integer :: nx=0, ny=0, nz=0
     integer :: gz=0                          !< ghost zones at each end in z (Stagger)
     real(4) :: timestamp=-1                  !< CO5BOLD snapshot time
-    ! ln T [K], ln P_e [dyn/cm2], ln rho [g/cm3]; a column a format does not carry
-    ! is flagged absent and left unset.
+    !> ln T [K], ln P_e [dyn/cm2], ln rho [g/cm3]; a column a format does not carry
+    !> is flagged absent and left unset.
     real(4), allocatable :: ltemp(:,:,:), lpe(:,:,:), lrho(:,:,:)
     logical :: has_pe=.false., has_rho=.false.
     real(4), allocatable :: vmic(:,:,:)      !< [km/s], the file's own values

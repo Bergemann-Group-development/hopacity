@@ -17,7 +17,7 @@ MODULE optab_mod
   type :: optab_type
     real(4), dimension(:), allocatable :: ltemp, lrho
     real(4), dimension(:,:,:), allocatable :: chi, src
-    ! precomputed monotone node slopes: d/dlogT and d/dlogrho of chi and src
+    !> precomputed monotone node slopes: d/dlogT and d/dlogrho of chi and src
     real(4), dimension(:,:,:), allocatable :: dchi_t, dchi_r, dsrc_t, dsrc_r
     integer :: lunit, ntemp, nrho, nbin
     logical :: initialised=.false.
@@ -55,18 +55,18 @@ MODULE optab_mod
     real(8), dimension(:), allocatable :: lam                 !< (nnu) irregular wavelength nodes
     real(4), dimension(:,:,:), allocatable :: val             !< (nnu,ntemp,nne) /chi500
     real(4), dimension(:,:,:), allocatable :: dl, dt, de      !< precomputed node slopes
-    ! Second, scattering component with its own node slopes, /chi500.
-    !   background table: val is the true absorption and scat the coherent
-    !     scattering, kept DISJOINT and summed only after interpolation.  Both
-    !     interpolants are non-negative (pchip_mono keeps each inside its local
-    !     node range), so scat <= val + scat = chi_total holds by construction --
-    !     that is what makes the interpolated single-scattering albedo <= 1
-    !     without a clamp.
-    !   line-list table: scat is the (1-eps)-weighted part of the line opacity
-    !     already contained in val, because the foreground redirects that
-    !     fraction of the line source from Bnu to Jnu without altering chi.
-    ! Allocated on the background path always, on the line path only when line
-    ! scattering is active.
+    !> Second, scattering component with its own node slopes, /chi500.
+    !>   background table: val is the true absorption and scat the coherent
+    !>     scattering, kept DISJOINT and summed only after interpolation.  Both
+    !>     interpolants are non-negative (pchip_mono keeps each inside its local
+    !>     node range), so scat <= val + scat = chi_total holds by construction --
+    !>     that is what makes the interpolated single-scattering albedo <= 1
+    !>     without a clamp.
+    !>   line-list table: scat is the (1-eps)-weighted part of the line opacity
+    !>     already contained in val, because the foreground redirects that
+    !>     fraction of the line source from Bnu to Jnu without altering chi.
+    !> Allocated on the background path always, on the line path only when line
+    !> scattering is active.
     real(4), dimension(:,:,:), allocatable :: scat
     real(4), dimension(:,:,:), allocatable :: sl, st, se
     logical :: initialised=.false.

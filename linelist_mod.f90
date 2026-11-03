@@ -51,37 +51,37 @@ MODULE linelist_mod
   public :: reserve_linelist, print_ll_particle, print_ll_atom, merge_ll_diag
   public :: in_any_interval
 
-  ! Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
+  !> Bij = bij_const * (10**loggf) / nu0  (see init_einstein_coefficients in bbtrans_mod)
   real(dp), parameter :: bij_const = c2_2h * f_conv * h_4pi
   real(4),  parameter :: sqrt_pi   = 1.7724538509
   real(4),  parameter :: ex_cutoff = -85.0     !< skip lines whose log(Rij) underflows
-  ! 1/sqrt(pi): the peak of the profile in qlg_bot_phi's convention, at a = v = 0. The
-  ! tolerance pre-tests below rely on it being an exact upper bound.
+  !> 1/sqrt(pi): the peak of the profile in qlg_bot_phi's convention, at a = v = 0. The
+  !> tolerance pre-tests below rely on it being an exact upper bound.
   real(4), parameter  :: voigt_peak = 0.5641895835
 
   ! --- The Voigt kernel ---------------------------------------------------------------
-  ! QLG-bot (HOP/qlg_mod.f90), unconditionally, everywhere. It is the tabulated member of
-  ! the QLG family of the Voigt-QLG letter: three basis functions {q.G, q.Z(0.2), q.L^2}
-  ! at x-degree 1, six fitted constants, G and Z(0.2)/L^2 read from two rank-1 tables at
-  ! one shared snapped index. Synspec's cost for a much smaller flux error -- 5.7e-3 max
-  ! relative on the validation domain, which the kernel-vs-abundance study bounded at
-  ! 0.006 dex per line and 0.0007 dex per element, i.e. below anything this code resolves.
-  !
-  ! The comparison against the ~22 rival and QLG-family kernels this used to dispatch
-  ! between at runtime -- haw, mclean, moog, siu, synspec, w4, voigt21, the fp64
-  ! reference, and the QLG tiers and ablations -- lives on the `voigt-kernel-zoo` branch,
-  ! together with the voigt_kernel dispatch chain that selected them.
-  !
-  ! add_opacity_equi sweeps the whole line window at once, which is where QLG-bot's
-  ! advantage lies: the per-line setup is amortised over the window and the point loop
-  ! vectorises. add_opacity walks a non-uniform abscissa and evaluates the same setup one
-  ! point at a time. Both work on the abscissa's own units (grid steps, log(lambda)), with
-  ! the Lorentz and Doppler widths in those units and the line strength folded into the
-  ! setup, so neither scales the damping, the abscissa or the profile per line or point.
-  !
-  ! voigt_kernel IS READ AND IGNORED. It stays only so that the ~900 namelists and the
-  ! standalone library's hop_set_option that still set it keep loading; there is nothing
-  ! left to select. Delete it once those have been swept.
+  !> QLG-bot (HOP/qlg_mod.f90), unconditionally, everywhere. It is the tabulated member of
+  !> the QLG family of the Voigt-QLG letter: three basis functions {q.G, q.Z(0.2), q.L^2}
+  !> at x-degree 1, six fitted constants, G and Z(0.2)/L^2 read from two rank-1 tables at
+  !> one shared snapped index. Synspec's cost for a much smaller flux error -- 5.7e-3 max
+  !> relative on the validation domain, which the kernel-vs-abundance study bounded at
+  !> 0.006 dex per line and 0.0007 dex per element, i.e. below anything this code resolves.
+  !>
+  !> The comparison against the ~22 rival and QLG-family kernels this used to dispatch
+  !> between at runtime -- haw, mclean, moog, siu, synspec, w4, voigt21, the fp64
+  !> reference, and the QLG tiers and ablations -- lives on the `voigt-kernel-zoo` branch,
+  !> together with the voigt_kernel dispatch chain that selected them.
+  !>
+  !> add_opacity_equi sweeps the whole line window at once, which is where QLG-bot's
+  !> advantage lies: the per-line setup is amortised over the window and the point loop
+  !> vectorises. add_opacity walks a non-uniform abscissa and evaluates the same setup one
+  !> point at a time. Both work on the abscissa's own units (grid steps, log(lambda)), with
+  !> the Lorentz and Doppler widths in those units and the line strength folded into the
+  !> setup, so neither scales the damping, the abscissa or the profile per line or point.
+  !>
+  !> voigt_kernel IS READ AND IGNORED. It stays only so that the ~900 namelists and the
+  !> standalone library's hop_set_option that still set it keep loading; there is nothing
+  !> left to select. Delete it once those have been swept.
   integer, public :: voigt_kernel = 0
 
   ! --- profiling work counters (add_opacity); cheap integer increments ----------------

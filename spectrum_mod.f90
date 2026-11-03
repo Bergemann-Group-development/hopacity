@@ -12,15 +12,15 @@ MODULE spectrum_mod
 
     !-------------------------------------------------------------------------------
     type :: spectrum_type
-        ! total number of wavelengths
+        !> total number of wavelengths
         integer :: nnu=0
         real(8), dimension(:), allocatable :: nu, wnu, lam, llam
         logical :: sorted=.false.
-        ! .true. when the grid is uniform in log(lambda) (e.g. a constant-R grid);
-        ! enables the arithmetic (march/bisection-free) opacity kernel add_opacity_equi
+        !> .true. when the grid is uniform in log(lambda) (e.g. a constant-R grid);
+        !> enables the arithmetic (march/bisection-free) opacity kernel add_opacity_equi
         logical :: equidistant=.false.
         character(len=32) :: name=''
-        ! Segment metadata for multi-window grids (A2)
+        !> Segment metadata for multi-window grids (A2)
         integer :: n_segments=0
         integer, dimension(:), allocatable :: segment_first, segment_last
         real(8), dimension(:), allocatable :: segment_blue_vac, segment_red_vac
@@ -41,15 +41,15 @@ MODULE spectrum_mod
     real(8) :: daa=0, aa_red=0, aa_blue=0, R_sampling=0
     integer :: nnu=0
     character(len=4096) :: lam_file='', window_file=''
-    ! window_file (A1/A2): Path to file with multi-window specification. One window per
-    ! non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
-    ! Windows are validated, sorted and merged (overlapping/touching). With R_sampling > 0
-    ! each generates a constant-R segment, whose metadata is stored in the
-    ! spectrum_type%segment_* arrays (A2). Mutually exclusive with lam_file and give_lam.
-    !
-    ! Without an explicit sampling grid (no daa/nnu/R_sampling/lam_file), the window_file
-    ! windows or a bare aa_red/aa_blue crop the atom-native output grid instead of making a
-    ! grid of their own -- see init / crop.
+    !> window_file (A1/A2): Path to file with multi-window specification. One window per
+    !> non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
+    !> Windows are validated, sorted and merged (overlapping/touching). With R_sampling > 0
+    !> each generates a constant-R segment, whose metadata is stored in the
+    !> spectrum_type%segment_* arrays (A2). Mutually exclusive with lam_file and give_lam.
+    !>
+    !> Without an explicit sampling grid (no daa/nnu/R_sampling/lam_file), the window_file
+    !> windows or a bare aa_red/aa_blue crop the atom-native output grid instead of making a
+    !> grid of their own -- see init / crop.
     logical, public :: crop_output=.false.
     real(8), dimension(:,:), allocatable :: crop_windows    ! (n, 2) vacuum [AA]
 

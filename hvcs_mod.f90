@@ -44,17 +44,17 @@ MODULE hvcs_mod
   integer, parameter :: NNHH   = 13   !< hydrogen-density (resonance) nodes
   integer, parameter :: NNHMAX = 18   !< max lines per series
   integer, parameter :: NSER   = 3    !< Balmer, Paschen, Brackett
-  !  Longest axis qpol4 is ever handed (NH, T or Ne) -- sizes its scratch.
+  !>  Longest axis qpol4 is ever handed (NH, T or Ne) -- sizes its scratch.
   integer, parameter :: NNAXMAX = max(NNHH, max(NNHT, NNHE))
 
-  !  Per-series grid + axes (log10 quantities), loaded once at setup.
+  !>  Per-series grid + axes (log10 quantities), loaded once at setup.
   real(4), save :: grid_vcs(NNHW,NNHH,NNHT,NNHE,NNHMAX,NSER) = 0.0
   real(4), save :: nw_vcs(NNHW,NSER) = 0.0   !< log10 delta-lambda [AA]
   real(4), save :: nt_vcs(NNHT,NSER) = 0.0   !< log10 T
   real(4), save :: ne_vcs(NNHE,NSER) = 0.0   !< log10 Ne
   real(4), save :: nh_vcs(NNHH,NSER) = 0.0   !< log10 N(HI)
-  !  Node slopes along the T axis (qpol4's) of the lines without an N(HI) axis,
-  !  where the T interpolation reads the grid directly.
+  !>  Node slopes along the T axis (qpol4's) of the lines without an N(HI) axis,
+  !>  where the T interpolation reads the grid directly.
   real(4), save :: tslope_vcs(NNHW,NNHT,NNHE,NNHMAX,NSER) = 0.0
   !  Derived from nw_vcs at load time, so the frequency scan never pays for them:
   !  the delta-lambda nodes in linear AA, and the reciprocal of the (uniform)

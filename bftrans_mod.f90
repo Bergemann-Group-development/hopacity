@@ -26,9 +26,9 @@ MODULE bftrans_mod
     logical :: peach=.false., regular=.false., molecular=.false.
     logical :: lam3=.false.
     logical :: active=.true.
-    ! an 'H BF' continuum of a level that an NLTE model atom carries: with the
-    ! occupation probability formalism only its dissolved-level part redward of the
-    ! series limit is added, which the atom's own continuum does not have
+    !> an 'H BF' continuum of a level that an NLTE model atom carries: with the
+    !> occupation probability formalism only its dissolved-level part redward of the
+    !> series limit is added, which the atom's own continuum does not have
     logical :: dissolved_only=.false.
     character(len=5) :: key
     character(len=20) :: label

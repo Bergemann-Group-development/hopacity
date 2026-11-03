@@ -12,8 +12,8 @@ MODULE bbtrans_mod
     real(dp) :: grad_in=0, gstk_in=0, gv_in=0 !< input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
     real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, Bij is the
-    ! transition from the lower to the upper
-    ! level
+    !> transition from the lower to the upper
+    !> level
     logical :: active=.true., unsold
     integer :: i=0 !< lower level
     integer :: j=0 !< upper level
@@ -27,12 +27,12 @@ MODULE bbtrans_mod
   end type
 
   logical, public :: disable_stk=.false., disable_vdw=.false., disable_rad=.false.
-  ! Molecular lines may take damping estimates from the molecule's ionisation energy:
-  ! the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
-  ! and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
-  ! is an enhancement factor. The same switch applies the tabulated negative gvdw forms
-  ! (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
-  ! apply none of these to molecules, and their presets switch them off.
+  !> Molecular lines may take damping estimates from the molecule's ionisation energy:
+  !> the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
+  !> and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
+  !> is an enhancement factor. The same switch applies the tabulated negative gvdw forms
+  !> (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
+  !> apply none of these to molecules, and their presets switch them off.
   logical, public :: molecule_damping_estimates=.true.
   real(4), public, save :: tolerance=1e-4
   real(4), public, save :: line_reject_frac=0.0

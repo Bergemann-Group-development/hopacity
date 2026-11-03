@@ -53,38 +53,38 @@ MODULE composition_mod
     real(dp), dimension(:,:,:), allocatable :: temp, ne, rho, zero
     real(dp), dimension(:,:,:), allocatable :: e_kT, pe, dxi, toth, tothi
     real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
-    ! per-cell warm-start seeds for molecular_equilibrium, carried across
-    ! calls (the ne iteration re-solves the same cells with nearly the
-    ! same state); allocated and maintained by molecular_equilibrium
+    !> per-cell warm-start seeds for molecular_equilibrium, carried across
+    !> calls (the ne iteration re-solves the same cells with nearly the
+    !> same state); allocated and maintained by molecular_equilibrium
     real(dp), dimension(:,:,:,:), allocatable :: moleq_seed
-    ! electron fraction per hydrogen nucleus the last molecular equilibrium
-    ! converged on. It is not ne/toth: toth is rebuilt from the model's own rho,
-    ! while this is the fe that balanced the molecules, and re-entering the
-    ! solver with anything else moves a converged state (see
-    ! prepare_abundance_sets)
+    !> electron fraction per hydrogen nucleus the last molecular equilibrium
+    !> converged on. It is not ne/toth: toth is rebuilt from the model's own rho,
+    !> while this is the fe that balanced the molecules, and re-entering the
+    !> solver with anything else moves a converged state (see
+    !> prepare_abundance_sets)
     real(dp), dimension(:,:,:), allocatable :: moleq_fe
-    ! set by set_aux_data: temp identical to the previous call's, so
-    ! temp-only derived quantities (molecular part/dis) may be reused
+    !> set by set_aux_data: temp identical to the previous call's, so
+    !> temp-only derived quantities (molecular part/dis) may be reused
     logical :: same_temp = .false.
-    ! converged occupation-weighted H I log-partition (mhd_eos), carried
-    ! across thermal_equilibrium calls as a warm start for the inner loop
+    !> converged occupation-weighted H I log-partition (mhd_eos), carried
+    !> across thermal_equilibrium calls as a warm start for the inner loop
     real(dp), dimension(:,:,:), allocatable :: part_hocc
     real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
-    ! velocities in units of c, already masked by use_vel; the rotated copies each
-    ! carry their own, which is what makes them the right home for the RT Doppler shift
+    !> velocities in units of c, already masked by use_vel; the rotated copies each
+    !> carry their own, which is what makes them the right home for the RT Doppler shift
     real(4), dimension(:,:,:), allocatable :: vx, vy, vz
-    ! partial derivatives of ln(T) and of Pe (linear, not log) per code length
-    ! unit, evaluated on the PCHIP interpolant of the input snapshot
-    ! (set_gradients), plus a real(4) copy of Pe itself; consumed by the
-    ! chain-rule 'hermite' RT solvers, which assume chi/Pe linear along the ray.
-    ! Rotated copies carry only the z pair (their columns already run along the
-    ! ray); only the unrotated composition holds the horizontal partials
+    !> partial derivatives of ln(T) and of Pe (linear, not log) per code length
+    !> unit, evaluated on the PCHIP interpolant of the input snapshot
+    !> (set_gradients), plus a real(4) copy of Pe itself; consumed by the
+    !> chain-rule 'hermite' RT solvers, which assume chi/Pe linear along the ray.
+    !> Rotated copies carry only the z pair (their columns already run along the
+    !> ray); only the unrotated composition holds the horizontal partials
     real(4), dimension(:,:,:), allocatable :: dlnt_dx, dlnt_dy, dlnt_dz
     real(4), dimension(:,:,:), allocatable :: dpe_dx, dpe_dy, dpe_dz
     real(4), dimension(:,:,:), allocatable :: pe4
-    ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
-    ! ferried from init_tabulated_comp down to each rt_patch's opac table
+    !> PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
+    !> ferried from init_tabulated_comp down to each rt_patch's opac table
     type(pca_transform_type) :: pca
     real(dp), allocatable :: set_da(:,:)       !< (atomic number, output set)
     logical, allocatable :: set_element(:,:)   !< explicit manifest entries
@@ -161,9 +161,9 @@ MODULE composition_mod
   public :: departure_atom
 
   character(128), public, save :: exclude_elements='', only_elements=''
-  ! feed the Hummer-Mihalas occupation-weighted H I partition function into the
-  ! ionization and molecular equilibrium (pressure ionization consistent with
-  ! the H_occupation_probability opacity treatment)
+  !> feed the Hummer-Mihalas occupation-weighted H I partition function into the
+  !> ionization and molecular equilibrium (pressure ionization consistent with
+  !> the H_occupation_probability opacity treatment)
   logical, public :: mhd_eos=.true.
   logical, public :: helium_scattering=.true.
   real(dp), public :: debug_opac=0
@@ -171,14 +171,14 @@ MODULE composition_mod
   character(len=1024), public :: abundances
   logical, public :: relative_abundances=.false.
   logical, public :: read_departures=.false.
-  ! match line-list lines without level indices to the model atom as Turbospectrum's
-  ! line-list conversion does (departure_assign_levels); without it only lines with
-  ! both indices are in NLTE
+  !> match line-list lines without level indices to the model atom as Turbospectrum's
+  !> line-list conversion does (departure_assign_levels); without it only lines with
+  !> both indices are in NLTE
   logical, public :: match_nlte_levels=.false.
   logical, public :: sample_linelist=.false.
-  ! split LTE line-list opacity into true absorption and scattering with the
-  ! stage-correct van Regemorter epsilon (osmet_mod%compute_epsilon_stage);
-  ! NLTE lines are untouched -- their scattering lives in the rate equations
+  !> split LTE line-list opacity into true absorption and scattering with the
+  !> stage-correct van Regemorter epsilon (osmet_mod%compute_epsilon_stage);
+  !> NLTE lines are untouched -- their scattering lives in the rate equations
   logical, public :: line_scattering=.false.
   real(4), public :: opac_table_vmic=-1
 

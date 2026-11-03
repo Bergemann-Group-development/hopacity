@@ -56,40 +56,40 @@ MODULE hop_c_api
             hop_get_grph, hop_opacity, hop_opacity_omp, hop_scattering
   public :: hop_atmos_read, hop_atmos_get, hop_atmos_free, hop_optical_depth, hop_pchip_integral
 
-  ! master is the initialized-but-never-loaded composition; each hop_load_state
-  ! solves in a fresh copy of it (comp), mirroring the dispatch pattern
-  ! (tab_comp = composition; reassign_pointer): load_state_variables is not
-  ! re-entrant on one instance (ion_type keeps partially-deallocated state).
+  !> master is the initialized-but-never-loaded composition; each hop_load_state
+  !> solves in a fresh copy of it (comp), mirroring the dispatch pattern
+  !> (tab_comp = composition; reassign_pointer): load_state_variables is not
+  !> re-entrant on one instance (ion_type keeps partially-deallocated state).
   type(composition_type), allocatable, save :: master, comp
   logical, save :: abundances_set = .false.
-  ! verbose is HOP's console level (see console_mod) and the one option that must
-  ! survive being set before hop_init: the messages it gates (abundance
-  ! overrides, ...) are printed *during* init. The default is -1 rather than
-  ! dispatch's 1, so that a library driven from Python says nothing at all
-  ! unless asked; 0 adds warnings, 1 the setup summaries a dispatch run prints
-  ! by default (the linelist line count, ...), 2 and up the diagnostics.
+  !> verbose is HOP's console level (see console_mod) and the one option that must
+  !> survive being set before hop_init: the messages it gates (abundance
+  !> overrides, ...) are printed *during* init. The default is -1 rather than
+  !> dispatch's 1, so that a library driven from Python says nothing at all
+  !> unless asked; 0 adds warnings, 1 the setup summaries a dispatch run prints
+  !> by default (the linelist line count, ...), 2 and up the diagnostics.
   integer, save :: init_verbose = -1
-  ! Abundances an atmosphere file supplies (MARCS carries log eps for Z=1..92),
-  ! applied by hop_init between the [Fe/H]-scaled standard set and the explicit
-  ! 'abundances' overrides -- the order composition_type%init applies them in a
-  ! dispatch run with use_abnd=T.  Set before hop_init; cleared by hop_free.
+  !> Abundances an atmosphere file supplies (MARCS carries log eps for Z=1..92),
+  !> applied by hop_init between the [Fe/H]-scaled standard set and the explicit
+  !> 'abundances' overrides -- the order composition_type%init applies them in a
+  !> dispatch run with use_abnd=T.  Set before hop_init; cleared by hop_free.
   real(4), allocatable, save :: external_abund(:)
 
-  ! Message for the most recent nonzero status, readable with hop_last_error.  The
-  ! status codes alone cannot say *which* option was rejected or *why* a value would
-  ! not parse, and the wrapper cannot reconstruct that.  This does not cover the
-  ! stop/error stop sites inside HOP itself, which still kill the process.
+  !> Message for the most recent nonzero status, readable with hop_last_error.  The
+  !> status codes alone cannot say *which* option was rejected or *why* a value would
+  !> not parse, and the wrapper cannot reconstruct that.  This does not cover the
+  !> stop/error stop sites inside HOP itself, which still kill the process.
   character(len=512), save :: last_error = ''
   integer, parameter :: MIN_CHUNK_CELLS = 1
 
-  ! The model atmosphere most recently parsed by hop_atmos_read, served field by
-  ! field to hop_atmos_get.  Independent of the composition instance.
+  !> The model atmosphere most recently parsed by hop_atmos_read, served field by
+  !> field to hop_atmos_get.  Independent of the composition instance.
   type(atmos_data_t), allocatable, save :: atmos_file_data
 
-  ! The per-line strength collection, filled by hop_linelist_count and served to
-  ! hop_get_linelist / hop_linelist_species.  Collecting on the count call is what
-  ! makes the pair consistent: the caller has to ask how many lines there are before
-  ! it can size its buffers, and everything it then reads describes that same walk.
+  !> The per-line strength collection, filled by hop_linelist_count and served to
+  !> hop_get_linelist / hop_linelist_species.  Collecting on the count call is what
+  !> makes the pair consistent: the caller has to ask how many lines there are before
+  !> it can size its buffers, and everything it then reads describes that same walk.
   real(8), allocatable, save :: ll_lam(:), ll_evi(:), ll_loggf(:), ll_strength(:)
   integer, allocatable, save :: ll_ispec(:)
   character(len=:), allocatable, save :: absmet_loaded   !< the file osmet holds

@@ -98,14 +98,14 @@ PROGRAM hop_prune
     match_nlte_levels
 
   ! --- &prune_params ------------------------------------------------------------------
-  ! sample_count depths spread evenly over the model's index range (0 = every depth).
-  ! Spanning the whole range is what matters: a strength is a maximum over the
-  ! sampled states and the maximum of a high-excitation line sits deep, that of a
-  ! resonance or molecular line at the top. A reach is the same kind of maximum, so it
-  ! can fall short of the extent at an unsampled depth. The run only uses it to cap the
-  ! extent of lines centred outside an output patch, and on the api_profile dwarf and
-  ! giant (R=1e5, 4000-9000 A) the reaches from 8 samples changed spectra by at most
-  ! 5e-5 relative to all-depth reaches, below the 1e-4 tolerance.
+  !> sample_count depths spread evenly over the model's index range (0 = every depth).
+  !> Spanning the whole range is what matters: a strength is a maximum over the
+  !> sampled states and the maximum of a high-excitation line sits deep, that of a
+  !> resonance or molecular line at the top. A reach is the same kind of maximum, so it
+  !> can fall short of the extent at an unsampled depth. The run only uses it to cap the
+  !> extent of lines centred outside an output patch, and on the api_profile dwarf and
+  !> giant (R=1e5, 4000-9000 A) the reaches from 8 samples changed spectra by at most
+  !> 5e-5 relative to all-depth reaches, below the 1e-4 tolerance.
   character(len=4096) :: output_file=''
   integer :: sample_count=8
   namelist /prune_params/ output_file, sample_count
