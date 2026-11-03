@@ -6,6 +6,8 @@ MODULE hprofl_mod
   USE hvcs_mod, only: vcs_supported, vcs_resonance, vcs_radiative, ensure_vcs_loaded, &
                       vcs_profile_t, vcs_prepare, vcs_eval, vcs_tail
   implicit none
+  private
+  public :: add_h_opacities, hcell_prepare, hprofile, hydrogen_line, prepare_hydrogen_damping
 
   real(4), dimension(4,3), parameter ::  xknmtb = reshape([&
     0.0001716, 0.0090190, 0.1001000, 0.5820000,  &
@@ -738,7 +740,7 @@ contains
     integer :: i
     !---------------------------------------------------------------------------
     x = (newx - x0)/dx
-    i = max(0.0, x)
+    i = min(int(max(0d0, x)), size(arr) - 2)
     out = (arr(i+2) - arr(i+1))*(x - dble(i)) + arr(i+1)
   END FUNCTION lyman_interp
 

@@ -9,6 +9,10 @@ MODULE spectrum_mod
     USE op_math_mod, only: get_ivl=>get_interval, interval_t, merge_intervals
     USE trans_mod, only: transition_type
     implicit none
+    private
+    public :: spectrum_type
+    ! spectrum_params, which hop_prune.x and composition_mod read as well
+    public :: daa, aa_red, aa_blue, nnu, give_lam, in_log, R_sampling, lam_file, window_file, in_air
 
     !-------------------------------------------------------------------------------
     type :: spectrum_type
