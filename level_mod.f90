@@ -7,6 +7,12 @@ MODULE level_mod
     real(dp), dimension(:,:,:), allocatable :: n, f
   end type
 
+  !===============================================================================
+  !> An energy level of an ion in the background opacity data (absdat): statistical
+  !> weight g and, for H I, principal quantum number i and occupation probability w
+  !> per cell.  A level with xl > 0 stands for the hydrogenic series from n = xl up
+  !> to the pressure cutoff, whose partition-function sum fischel_sparks adds.
+  !===============================================================================
   type, extends(state_type) :: level_type
     integer :: i
     real(dp) :: xl, g=0
@@ -71,25 +77,21 @@ contains
   END SUBROUTINE calc_x_and_k
 
   !===============================================================================
-  !> Computes the occupation probability for a H atom in
-  !> state with effective principle quantum number NS in a plasma
-  !> enviroment with NH, NE, NHE number densities of H, ions,
-  !> and He atoms respectively.  This code assumes the perturbing
-  !> neutral H and He are in the ground state, (noting the hard
-  !> sphere approximation used is quite crude anyway) and that ions
-  !> are predominantly singly ionized (ie. N(Z=1 ions) = Ne).
-  !> See eqn 4.71 Hummer & Milhalas (1988)
-  !> Ions are now treated via Appendix A Hubeny, Hummer & Lanz (1994)
-  !> which is a fit to detailed calculation including correlations,
-  !> thus the temperature dependence
-  !> Sizes of neutral atoms adopted are sqrt(<r^2>)
-  !> Coded by Paul Barklem and Kjell Eriksson, Aug 2003
-  !> Optimized by Richard Hoppe, Jul 2023
+  !> Occupation probability w of an H I state with effective principal quantum
+  !> number ns, in every cell.  Neutral H and He perturbers (assumed in their
+  !> ground state, radius sqrt(<r^2>)) follow the hard-sphere form of
+  !> [Hummer & Mihalas (1988)](https://ui.adsabs.harvard.edu/abs/1988ApJ...331..794H),
+  !> eq. 4.71; ions, assumed singly charged, the fit of
+  !> [Hubeny, Hummer & Lanz (1994)](https://ui.adsabs.harvard.edu/abs/1994A&A...282..151H),
+  !> appendix A, which includes correlations and so depends on temperature
+  !> through shield.
+  !>
+  !> Written by Paul Barklem and Kjell Eriksson (2003).
   !===============================================================================
   PURE SUBROUTINE wcalc(nh, nhe, ne, shield, ns, w)
     real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    real(dp), intent(in) :: ns
-    real(dp), intent(out), dimension(:,:,:) :: w
+    real(dp), intent(in) :: ns  !< effective principal quantum number
+    real(dp), intent(out), dimension(:,:,:) :: w  !< occupation probability
     real(dp) :: x1, x2, neutr, k1, k2, x, frac, charg, res
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
     integer :: i,j,k, m(3)
