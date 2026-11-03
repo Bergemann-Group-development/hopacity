@@ -1,11 +1,19 @@
+!===============================================================================
+!> Numerical helpers: searches in sorted arrays, linear equation solvers,
+!> polynomial evaluation and the merging of wavelength intervals.
+!===============================================================================
 MODULE op_math_mod
   USE prec_mod
   implicit none
 
+  !> Index of the element of the ascending array arr closest to val.
   interface find_closest
     module procedure find_closest4, find_closest8
   end interface find_closest
 
+  !> Index i of the interval arr(i) < val <= arr(i+1) of the ascending array arr, or 1
+  !> for val = arr(1).  Outside the array it returns -1, or with outbounds_ok 0 below
+  !> arr(1) and size(arr) above arr(size(arr)).
   interface searchsorted
     module procedure searchsorted4, searchsorted8
   end interface searchsorted
@@ -17,6 +25,8 @@ MODULE op_math_mod
 
 contains
 
+  !====================================================================================
+  !> bool if present, else default if present, else .false.
   !====================================================================================
   PURE FUNCTION option(bool, default) result(out)
     logical, intent(in), optional :: bool, default
@@ -34,6 +44,8 @@ contains
   END FUNCTION option
 
   !====================================================================================
+  !> find_closest for real(4).
+  !====================================================================================
   pure FUNCTION find_closest4(arr, val) result(i)
     real(4), intent(in) :: arr(:), val
     integer :: i
@@ -48,6 +60,8 @@ contains
     endif
   end FUNCTION find_closest4
 
+  !====================================================================================
+  !> find_closest for real(8).
   !====================================================================================
   pure FUNCTION find_closest8(arr, val) result(i)
     real(8), intent(in) :: arr(:), val
@@ -64,7 +78,7 @@ contains
   end FUNCTION find_closest8
 
   !====================================================================================
-  !> Finds index of element after which value should be inserted to maintain order.
+  !> searchsorted for real(4).
   !====================================================================================
   pure FUNCTION searchsorted4(arr, val, outbounds_ok) result(i)
     real(4), intent(in) :: arr(:), val
@@ -95,7 +109,7 @@ contains
   end FUNCTION searchsorted4
 
   !====================================================================================
-  !> Finds index of element after which value should be inserted to maintain order.
+  !> searchsorted for real(8).
   !====================================================================================
   pure FUNCTION searchsorted8(arr, val, outbounds_ok) result(i)
     real(8), intent(in) :: arr(:), val
@@ -126,6 +140,8 @@ contains
   end FUNCTION searchsorted8
 
   !====================================================================================
+  !> Bisection of searchsorted4 on arr(l:r), for arr(l) <= x <= arr(r).
+  !====================================================================================
   pure recursive FUNCTION BinarySearch4(arr, l, r, x) result(idx)
     real(4), intent(in) :: arr(:)
     real(4), intent(in) :: x
@@ -147,6 +163,8 @@ contains
     endif
   end FUNCTION BinarySearch4
 
+  !====================================================================================
+  !> Bisection of searchsorted8 on arr(l:r), for arr(l) <= x <= arr(r).
   !====================================================================================
   pure recursive FUNCTION BinarySearch8(arr, l, r, x) result(idx)
     real(8), intent(in) :: arr(:)
@@ -182,6 +200,9 @@ contains
   END FUNCTION linspace
 
   !====================================================================================
+  !> Index range lo:up of the elements of the ascending array arr within
+  !> [lower, upper], equal elements included; lo > up when there are none.
+  !====================================================================================
   pure SUBROUTINE get_interval(arr, lower, upper, lo, up, limit)
     real(8), intent(in) :: arr(:), lower, upper
     integer, intent(out) ::lo, up
@@ -210,6 +231,8 @@ contains
   end SUBROUTINE get_interval
 
   !====================================================================================
+  !> Polynomial p(1) x^(m-1) + ... + p(m), m = size(p), at every element of x.
+  !====================================================================================
   SUBROUTINE poly3d(x, p, res)
     real(dp), intent(in), dimension(:,:,:) :: x
     real(dp), intent(in), dimension(:) :: p
@@ -223,9 +246,10 @@ contains
   END SUBROUTINE poly3d
 
   !===============================================================================
-  !>  finds solution of system of linear equations
-  !>  with gaussian elimination with pivoting
-  !>: lineq  90-06-05  new routine: (martin j stift)
+  !> Solves the linear system a x = b by Gaussian elimination with pivoting; b
+  !> returns x.
+  !>
+  !> Written by Martin J. Stift (1990).
   !===============================================================================
   SUBROUTINE lineq(a,b,n)
     integer :: n
@@ -323,22 +347,13 @@ contains
   !---------------------------------------------------------------------
 
   !===============================================================================
-  !>  solves the equation  system  a*x=b.
-  !>  when newmat=true, the system is rearranged into u*x=l*b, where u
-  !>  is upper and l is lower triangular. these are then reused in later
-  !>  calls with newmat=false and new right hand sides b. the solution
-  !>  vector is returned in b. no pivoting, i.e. the matrix a is assumed
-  !>  to have nonzero diagonal elements.
+  !> Solves the linear system a x = b without pivoting, so the diagonal elements of a
+  !> must be nonzero; b returns x and a is overwritten.  It skips zero elements below
+  !> the diagonal and stops at the last nonzero element above it, which saves much work
+  !> for sparse matrices.  The temporary scalars bl, all, alm and bk show the compiler
+  !> that the innermost loop has no vector dependency.
   !>
-  !>  coded by: a. nordlund (feb-1979)
-  !>
-  !>  this is a modified version of eqsyst which tests for zero elements
-  !>  below the diagonal and also stops at the last non-zero element above
-  !>  the diagonal. considerable savings are obtained for loose matrices.
-  !>
-  !>  this is a column oriented version (m. carlsson jan-1986)
-  !>  temporary scalars bl, all, alm and bk are used to show the compiler
-  !>  that there is no vector dependency in the innermost do-loop
+  !> Written by Åke Nordlund (1979); column-oriented version by Mats Carlsson (1986).
   !===============================================================================
   SUBROUTINE eqsyst(a,b,n)
     integer :: n
@@ -387,6 +402,10 @@ contains
     end do
   END SUBROUTINE eqsyst
 
+  !===============================================================================
+  !> Solves the linear system a x = b by LU decomposition without pivoting,
+  !> skipping zero elements of the upper rows; a returns its LU factors and b
+  !> returns x.
   !===============================================================================
   SUBROUTINE lineq_no_pivot (a, b, n)
     integer :: n

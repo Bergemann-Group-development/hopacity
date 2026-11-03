@@ -1,14 +1,22 @@
+!===============================================================================
+!> Helpers for strings, sorting, input parsing, air and vacuum wavelengths, array
+!> truncation and checks for invalid values.
+!===============================================================================
 MODULE handyfuncs_mod
   USE op_math_mod
   USE hop_env_mod, only: os
   USE console_mod
   implicit none
 
+  !> Shrinks the allocatable array to its first nkeep elements.
   interface truncate_array
     module procedure truncate_string_array, truncate_float_array, &
       truncate_dble_array, truncate_int_array, truncate_bool_array
   end interface truncate_array
 
+  !> Reports every NaN, +Infinity and, with check_zero or check_negative, every zero
+  !> or negative element of arr with its index on the error console.  ok returns
+  !> whether there was none; with abort, any stops the run.
   interface check_array
     module procedure check_1d_array_dp, check_2d_array_dp, check_3d_array_dp, check_4d_array_dp
     module procedure check_1d_array_sp, check_2d_array_sp, check_3d_array_sp, check_4d_array_sp
@@ -16,6 +24,9 @@ MODULE handyfuncs_mod
 
 contains
 
+  !====================================================================================
+  !> Stops the run when a read returned iostat > 0, printing the line that failed:
+  !> text if given, else the last record read from lunit.
   !====================================================================================
   SUBROUTINE print_failed_line(lunit, iostat, text)
     integer, intent(in) :: lunit, iostat
@@ -38,16 +49,12 @@ contains
   END SUBROUTINE print_failed_line
 
   !====================================================================================
+  !> Positions fileunit before its next line that is neither empty nor a comment,
+  !> i.e. whose first non-blank character is not comment (default '*').
+  !>
+  !> Written by Jorrit Leenaarts (2005).
+  !====================================================================================
   SUBROUTINE NextEntry(fileunit, comment)
-    ! ***********************************************************************
-    ! --- Reads an input line, returns when it is not a
-    ! --- comment or an empty line.
-    ! --- Feb 21 2005:
-    ! ---   Created by Jorrit Leenaarts (j.leenaarts@astro.uu.nl)
-    ! --- May 28 2008 :
-    !       jorritl: updated, will now also check for empty lines,
-    !       and allow data in the first column of the file.
-    ! ***********************************************************************
     integer,intent(in) :: fileunit
     character(len=132) :: instring
     character(len=1)   :: token1, cmt
@@ -73,6 +80,9 @@ contains
   END SUBROUTINE NextEntry
 
   !====================================================================================
+  !> Index range start:end of part i of n elements split into ni parts as equal as
+  !> possible, the first mod(n, ni) of them one longer; i counts cyclically.
+  !====================================================================================
   SUBROUTINE unequal_intervals(n, i, ni, start, end)
     integer, intent(in)  :: n, i, ni
     integer, intent(out) :: start, end
@@ -85,6 +95,8 @@ contains
     end   =  j   *nv + min(md, j)
   END SUBROUTINE unequal_intervals
 
+  !===============================================================================
+  !> Replaces every character out in string by in.
   !===============================================================================
   SUBROUTINE replace_char (string, out, in)
     character(len=*), intent(inout) :: string
@@ -99,6 +111,8 @@ contains
     end do
   END SUBROUTINE replace_char
 
+  !===============================================================================
+  !> Replaces every occurrence of out in string by in.
   !===============================================================================
   SUBROUTINE replace_substring (string, out, in)
     character(len=*), intent(inout) :: string
@@ -126,6 +140,8 @@ contains
     string = tmp
   END SUBROUTINE replace_substring
 
+  !===============================================================================
+  !> Number of words in string separated by sep (default blank).
   !===============================================================================
   SUBROUTINE count_words (string, nwords, sep)
     character(len=*), intent(in) :: string
@@ -155,6 +171,9 @@ contains
   END SUBROUTINE count_words
 
   !===============================================================================
+  !> Copy of string with quotes and commas turned into blanks, leading blanks removed
+  !> and runs of blanks collapsed into one.  It also changes string itself.
+  !===============================================================================
   FUNCTION trim_between_words(string) result(res)
     character(len=*) :: string
     character(len=len(string)) :: res
@@ -183,6 +202,8 @@ contains
   END FUNCTION
 
   !===============================================================================
+  !> True when str is one of the blank-separated words of text.
+  !===============================================================================
   FUNCTION string_in_text (text, str) result(in_text)
     character(len=*) :: str
     character(len=*) :: text
@@ -206,6 +227,8 @@ contains
   END FUNCTION
 
   !===============================================================================
+  !> Integer read from str between its first and its last digit.
+  !===============================================================================
   FUNCTION extract_int (str) result(val)
     character(len=*) :: str
     integer :: i, o, val
@@ -215,7 +238,9 @@ contains
     read(str(i:o), *) val
   END FUNCTION
 
-    !===============================================================================
+  !===============================================================================
+  !> Non-negative 32-bit hash of text without its trailing blanks.
+  !===============================================================================
   FUNCTION hash_string(text) result(hashed)
     character(*), intent(in) :: text
     integer :: hashed !< 32-bit integers assumed
@@ -230,6 +255,9 @@ contains
     hashed = abs( IEOR( hashed, magic_numb ) )
   END FUNCTION hash_string
 
+  !===============================================================================
+  !> Permutation order that sorts a in ascending order, keeping equal elements in
+  !> their original order.
   !===============================================================================
   SUBROUTINE argsort_int(a, order)
     integer, intent(in) :: a(:)
@@ -307,7 +335,7 @@ contains
   END FUNCTION lowercase
 
   !====================================================================================
-  !> converts the first ss characters of string to uppercase and returns them as a new string.
+  !> Copy of string in upper case.
   !====================================================================================
   PURE FUNCTION uppercase(string)
     implicit none
@@ -330,6 +358,8 @@ contains
   END FUNCTION uppercase
 
   !====================================================================================
+  !> Copy of string in lower case except for its first character, which is upper case.
+  !====================================================================================
   PURE FUNCTION capitalize(string)
     character(len=*),intent(in) :: string
     character(len=len(string)) :: capitalize
@@ -338,6 +368,9 @@ contains
     capitalize(1:1) = uppercase(capitalize(1:1))
   END FUNCTION capitalize
 
+  !===============================================================================
+  !> Removes every element closer than threshold to the element kept before it and
+  !> shrinks array to the remaining ones.
   !===============================================================================
   SUBROUTINE remove_close_entries(array, threshold)
     real(8), intent(inout), allocatable :: array(:)
@@ -363,6 +396,9 @@ contains
   END SUBROUTINE remove_close_entries
 
   !===============================================================================
+  !> Air wavelength [AA] of the vacuum wavelength vac [AA], with the refractive index
+  !> of airvac_corr evaluated at vac.
+  !===============================================================================
   elemental FUNCTION vac2air (vac) result(air)
     real(8), intent(in) :: vac
     real(8) :: air
@@ -370,6 +406,8 @@ contains
     air = vac/airvac_corr(vac)
   END FUNCTION vac2air
 
+  !===============================================================================
+  !> Vacuum wavelength [AA] of the air wavelength air [AA].
   !===============================================================================
   elemental FUNCTION air2vac (air) result(vac)
     real(8), intent(in) :: air
@@ -381,6 +419,9 @@ contains
   END FUNCTION air2vac
 
   !===============================================================================
+  !> Refractive index of air, the ratio of vacuum to air wavelength, at the
+  !> wavelength air [AA].
+  !===============================================================================
   elemental FUNCTION airvac_corr (air) result(n)
     real(8), intent(in) :: air
     real(8) :: n, s, s2
@@ -391,6 +432,9 @@ contains
       + 0.0001599740894897d0 / (38.92568793293d0 - s2)
   END FUNCTION airvac_corr
 
+  !===============================================================================
+  !> Position of the last occurrence of str without its trailing blanks in text, 0 if
+  !> there is none.
   !===============================================================================
   FUNCTION rindex(text, str) result(index)
     character(len=*), intent(in) :: text, str
@@ -442,6 +486,8 @@ contains
   END FUNCTION endswith
 
   !====================================================================================
+  !> truncate_array for character arrays.
+  !====================================================================================
   SUBROUTINE truncate_string_array(array, nkeep)
     character(len=*), intent(inout), dimension(:), allocatable :: array
     character(len=len(array(1))), dimension(:), allocatable :: tmp
@@ -452,6 +498,8 @@ contains
     call move_alloc(tmp, array)
   END SUBROUTINE truncate_string_array
 
+  !====================================================================================
+  !> truncate_array for real(4) arrays.
   !====================================================================================
   SUBROUTINE truncate_float_array(array, nkeep)
     real(4), intent(inout), dimension(:), allocatable :: array
@@ -464,6 +512,8 @@ contains
   END SUBROUTINE truncate_float_array
 
   !====================================================================================
+  !> truncate_array for real(8) arrays.
+  !====================================================================================
   SUBROUTINE truncate_dble_array(array, nkeep)
     real(8), intent(inout), dimension(:), allocatable :: array
     real(8), dimension(:), allocatable :: tmp
@@ -474,6 +524,8 @@ contains
     call move_alloc(tmp, array)
   END SUBROUTINE truncate_dble_array
 
+  !====================================================================================
+  !> truncate_array for integer arrays.
   !====================================================================================
   SUBROUTINE truncate_int_array(array, nkeep)
     integer, intent(inout), dimension(:), allocatable :: array
@@ -486,6 +538,8 @@ contains
   END SUBROUTINE truncate_int_array
 
   !====================================================================================
+  !> truncate_array for logical arrays.
+  !====================================================================================
   SUBROUTINE truncate_bool_array(array, nkeep)
     logical, intent(inout), dimension(:), allocatable :: array
     logical, dimension(:), allocatable :: tmp
@@ -496,7 +550,9 @@ contains
     call move_alloc(tmp, array)
   END SUBROUTINE truncate_bool_array
 
-  ! ==============================================================================
+  !==============================================================================
+  !> Reports the invalid value what in array label at index idx on the error console.
+  !==============================================================================
   SUBROUTINE report_invalid (what, label, idx)
     character(len=*), intent(in) :: what, label
     integer, intent(in) :: idx(:)
@@ -506,6 +562,9 @@ contains
     call console_error (msg)
   END SUBROUTINE report_invalid
 
+  !===============================================================================
+  !> check_array for real(8) arrays, flattened into arr with their shape arr_shape.
+  !===============================================================================
   SUBROUTINE check_array_core_dp(arr, arr_shape, label, abort, check_zero, check_negative, ok)
     real(8), intent(in), dimension(:) :: arr
     integer, intent(in), dimension(:) :: arr_shape
@@ -554,6 +613,9 @@ contains
     end if
   END SUBROUTINE check_array_core_dp
 
+  !===============================================================================
+  !> check_array for real(4) arrays, flattened into arr with their shape arr_shape.
+  !===============================================================================
   SUBROUTINE check_array_core_sp(arr, arr_shape, label, abort, check_zero, check_negative, ok)
     real(4), intent(in), dimension(:) :: arr
     integer, intent(in), dimension(:) :: arr_shape
@@ -601,7 +663,9 @@ contains
     end if
   END SUBROUTINE check_array_core_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 1D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_1d_array_dp(arr, label, abort, check_zero, check_negative, ok)
     real(8), intent(in), dimension(:) :: arr
     character(len=*), intent(in) :: label
@@ -612,7 +676,9 @@ contains
     call check_array_core_dp(arr, shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_1d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 2D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_2d_array_dp(arr, label, abort, check_zero, check_negative, ok)
     real(8), intent(in), dimension(:,:) :: arr
     character(len=*), intent(in) :: label
@@ -623,7 +689,9 @@ contains
     call check_array_core_dp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_2d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 3D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_3d_array_dp(arr, label, abort, check_zero, check_negative, ok)
     real(8), intent(in), dimension(:,:,:) :: arr
     character(len=*), intent(in) :: label
@@ -634,7 +702,9 @@ contains
     call check_array_core_dp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_3d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 4D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_4d_array_dp(arr, label, abort, check_zero, check_negative, ok)
     real(8), intent(in), dimension(:,:,:,:) :: arr
     character(len=*), intent(in) :: label
@@ -645,7 +715,9 @@ contains
     call check_array_core_dp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_4d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 1D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_1d_array_sp(arr, label, abort, check_zero, check_negative, ok)
     real(4), intent(in), dimension(:) :: arr
     character(len=*), intent(in) :: label
@@ -656,7 +728,9 @@ contains
     call check_array_core_sp(arr, shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_1d_array_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 2D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_2d_array_sp(arr, label, abort, check_zero, check_negative, ok)
     real(4), intent(in), dimension(:,:) :: arr
     character(len=*), intent(in) :: label
@@ -667,7 +741,9 @@ contains
     call check_array_core_sp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_2d_array_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 3D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_3d_array_sp(arr, label, abort, check_zero, check_negative, ok)
     real(4), intent(in), dimension(:,:,:) :: arr
     character(len=*), intent(in) :: label
@@ -678,7 +754,9 @@ contains
     call check_array_core_sp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_3d_array_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 4D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_4d_array_sp(arr, label, abort, check_zero, check_negative, ok)
     real(4), intent(in), dimension(:,:,:,:) :: arr
     character(len=*), intent(in) :: label
