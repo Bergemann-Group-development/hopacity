@@ -8,15 +8,19 @@ MODULE handyfuncs_mod
   USE console_mod
   implicit none
 
+  !===============================================================================
   !> Shrinks the allocatable array to its first nkeep elements.
+  !===============================================================================
   interface truncate_array
     module procedure truncate_string_array, truncate_float_array, &
       truncate_dble_array, truncate_int_array, truncate_bool_array
   end interface truncate_array
 
+  !===============================================================================
   !> Reports every NaN, +Infinity and, with check_zero or check_negative, every zero
   !> or negative element of arr with its index on the error console.  ok returns
   !> whether there was none; with abort, any stops the run.
+  !===============================================================================
   interface check_array
     module procedure check_1d_array_dp, check_2d_array_dp, check_3d_array_dp, check_4d_array_dp
     module procedure check_1d_array_sp, check_2d_array_sp, check_3d_array_sp, check_4d_array_sp

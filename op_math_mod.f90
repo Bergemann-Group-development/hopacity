@@ -6,14 +6,18 @@ MODULE op_math_mod
   USE prec_mod
   implicit none
 
+  !===============================================================================
   !> Index of the element of the ascending array arr closest to val.
+  !===============================================================================
   interface find_closest
     module procedure find_closest4, find_closest8
   end interface find_closest
 
+  !===============================================================================
   !> Index i of the interval arr(i) < val <= arr(i+1) of the ascending array arr, or 1
   !> for val = arr(1).  Outside the array it returns -1, or with outbounds_ok 0 below
   !> arr(1) and size(arr) above arr(size(arr)).
+  !===============================================================================
   interface searchsorted
     module procedure searchsorted4, searchsorted8
   end interface searchsorted
