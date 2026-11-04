@@ -369,7 +369,8 @@ contains
 
     ! Tabulated profile (hvcs_mod): whole-profile replacement, with the same
     ! fine-structure superposition as the analytic path. Broadening the table
-    ! lacks is added as one Lorentzian of half width hwadd outside
+    ! lacks is added as one Lorentzian of half width hwadd (with the classical
+    ! oscillator shape of classical_wing) outside
     ! hfwid = max(Doppler width, hwadd): radiative damping for series tabulated
     ! without it (Stehle & Hutcheon), broadening by neutral helium, which no table
     ! has, and the broadening by neutral hydrogen of a BPO line or of a line
@@ -421,7 +422,7 @@ contains
     type(hline_t), intent(in) :: h
     type(hcell_t), intent(in) :: c
     real(8), intent(in) :: q
-    real(4) :: vs, xv, phi
+    real(4) :: vs, xv, phi, wing
     type(qlg_bot_coef_t) :: vw
     integer :: i
     !----------------------------------------------------------------------------------
@@ -432,12 +433,14 @@ contains
       !  Rayleigh scattering, which the continuum carries
       vw = c%vwing
       if (q < h%qray) vw = c%vwing_ray
-      !  Including fine structure
+      !  Lorentz wing with the classical oscillator shape, including fine structure
+      wing = 0
       do i=1, h%io
         vs = (q - h%dq(i)) * c%idf
         xv = qlg_bot_eval(vw, vs) * c%idf
-        phi = phi + h%wt(i)*xv
+        wing = wing + h%wt(i)*xv
       end do
+      phi = phi + classical_wing(q)*wing
     else
       phi = 0.d0
       do i=1, h%io
@@ -488,7 +491,22 @@ contains
   END FUNCTION
 
   !====================================================================================
-  !  The added Lorentzian (unit area in q) at detuning d from a component, added
+  !  Classical oscillator shape of a Lorentz wing, relative to the Lorentzian, at
+  !  q = (nu - nu0)/nu0. The damping width grows as (nu/nu0)**2 and the resonance
+  !  denominator (nu0**2 - nu**2)**2 replaces (2 nu0 (nu - nu0))**2 (Aller, eq. 4-73;
+  !  Barklem's HLINOP). The factor is one at the line and tends to 4 (nu/nu0)**4 far
+  !  to the red, the Rayleigh limit, where a constant-width Lorentzian levels off.
+  !====================================================================================
+  ELEMENTAL FUNCTION classical_wing (q) result(f)
+    real(8), intent(in) :: q
+    real(4) :: f
+    !----------------------------------------------------------------------------------
+    f = real(4*(1 + q)**4 / (2 + q)**2, 4)
+  END FUNCTION classical_wing
+
+  !====================================================================================
+  !  The added Lorentzian (unit area in q) at detuning d from a component, with the
+  !  classical oscillator shape far from the line (classical_wing), added
   !  to the table profile beyond hfwid = max(Doppler width, hwadd), the same
   !  switch between core and adding as in hvoigt. Inside it the Doppler core
   !  dominates, and leaving the Lorentzian out there keeps the summed area close
@@ -501,7 +519,7 @@ contains
     real(4) :: phi
     !----------------------------------------------------------------------------------
     if (abs(d) > c%hfwid) then
-      phi = real(c%hwadd / (PI * (d*d + c%hwadd*c%hwadd)), 4)
+      phi = real(c%hwadd / (PI * (d*d + c%hwadd*c%hwadd)), 4) * classical_wing(d)
     else
       phi = 0.0
     endif
@@ -523,9 +541,11 @@ contains
       a = 0
       !  Lyman alpha:
       if (q > h%qray) then
-        !  Natural broadening, only blueward of lam_lyman_rayleigh: redward of it this
-        !  wing is H I Rayleigh scattering, which the continuum carries
-        a = h%grad*(q+1d0)**2
+        !  Natural broadening with the classical oscillator shape, only blueward of
+        !  lam_lyman_rayleigh: redward of it this wing is H I Rayleigh scattering,
+        !  which the continuum carries. In the Lorentz wing, scaling the damping
+        !  scales the profile.
+        a = h%grad*classical_wing(q)
       endif
       if (q > q4000) then
         !  Self broadening of Lyman alpha:
