@@ -324,3 +324,37 @@ def test_a_dying_worker_raises(tmp_path):
         with pytest.raises(HopError, match="worker process died"):
             hop.opacity(np.linspace(5170.0, 5186.0, 40), linelist=linelist, dlam=10.0,
                         nprocs=2)
+
+
+LYMAN_BETA = """'H I  lambda(AA) nblo nbup elo(eV) eup(eV) loggf ident raddamp'
+'1'   1
+  1025.722     1    3    0.000   12.087   -0.801   'Lybeta   ' 5.70E+08
+"""
+
+
+def test_lyman_wing_gives_way_to_rayleigh_scattering(tmp_path):
+    """Redward of 1400 AA a Lyman line's natural damping wing is H I Rayleigh scattering.
+
+    The continuum's Rayleigh cross-section (Dalgarno) is the sum of these far red wings
+    over the series, so the line profile leaves natural damping out there. Without that
+    cut a constant-width Lorentz wing levels off far from the line instead of falling
+    as lambda^-4: in a cool, thin cell Lyman beta alone added about 1e-3 cm^2/g of true
+    absorption from 1400 AA to 20 um, several times the continuum in the infrared, and
+    only within the chunk that loaded the line. Pressure broadening is negligible in
+    this cell, so redward of 1400 AA the line may add only float32 roundoff, in every
+    chunk.
+    """
+    from hopacity import HopEOS, wavelength_grid
+
+    linelist = tmp_path / "Hlinedata"     # the name selects the Hlinedata column layout
+    linelist.write_text(LYMAN_BETA)
+    lam = wavelength_grid(1000.0, 30000.0, R_sampling=500, in_air=False)
+    with HopEOS(feh=0.0) as hop:
+        hop.load_state([3800.0], rho=[1e-11])
+        cont, _ = hop.opacity(lam)
+        chi1, _ = hop.opacity(lam, linelist=linelist, dlam=100.0)
+        chi4, _ = hop.opacity(lam, linelist=linelist, dlam=100.0, nchunks=4)
+    red = lam > 1400.0
+    assert np.all(chi1[0, ~red & (lam > 1030.0)] > cont[0, ~red & (lam > 1030.0)])
+    np.testing.assert_allclose(chi1[0, red], cont[0, red], rtol=1e-6)
+    np.testing.assert_allclose(chi4, chi1, rtol=1e-6)

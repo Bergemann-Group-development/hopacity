@@ -10,7 +10,7 @@ MODULE composition_mod
   USE bbtrans_mod, only:tolerance
   USE bftrans_mod, only:bftrans_type, H_occupation_probability
   USE molecule_mod, only:molec_type, irwin_dis, molecular_equilibrium
-  USE hprofl_mod, only:hline_t, hydrogen_line, add_h_opacities
+  USE hprofl_mod, only:hline_t, hydrogen_line, add_h_opacities, lam_lyman_rayleigh
   USE hvcs_mod, only:ensure_vcs_loaded
   USE anstee_mod, only:ensure_anstee_loaded
   USE line_types_mod, only: linelist_type
@@ -3735,8 +3735,8 @@ contains
     do_H2 = associated(H2)
 
     xray2 = 0.
-    !where (lam > 911.27) xray2 = 1 / max(1026., lam)**2
-    where (lam > 1400) xray2 = 1 / max(1026., lam)**2
+    ! blueward of lam_lyman_rayleigh the Lyman line profiles carry these wings
+    where (lam > lam_lyman_rayleigh) xray2 = 1 / max(1026., lam)**2
 
     if (helium_scattering) then
       ! Scattering by HeI in cm**2/atom, from Bues & Wehrse, 1976, A&A 51, 461

@@ -9,6 +9,12 @@ MODULE hprofl_mod
   private
   public :: add_h_opacities, hcell_prepare, hprofile, hydrogen_line, prepare_hydrogen_damping
 
+  !  Vacuum wavelength [AA] that divides the far red wings of the Lyman lines between
+  !  the line profiles and H I Rayleigh scattering. Dalgarno's Rayleigh cross-section
+  !  (composition_mod's rayleigh_scattering, applied redward of it) is the sum of these
+  !  wings over the whole series, so the profiles leave out natural damping there.
+  real(dp), parameter, public :: lam_lyman_rayleigh = 1400d0
+
   real(4), dimension(4,3), parameter ::  xknmtb = reshape([&
     0.0001716, 0.0090190, 0.1001000, 0.5820000,  &
     0.0005235, 0.0177200, 0.1710000, 0.8660000,  &
@@ -152,6 +158,7 @@ MODULE hprofl_mod
     integer  :: io=0
     real(dp) :: dq(14)=0, wt(14)=0
     real(dp) :: dqbar=0, dqmax=0
+    real(dp) :: qray=-huge(1d0)   ! Lyman lines: q of lam_lyman_rayleigh, see above
   end type hline_t
 
   ! The q-independent part of stark_eval for one line in one cell (stark_prepare)
@@ -168,13 +175,13 @@ MODULE hprofl_mod
     logical :: use_vcs = .false., lymanalf = .false.
     type(stark_cell_t)   :: st
     type(qlg_bot_coef_t) :: vcore, vwing   ! Voigt coefficients inside / outside hfwid
+    type(qlg_bot_coef_t) :: vwing_ray      ! Lyman lines: vwing without natural damping
     type(vcs_profile_t)  :: vcs
     real(8) :: xholt4000 = 0              ! Lyman alpha: half the Stark profile at q4000
   end type hcell_t
 
   ! Lyman alpha wing regions, in relative detuning q
   real(8), parameter :: LyA0 = 82259.105 ! wavenumber
-  real(8), parameter :: rayqcut = (1e8/1400.d0 - LyA0)/LyA0 !Changed from 1240 to 1400 by BPz 04/10-2007
   real(8), parameter :: redthresh = 20000./LyA0 - 1d0
   real(8), parameter :: q4000 = -4000./LyA0
 
@@ -386,6 +393,7 @@ contains
     call stark_prepare(h%n, h%m, h%nu0, temp, ne, c%hwstk, c%st)
     c%vcore = qlg_bot_coef((c%hwlor + c%hwstk) * idf)
     c%vwing = qlg_bot_coef(c%hwlor * idf)
+    if (h%n == 1) c%vwing_ray = qlg_bot_coef((c%resont + c%vdw) * idf)
     if (c%lymanalf) c%xholt4000 = 0.5*stark_eval(c%st, q4000)
   END SUBROUTINE hcell_prepare
 
@@ -414,15 +422,20 @@ contains
     type(hcell_t), intent(in) :: c
     real(8), intent(in) :: q
     real(4) :: vs, xv, phi
+    type(qlg_bot_coef_t) :: vw
     integer :: i
     !----------------------------------------------------------------------------------
     if (abs(q) > c%hfwid) then
       !  Treat stark broadening separately
       phi = stark_eval(c%st, q)
+      !  Redward of lam_lyman_rayleigh a Lyman line's natural damping wing is H I
+      !  Rayleigh scattering, which the continuum carries
+      vw = c%vwing
+      if (q < h%qray) vw = c%vwing_ray
       !  Including fine structure
       do i=1, h%io
         vs = (q - h%dq(i)) * c%idf
-        xv = qlg_bot_eval(c%vwing, vs) * c%idf
+        xv = qlg_bot_eval(vw, vs) * c%idf
         phi = phi + h%wt(i)*xv
       end do
     else
@@ -509,11 +522,9 @@ contains
     if (abs(q) > c%hfwid) then
       a = 0
       !  Lyman alpha:
-      if (q > rayqcut) then
-        !  Natural broadening
-        !  This is cut at 1400 AA in the red.
-        !  Note that this is Rayleigh scattering and therefore the rayleigh scattering
-        !  in composition_mod has to be cut below 1400 AA to avoid double counting.
+      if (q > h%qray) then
+        !  Natural broadening, only blueward of lam_lyman_rayleigh: redward of it this
+        !  wing is H I Rayleigh scattering, which the continuum carries
         a = h%grad*(q+1d0)**2
       endif
       if (q > q4000) then
@@ -644,6 +655,7 @@ contains
       radamp = asum(n)+asum(m)
     end if
     h%grad = radamp * over_4pi / h%nu0
+    if (n == 1) h%qray = cc*1d8 / (lam_lyman_rayleigh * h%nu0) - 1
 
     !  Resonance broadening following Ali & Griem (1966, Phys Rev 144, 366).
     !  RESONT is dnu/nu per unit H density. Only the lower state is included
