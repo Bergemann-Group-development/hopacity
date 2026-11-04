@@ -1,56 +1,60 @@
+!===============================================================================
+!> Transitions of the model atom: bound-bound lines and bound-free continua with
+!> their frequency grids.
+!===============================================================================
 MODULE trans_mod
   USE const_mod
   USE bbtrans_mod
   USE op_math_mod, only: searchsorted
   USE interpol_mod, only: hermite_interpolation, hermite_derivative
   USE handyfuncs_mod, only: symmetric_log_grid
-  ! *******************************************************************
-  !
-  !     Contains variables connected to the atom(s)
-  !     included in the calculations
-  !
-  ! *******************************************************************
   implicit none
 
+  !===============================================================================
+  !> A transition of the model atom with its frequency grid and quadrature weights.
+  !===============================================================================
   type, extends(bbtrans_type) :: transition_type
-    integer :: ntrans ! transition identifier
+    integer :: ntrans !< transition identifier
 
     real(8) :: upper_ev
 
-    integer :: iblue = 0 ! start index where line is active in overall wavelength grid
-    integer :: ired  = 0 ! end index where line is active in overall wavelength grid
+    integer :: iblue = 0 !< start index where line is active in overall wavelength grid
+    integer :: ired  = 0 !< end index where line is active in overall wavelength grid
     real(8) :: lam_min, lam_max
 
-    real(8), dimension(:), pointer, contiguous :: nu => null()  ! frequencies [Hz]
-    real(8), dimension(:), pointer, contiguous :: lam => null() ! wavelength [AA]
+    real(8), dimension(:), pointer, contiguous :: nu => null()  !< frequencies [Hz]
+    real(8), dimension(:), pointer, contiguous :: lam => null() !< wavelength [AA]
     real(8), dimension(:), pointer, contiguous :: lam_input => null()
     ! The frequency arrays of a transition are pointers, so the copy each rt_patch
     ! keeps of a transition shares them with the atom instead of duplicating them
     ! for every window, direction and depth slab.  The patch indexes them with the
     ! global frequency index of its own range.
-    ! frequency quadrature weight of the rate integrals: dnu/nu for a line, whose
-    ! rates take Aij as a factor, and dnu/(h/4pi*nu) for a continuum (atom_mod)
+    !> frequency quadrature weight of the rate integrals: dnu/nu for a line, whose
+    !> rates take Aij as a factor, and dnu/(h/4pi*nu) for a continuum (atom_mod)
     real(8), dimension(:), pointer, contiguous :: wnu => null()
 
   contains
     procedure :: check_range
   end type transition_type
 
+  !===============================================================================
+  !> A bound-bound transition of the model atom, with its line profile.
+  !===============================================================================
   type, extends(transition_type) :: line_type
 
     logical :: hydrogen
-    real(4), dimension(:), pointer, contiguous :: q => null()  ! frequencies [Doppler units]
-    real(8), dimension(:), pointer, contiguous :: wq => null() ! frequency quadrature weight [Doppler units]
+    real(4), dimension(:), pointer, contiguous :: q => null()  !< frequencies [Doppler units]
+    real(8), dimension(:), pointer, contiguous :: wq => null() !< frequency quadrature weight [Doppler units]
 
-    real(4),dimension(:,:,:,:), pointer :: phi => null() ! actual line profile data
-    real(4),dimension(:,:,:), pointer, contiguous :: wphi => null() ! normalization such that
+    real(4),dimension(:,:,:,:), pointer :: phi => null()            !< actual line profile data
+    real(4),dimension(:,:,:), pointer, contiguous :: wphi => null() !< normalization such that
     ! \Sigma_mu=1^{nrays} \Sigma_nu=1^{nnu} phi(nu,v(mu)) = 1
     ! in case of strong velocities this does not automatically follow from
     ! the independent normalization of the angle and frequency quadrature
 
-    real(8) :: f    ! oscillator strength
-    real(8) :: qmax ! width of profile in doppler units
-    real(8) :: q0   ! switch from linear to logarithmic frequency grid spacing
+    real(8) :: f    !< oscillator strength
+    real(8) :: qmax !< width of profile in doppler units
+    real(8) :: q0   !< switch from linear to logarithmic frequency grid spacing
 
     real(8), dimension(:), allocatable :: fterm
     real(8), dimension(:), allocatable :: gwterm
@@ -62,12 +66,15 @@ MODULE trans_mod
 
   end type line_type
 
+  !===============================================================================
+  !> A bound-free transition of the model atom, with its cross sections.
+  !===============================================================================
   type, extends(transition_type) ::  cont_type
-    character(len=20) :: bf_type ! either 'detail' or 'hydrogenic'
+    character(len=20) :: bf_type !< either 'detail' or 'hydrogenic'
 
     !real(8) :: nu0 ! ionization edge frequency
-    real(4) :: alpha0 ! cross section at ionization threshold [cm^2]
-    real(4), dimension(:), pointer, contiguous :: alpha => null() ! cross sections [cm^2]
+    real(4) :: alpha0                                             !< cross section at ionization threshold [cm^2]
+    real(4), dimension(:), pointer, contiguous :: alpha => null() !< cross sections [cm^2]
     real(8), dimension(:), pointer, contiguous :: alpha_input => null()
 
   contains
@@ -77,10 +84,13 @@ MODULE trans_mod
 contains
 
   !====================================================================================
+  !> Cross sections alpha at the frequencies nu, Hermite-interpolated in frequency from
+  !> the input table and zero outside it.
+  !====================================================================================
   PURE SUBROUTINE hermite_interp(self, alpha, nu)
     class(cont_type), intent(in) :: self
-    real(8), intent(in), dimension(:) :: nu
-    real(4), intent(inout), dimension(:) :: alpha
+    real(8), intent(in), dimension(:) :: nu       !< frequencies [Hz]
+    real(4), intent(inout), dimension(:) :: alpha !< cross sections [cm^2]
     real(8), allocatable, dimension(:) :: dalpha_dnu, nu_input, alpha_input
     real(8) :: minl, maxl
     integer :: n
@@ -103,11 +113,16 @@ contains
   END SUBROUTINE hermite_interp
 
   !====================================================================================
+  !> Overlap fs_out:fe_out of the frequency range fs_in:fe_in with the range
+  !> iblue:ired where the transition is active.
+  !====================================================================================
   PURE SUBROUTINE check_range(self, fs_in, fe_in, fs_out, fe_out, skip)
     class(transition_type), intent(in) :: self
-    integer, intent(in) :: fs_in, fe_in
-    integer, intent(out) :: fs_out, fe_out
-    logical, intent(out) :: skip
+    integer, intent(in) :: fs_in   !< first frequency index of the range
+    integer, intent(in) :: fe_in   !< last frequency index of the range
+    integer, intent(out) :: fs_out !< first frequency index of the overlap
+    integer, intent(out) :: fe_out !< last frequency index of the overlap
+    logical, intent(out) :: skip   !< no overlap
     !--------------------------------------------------------------------------------
     skip = .false.
 
@@ -122,12 +137,17 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
+  !> Wavelength grid of the line.  With nnu < 0 it is lam0 plus the symmetric_log_grid
+  !> from q0 to qmax [AA], which sets nnu.  Otherwise it has nnu points in Doppler
+  !> units of qnorm out to qmax, equidistant for qmax <= q0 and logarithmic beyond q0
+  !> as in MULTI.
+  !====================================================================================
   SUBROUTINE get_lam(self, qnorm, lam, legacy)
     class(line_type), intent(inout)  :: self
-    real(8), intent(in) :: qnorm
-    real(8), intent(inout), dimension(:), pointer, contiguous :: lam
+    real(8), intent(in) :: qnorm                                     !< Doppler unit [km/s]
+    real(8), intent(inout), dimension(:), pointer, contiguous :: lam !< wavelengths [AA], allocated here
+    logical, intent(in) :: legacy                                    !< MULTI's older logarithmic spacing
     real(8), dimension(:), allocatable :: q
-    logical, intent(in) :: legacy
     real(8) :: dq, a, qmax, q0
     integer :: i, nnu
     logical :: linear

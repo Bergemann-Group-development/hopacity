@@ -1,5 +1,7 @@
 #include "read_namelist.inc"
-!---------------------------------------------------------------------
+!===============================================================================
+!> Wavelength grids of the spectrum, set up from spectrum_params.
+!===============================================================================
 MODULE spectrum_mod 
     USE hop_env_mod, only: io, os
     USE namelist_check_mod, only: namelist_error
@@ -14,17 +16,20 @@ MODULE spectrum_mod
     ! spectrum_params, which hop_prune.x and composition_mod read as well
     public :: daa, aa_red, aa_blue, nnu, give_lam, in_log, R_sampling, lam_file, window_file, in_air
 
-    !-------------------------------------------------------------------------------
+    !===============================================================================
+    !> A wavelength grid with its frequencies and quadrature weights, possibly made of
+    !> several constant-R segments.
+    !===============================================================================
     type :: spectrum_type
-        ! total number of wavelengths
+        !> total number of wavelengths
         integer :: nnu=0
         real(8), dimension(:), allocatable :: nu, wnu, lam, llam
         logical :: sorted=.false.
-        ! .true. when the grid is uniform in log(lambda) (e.g. a constant-R grid);
-        ! enables the arithmetic (march/bisection-free) opacity kernel add_opacity_equi
+        !> .true. when the grid is uniform in log(lambda) (e.g. a constant-R grid);
+        !> enables the arithmetic (march/bisection-free) opacity kernel add_opacity_equi
         logical :: equidistant=.false.
         character(len=32) :: name=''
-        ! Segment metadata for multi-window grids (A2)
+        !> Segment metadata for multi-window grids
         integer :: n_segments=0
         integer, dimension(:), allocatable :: segment_first, segment_last
         real(8), dimension(:), allocatable :: segment_blue_vac, segment_red_vac
@@ -39,33 +44,38 @@ MODULE spectrum_mod
     !---------------------------------------------------------------------
 
     public :: set_weights
-    real(8), public :: lam_tolerance = 0.001
-    logical :: give_lam=.false., in_air=.true.
-    logical :: in_log=.false.
-    real(8) :: daa=0, aa_red=0, aa_blue=0, R_sampling=0
-    integer :: nnu=0
-    character(len=4096) :: lam_file='', window_file=''
-    ! window_file (A1/A2): Path to file with multi-window specification. One window per
-    ! non-comment line: "blue_AA red_AA" in air or vacuum (apply in_air convention).
-    ! Windows are validated, sorted and merged (overlapping/touching). With R_sampling > 0
-    ! each generates a constant-R segment, whose metadata is stored in the
-    ! spectrum_type%segment_* arrays (A2). Mutually exclusive with lam_file and give_lam.
-    !
-    ! Without an explicit sampling grid (no daa/nnu/R_sampling/lam_file), the window_file
-    ! windows or a bare aa_red/aa_blue crop the atom-native output grid instead of making a
-    ! grid of their own -- see init / crop.
-    logical, public :: crop_output=.false.
-    real(8), dimension(:,:), allocatable :: crop_windows    ! (n, 2) vacuum [AA]
+    real(8), public :: lam_tolerance = 0.001 !< grid points closer than this are merged [AA]
+    logical :: give_lam=.false.              !< read the wavelengths from the sp_wavelengths namelist
+    logical :: in_air=.true.                 !< the wavelengths are given in air
+    logical :: in_log=.false.                !< the wavelengths are given as ln(lambda)
+    real(8) :: daa=0                         !< wavelength step [AA]
+    real(8) :: aa_red=0                      !< longest wavelength [AA]
+    real(8) :: aa_blue=0                     !< shortest wavelength [AA]
+    real(8) :: R_sampling=0                  !< lambda/dlambda of a constant-R grid (sampling, not broadening)
+    integer :: nnu=0                         !< number of wavelengths
+    character(len=4096) :: lam_file=''       !< file of wavelengths [AA]
+    !> Path to a file of wavelength windows, one "blue_AA red_AA" per non-comment line, in
+    !> air or vacuum according to in_air. The windows are validated, sorted and merged
+    !> where they overlap or touch. With R_sampling > 0 each window becomes a constant-R
+    !> segment of the grid, described by the spectrum_type%segment_* arrays. Mutually
+    !> exclusive with lam_file and give_lam.
+    !>
+    !> Without an explicit sampling grid (no daa, nnu, R_sampling or lam_file), the
+    !> windows, or a bare aa_red/aa_blue, crop the atom-native output grid instead of
+    !> making a grid of their own (see init and crop).
+    character(len=4096) :: window_file=''
+    logical, public :: crop_output=.false.               !< crop the output grid to crop_windows
+    real(8), dimension(:,:), allocatable :: crop_windows !< (n, 2) vacuum wavelengths [AA] of the crop
 
   contains
     !===============================================================================
-    ! Read and validate window_file: its windows, sorted and merged where they overlap
-    ! or touch, as (n, 2) vacuum wavelengths [AA].
+    !> Read and validate window_file: its windows, sorted and merged where they overlap
+    !> or touch, as (n, 2) vacuum wavelengths [AA].
     !===============================================================================
     SUBROUTINE read_windows(wfile, in_air_flag, windows)
-      character(len=*), intent(in) :: wfile
-      logical, intent(in) :: in_air_flag
-      real(8), dimension(:,:), allocatable, intent(out) :: windows
+      character(len=*), intent(in) :: wfile                        !< path of the window file
+      logical, intent(in) :: in_air_flag                           !< the windows are given in air
+      real(8), dimension(:,:), allocatable, intent(out) :: windows !< (n, 2) vacuum wavelengths [AA]
       type(interval_t), allocatable :: merged(:)
       integer :: i, n_windows, n_merged, lunit, iostat
       real(8) :: blue, red
@@ -136,18 +146,16 @@ MODULE spectrum_mod
     END SUBROUTINE read_windows
 
     !===============================================================================
-    ! Build the segmented constant-R grid of window_file.
-    ! Input: window_file path, in_air flag, R_sampling (resolving power lambda/dlambda of the grid spacing, not an
-    ! instrumental broadening)
-    ! Output: lam (concatenated wavelengths in vacuum), segment metadata arrays
+    !> Build the segmented constant-R grid of window_file and store its segments in
+    !> self.
     !===============================================================================
     SUBROUTINE build_segmented_grid(wfile, in_air_flag, R_val, lam, nnu_out, self)
-      character(len=*), intent(in) :: wfile
-      logical, intent(in) :: in_air_flag
-      real(8), intent(in) :: R_val
-      real(8), dimension(:), allocatable, intent(out) :: lam
-      integer, intent(out) :: nnu_out
-      class(spectrum_type), intent(inout) :: self
+      character(len=*), intent(in) :: wfile                  !< path of the window file
+      logical, intent(in) :: in_air_flag                     !< the windows are given in air
+      real(8), intent(in) :: R_val                           !< lambda/dlambda of the grid spacing
+      real(8), dimension(:), allocatable, intent(out) :: lam !< concatenated vacuum wavelengths [AA]
+      integer, intent(out) :: nnu_out                        !< number of wavelengths
+      class(spectrum_type), intent(inout) :: self            !< spectrum whose segment arrays are set
 
       real(8), dimension(:,:), allocatable :: windows
       integer :: i, j, n_windows, nnu_seg
@@ -228,7 +236,7 @@ MODULE spectrum_mod
     END SUBROUTINE build_segmented_grid
 
     !===============================================================================
-    ! Append array b to array a, growing a in place
+    !> Append array b to array a, growing a in place
     !===============================================================================
     SUBROUTINE append_to_array(a, b)
       real(8), dimension(:), allocatable, intent(inout) :: a
@@ -257,13 +265,19 @@ MODULE spectrum_mod
     END SUBROUTINE append_to_array
 
     !===============================================================================
-    ! Check if a real number is finite (not inf or nan)
+    !> Check if a real number is finite (not inf or nan)
     !===============================================================================
     PURE LOGICAL FUNCTION isfinite(x) result(res)
       real(8), intent(in) :: x
       res = x == x .and. abs(x) < huge(x)
     END FUNCTION isfinite
 
+    !===============================================================================
+    !> Reads spectrum_params and builds the grid in vacuum: from sp_wavelengths
+    !> (give_lam), window_file, lam_file, or aa_blue to aa_red in steps of daa, in nnu
+    !> points or at constant R_sampling, with trapezoidal frequency weights per segment.
+    !> Without daa, nnu, R_sampling and lam_file it only sets up the crop of the
+    !> atom-native grid.
     !===============================================================================
     SUBROUTINE init(self)
       class(spectrum_type) :: self
@@ -378,9 +392,13 @@ MODULE spectrum_mod
     END SUBROUTINE init
 
     !===============================================================================
+    !> Installs the grid lam or nu, computes the other and equidistant, and drops the
+    !> segment metadata when the segments no longer tile the grid.
+    !===============================================================================
     SUBROUTINE reset(self, lam, nu)
       class(spectrum_type) :: self
-      real(8), intent(in), dimension(:), optional :: lam, nu
+      real(8), intent(in), dimension(:), optional :: lam !< vacuum wavelengths [AA]
+      real(8), intent(in), dimension(:), optional :: nu  !< frequencies [Hz]
       real(8), allocatable, dimension(:) :: tmp_lam, tmp_nu
       integer :: i
       logical :: segments_valid
@@ -438,17 +456,17 @@ MODULE spectrum_mod
     END SUBROUTINE reset
 
     !===============================================================================
-    ! Test whether lam is uniform in log(lambda), i.e. a constant-R (geometric) grid.
-    ! Each consecutive log spacing is compared to the GLOBAL average d0 = (llam(n)-
-    ! llam(1))/(n-1) -- the very step the equi kernel uses -- which both bounds the
-    ! cumulative index drift and separates geometric grids from arithmetic (daa) ones
-    ! (whose local step varies as 1/lambda across the band, far above rtol). The
-    ! tolerance is loose enough to admit the tiny (~1e-5) non-uniformity that the
-    ! air->vacuum conversion imprints on an R grid. A contiguous subrange of a
-    ! geometric grid stays geometric, so sub-spectra inherit the property.
+    !> Test whether lam is uniform in log(lambda), i.e. a constant-R (geometric) grid.
+    !> Each consecutive log spacing is compared to the GLOBAL average d0 = (llam(n)-
+    !> llam(1))/(n-1), the very step the equi kernel uses, which both bounds the
+    !> cumulative index drift and separates geometric grids from arithmetic (daa) ones
+    !> (whose local step varies as 1/lambda across the band, far above rtol). The
+    !> tolerance is loose enough to admit the tiny (~1e-5) non-uniformity that the
+    !> air->vacuum conversion imprints on an R grid. A contiguous subrange of a
+    !> geometric grid stays geometric, so sub-spectra inherit the property.
     !===============================================================================
     PURE LOGICAL FUNCTION is_log_equidistant(lam) result(equi)
-      real(8), intent(in) :: lam(:)
+      real(8), intent(in) :: lam(:) !< wavelengths
       integer :: n, i
       real(8) :: d0, d
       real(8), parameter :: rtol = 1d-4
@@ -467,9 +485,12 @@ MODULE spectrum_mod
     END FUNCTION is_log_equidistant
 
     !===============================================================================
+    !> Trapezoidal quadrature weights in frequency: |nu(j+1) - nu(j-1)|/2, and half the
+    !> end intervals at the ends.  A single frequency gets weight 1.
+    !===============================================================================
     SUBROUTINE set_weights (weight, nu)
-      real(8), dimension(:), intent(out) :: weight
-      real(8), dimension(:), intent(in) :: nu
+      real(8), dimension(:), intent(out) :: weight !< weights [Hz]
+      real(8), dimension(:), intent(in) :: nu      !< frequencies [Hz]
       integer :: j, n
       !-----------------------------------------------------------------------------
       n = size(nu, 1)
@@ -492,10 +513,15 @@ MODULE spectrum_mod
     END SUBROUTINE set_weights
 
     !===============================================================================
+    !> Index range of the grid that covers a transition: on a sorted grid the points
+    !> within its lam_min to lam_max, widened by a point that lies less than
+    !> lam_tolerance outside; otherwise the transition's own iblue and ired.
+    !===============================================================================
     SUBROUTINE get_interval (self, trans, ired, iblue)
       class(spectrum_type), intent(in):: self
-      class(transition_type), intent(in) :: trans
-      integer, intent(out) :: ired, iblue
+      class(transition_type), intent(in) :: trans !< the transition
+      integer, intent(out) :: ired                !< last index
+      integer, intent(out) :: iblue               !< first index
       !-----------------------------------------------------------------------------
       if (self%sorted) then
         call get_ivl(self%lam, trans%lam_min, trans%lam_max, iblue, ired)
@@ -516,6 +542,8 @@ MODULE spectrum_mod
     END SUBROUTINE get_interval
 
     !===============================================================================
+    !> Sorts the wavelengths and merges those closer than lam_tolerance.
+    !===============================================================================
     SUBROUTINE sort (self)
       class(spectrum_type), intent(inout):: self
       !-----------------------------------------------------------------------------
@@ -527,11 +555,12 @@ MODULE spectrum_mod
     END SUBROUTINE
 
     !===============================================================================
-    ! Restrict an atom-native output grid to the crop_windows requested via window_file or a
-    ! bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is set, so the internal (bb/bf/all) solve grids -- which need full coverage -- are
-    ! left untouched; only the emitted output spectrum is trimmed. Call after the grid
-    ! is assembled/sorted but before the per-transition [iblue,ired] windows are set,
-    ! since those are recomputed against the (now smaller) grid.
+    !> Restrict an atom-native output grid to the crop_windows requested via window_file
+    !> or a bare aa_red/aa_blue (no daa/nnu/R_sampling). A no-op unless crop_output is
+    !> set, so the internal (bb/bf/all) solve grids, which need full coverage, are left
+    !> untouched; only the emitted output spectrum is trimmed. Call after the grid is
+    !> assembled and sorted but before the per-transition [iblue,ired] windows are set,
+    !> since those are recomputed against the smaller grid.
     !===============================================================================
     SUBROUTINE crop (self)
       class(spectrum_type) :: self
@@ -565,9 +594,12 @@ MODULE spectrum_mod
     END SUBROUTINE crop
 
     !===============================================================================
+    !> Writes the wavelengths to `save/<label>_lam.bin` and, for a segmented grid, the
+    !> segments to `save/<label>_segments.txt`, unless the files exist.
+    !===============================================================================
     SUBROUTINE save (self, label)
       class(spectrum_type), intent(inout):: self
-      character(len=*), intent(in) :: label
+      character(len=*), intent(in) :: label !< file name prefix
       character(len=4096) :: filename
       integer :: lunit, i
       logical :: exists

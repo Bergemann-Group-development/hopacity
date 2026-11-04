@@ -1,14 +1,26 @@
+!===============================================================================
+!> Helpers for strings, sorting, input parsing, air and vacuum wavelengths, array
+!> truncation and checks for invalid values.
+!===============================================================================
 MODULE handyfuncs_mod
   USE op_math_mod
   USE hop_env_mod, only: os
   USE console_mod
   implicit none
 
+  !===============================================================================
+  !> Shrinks the allocatable array to its first nkeep elements.
+  !===============================================================================
   interface truncate_array
     module procedure truncate_string_array, truncate_float_array, &
       truncate_dble_array, truncate_int_array, truncate_bool_array
   end interface truncate_array
 
+  !===============================================================================
+  !> Reports every NaN, infinite and, with check_zero or check_negative, every zero
+  !> or negative element of arr with its index on the error console.  ok returns
+  !> whether there was none; with abort, any stops the run.
+  !===============================================================================
   interface check_array
     module procedure check_1d_array_dp, check_2d_array_dp, check_3d_array_dp, check_4d_array_dp
     module procedure check_1d_array_sp, check_2d_array_sp, check_3d_array_sp, check_4d_array_sp
@@ -17,11 +29,15 @@ MODULE handyfuncs_mod
 contains
 
   !====================================================================================
+  !> Stops the run when a read returned iostat > 0, printing the line that failed:
+  !> text if given, else the last record read from lunit.
+  !====================================================================================
   SUBROUTINE print_failed_line(lunit, iostat, text)
-    integer, intent(in) :: lunit, iostat
+    integer, intent(in) :: lunit                   !< unit the read was from
+    integer, intent(in) :: iostat                  !< iostat of the read
+    character(len=*), intent(in), optional :: text !< line that failed, if not read from lunit
     character(len=512) :: line_text
     character(len=4096) :: filename
-    character(len=*), intent(in), optional :: text
     ! ----------------------------------------------------------------------
     if (iostat > 0) then
       if (present(text)) then
@@ -38,20 +54,16 @@ contains
   END SUBROUTINE print_failed_line
 
   !====================================================================================
+  !> Positions fileunit before its next line that is neither empty nor a comment,
+  !> i.e. whose first non-blank character is not comment (default '*').
+  !>
+  !> Written by Jorrit Leenaarts (2005).
+  !====================================================================================
   SUBROUTINE NextEntry(fileunit, comment)
-    ! ***********************************************************************
-    ! --- Reads an input line, returns when it is not a
-    ! --- comment or an empty line.
-    ! --- Feb 21 2005:
-    ! ---   Created by Jorrit Leenaarts (j.leenaarts@astro.uu.nl)
-    ! --- May 28 2008 :
-    !       jorritl: updated, will now also check for empty lines,
-    !       and allow data in the first column of the file.
-    ! ***********************************************************************
-    integer,intent(in) :: fileunit
+    integer,intent(in) :: fileunit                   !< unit to read
+    character(len=*),intent(in), optional :: comment !< comment character (default '*')
     character(len=132) :: instring
     character(len=1)   :: token1, cmt
-    character(len=*),intent(in), optional :: comment
     !---------------------------------------------------------------------------------
     if (present(comment)) then
       cmt = comment
@@ -73,9 +85,15 @@ contains
   END SUBROUTINE NextEntry
 
   !====================================================================================
+  !> Index range start:end of part i of n elements split into ni parts as equal as
+  !> possible, the first mod(n, ni) of them one longer; i counts cyclically.
+  !====================================================================================
   SUBROUTINE unequal_intervals(n, i, ni, start, end)
-    integer, intent(in)  :: n, i, ni
-    integer, intent(out) :: start, end
+    integer, intent(in)  :: n     !< number of elements
+    integer, intent(in)  :: i     !< part
+    integer, intent(in)  :: ni    !< number of parts
+    integer, intent(out) :: start !< first element of part i
+    integer, intent(out) :: end   !< last element of part i
     integer :: nv, md, j
     !---------------------------------------------------------------------------
     nv    = n / ni
@@ -86,9 +104,12 @@ contains
   END SUBROUTINE unequal_intervals
 
   !===============================================================================
+  !> Replaces every character out in string by in.
+  !===============================================================================
   SUBROUTINE replace_char (string, out, in)
-    character(len=*), intent(inout) :: string
-    character, intent(in) :: out, in
+    character(len=*), intent(inout) :: string !< string to change
+    character, intent(in) :: out              !< character to replace
+    character, intent(in) :: in               !< replacement
     integer :: i, n
     !-----------------------------------------------------------------------------
     n = len(string)
@@ -100,9 +121,12 @@ contains
   END SUBROUTINE replace_char
 
   !===============================================================================
+  !> Replaces every occurrence of out in string by in.
+  !===============================================================================
   SUBROUTINE replace_substring (string, out, in)
-    character(len=*), intent(inout) :: string
-    character(len=*), intent(in) :: out, in
+    character(len=*), intent(inout) :: string !< string to change; what does not fit is cut off
+    character(len=*), intent(in) :: out       !< substring to replace
+    character(len=*), intent(in) :: in        !< replacement
     character(len=len(string)) :: tmp
     integer :: i, j, n, no, ni
     !-----------------------------------------------------------------------------
@@ -129,10 +153,12 @@ contains
   END SUBROUTINE replace_substring
 
   !===============================================================================
+  !> Number of words in string separated by sep (default blank).
+  !===============================================================================
   SUBROUTINE count_words (string, nwords, sep)
-    character(len=*), intent(in) :: string
-    integer, intent(out) :: nwords
-    character, intent(in), optional :: sep
+    character(len=*), intent(in) :: string !< string to count in
+    integer, intent(out) :: nwords         !< number of words
+    character, intent(in), optional :: sep !< separator (default blank)
     character :: seperator
     integer :: i, n
     logical :: new_word
@@ -157,8 +183,11 @@ contains
   END SUBROUTINE count_words
 
   !===============================================================================
+  !> Copy of string with quotes and commas turned into blanks, leading blanks removed
+  !> and runs of blanks collapsed into one.  It also changes string itself.
+  !===============================================================================
   FUNCTION trim_between_words(string) result(res)
-    character(len=*) :: string
+    character(len=*) :: string !< string to trim; its quotes and commas become blanks
     character(len=len(string)) :: res
     character :: char
     integer :: i, j
@@ -185,9 +214,11 @@ contains
   END FUNCTION
 
   !===============================================================================
+  !> True when str is one of the blank-separated words of text.
+  !===============================================================================
   FUNCTION string_in_text (text, str) result(in_text)
-    character(len=*) :: str
-    character(len=*) :: text
+    character(len=*) :: str  !< word to look for
+    character(len=*) :: text !< blank-separated words
     character(len=256) :: dummy
     integer :: i, j
     logical :: in_text
@@ -208,8 +239,10 @@ contains
   END FUNCTION
 
   !===============================================================================
+  !> Integer read from str between its first and its last digit.
+  !===============================================================================
   FUNCTION extract_int (str) result(val)
-    character(len=*) :: str
+    character(len=*) :: str !< string containing the integer
     integer :: i, o, val
     ! ----------------------------------------------------------------------------
     i = scan(str, '0123456789')
@@ -217,10 +250,12 @@ contains
     read(str(i:o), *) val
   END FUNCTION
 
-    !===============================================================================
+  !===============================================================================
+  !> Non-negative 32-bit hash of text without its trailing blanks.
+  !===============================================================================
   FUNCTION hash_string(text) result(hashed)
-    character(*), intent(in) :: text
-    integer :: hashed ! 32-bit integers assumed
+    character(*), intent(in) :: text !< string to hash
+    integer :: hashed                !< 32-bit integers assumed
     integer, parameter :: magic_numb = int(Z'5D7A9F43', kind=kind(magic_numb))  ! hexadecimal
     integer :: i, j
     !-----------------------------------------------------------------------------
@@ -233,9 +268,12 @@ contains
   END FUNCTION hash_string
 
   !===============================================================================
+  !> Permutation order that sorts a in ascending order, keeping equal elements in
+  !> their original order.
+  !===============================================================================
   SUBROUTINE argsort_int(a, order)
-    integer, intent(in) :: a(:)
-    integer, intent(out) :: order(:)
+    integer, intent(in) :: a(:)      !< array to sort
+    integer, intent(out) :: order(:) !< indices of a in ascending order of a
     integer, allocatable :: scr(:)
     integer :: i, j, n
     !-----------------------------------------------------------------------------
@@ -257,12 +295,13 @@ contains
   END SUBROUTINE argsort_int
 
   !===============================================================================
-  ! In-place ascending sort (recursive quicksort, middle-element pivot).  Both call
-  ! sites (spectrum_mod%sort, composition_mod) are one-time setup sorts, not hot
-  ! loops.  The middle-element pivot keeps the already-sorted and
-  ! concatenated-sorted-runs inputs they pass off the O(n^2) path.
+  !> In-place ascending sort (recursive quicksort, middle-element pivot).  Both call
+  !> sites (spectrum_mod%sort, composition_mod) are one-time setup sorts, not hot
+  !> loops.  The middle-element pivot keeps the already-sorted and
+  !> concatenated-sorted-runs inputs they pass off the O(n^2) path.
+  !===============================================================================
   RECURSIVE SUBROUTINE sort_asc(a)
-    real(8), intent(inout) :: a(:)
+    real(8), intent(inout) :: a(:) !< array to sort
     !-----------------------------------------------------------------------------
     call qs(1, size(a))
   contains
@@ -308,10 +347,11 @@ contains
   END FUNCTION lowercase
 
   !====================================================================================
+  !> Copy of string in upper case.
+  !====================================================================================
   PURE FUNCTION uppercase(string)
-    ! converts the first ss characters of string to uppercase and returns them as a new string.
     implicit none
-    character(len=*),intent(in) :: string
+    character(len=*),intent(in) :: string !< string to convert
     character(len=len(string)) :: uppercase
     character(len=26),parameter :: ucase='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     character(len=26),parameter :: lcase='abcdefghijklmnopqrstuvwxyz'
@@ -330,8 +370,10 @@ contains
   END FUNCTION uppercase
 
   !====================================================================================
+  !> Copy of string in lower case except for its first character, which is upper case.
+  !====================================================================================
   PURE FUNCTION capitalize(string)
-    character(len=*),intent(in) :: string
+    character(len=*),intent(in) :: string !< string to convert
     character(len=len(string)) :: capitalize
     !---------------------------------------------------------------------------------
     capitalize = lowercase(trim(string))
@@ -339,9 +381,12 @@ contains
   END FUNCTION capitalize
 
   !===============================================================================
+  !> Removes every element closer than threshold to the element kept before it and
+  !> shrinks array to the remaining ones.
+  !===============================================================================
   SUBROUTINE remove_close_entries(array, threshold)
-    real(8), intent(inout), allocatable :: array(:)
-    real(8), intent(in) :: threshold
+    real(8), intent(inout), allocatable :: array(:) !< array to thin out
+    real(8), intent(in) :: threshold                !< smallest distance kept
     real(8), allocatable :: scratch(:)
     integer :: i, new_size
     !-----------------------------------------------------------------------------
@@ -363,16 +408,21 @@ contains
   END SUBROUTINE remove_close_entries
 
   !===============================================================================
+  !> Air wavelength [AA] of the vacuum wavelength vac [AA], with the refractive index
+  !> of airvac_corr evaluated at vac.
+  !===============================================================================
   elemental FUNCTION vac2air (vac) result(air)
-    real(8), intent(in) :: vac
+    real(8), intent(in) :: vac !< vacuum wavelength [AA]
     real(8) :: air
     !-----------------------------------------------------------------------------
     air = vac/airvac_corr(vac)
   END FUNCTION vac2air
 
   !===============================================================================
+  !> Vacuum wavelength [AA] of the air wavelength air [AA].
+  !===============================================================================
   elemental FUNCTION air2vac (air) result(vac)
-    real(8), intent(in) :: air
+    real(8), intent(in) :: air !< air wavelength [AA]
     real(8) :: vac, w
     !-----------------------------------------------------------------------------
     w = air*airvac_corr(air)
@@ -381,8 +431,11 @@ contains
   END FUNCTION air2vac
 
   !===============================================================================
+  !> Refractive index of air, the ratio of vacuum to air wavelength, at the
+  !> wavelength air [AA].
+  !===============================================================================
   elemental FUNCTION airvac_corr (air) result(n)
-    real(8), intent(in) :: air
+    real(8), intent(in) :: air !< wavelength [AA]
     real(8) :: n, s, s2
     !-----------------------------------------------------------------------------
     s = 1d4 / air
@@ -392,8 +445,12 @@ contains
   END FUNCTION airvac_corr
 
   !===============================================================================
+  !> Position of the last occurrence of str without its trailing blanks in text, 0 if
+  !> there is none.
+  !===============================================================================
   FUNCTION rindex(text, str) result(index)
-    character(len=*), intent(in) :: text, str
+    character(len=*), intent(in) :: text !< text to search
+    character(len=*), intent(in) :: str  !< string to look for
     integer :: index
     integer :: i, ntext, nstr
     !-----------------------------------------------------------------------------
@@ -442,10 +499,12 @@ contains
   END FUNCTION endswith
 
   !====================================================================================
+  !> truncate_array for character arrays.
+  !====================================================================================
   SUBROUTINE truncate_string_array(array, nkeep)
-    character(len=*), intent(inout), dimension(:), allocatable :: array
+    character(len=*), intent(inout), dimension(:), allocatable :: array !< array to shrink
+    integer, intent(in) :: nkeep                                        !< number of elements kept
     character(len=len(array(1))), dimension(:), allocatable :: tmp
-    integer, intent(in) :: nkeep
     ! ----------------------------------------------------------------------
     allocate(tmp, source=array(1:nkeep))
     deallocate(array)
@@ -453,10 +512,12 @@ contains
   END SUBROUTINE truncate_string_array
 
   !====================================================================================
+  !> truncate_array for real(4) arrays.
+  !====================================================================================
   SUBROUTINE truncate_float_array(array, nkeep)
-    real(4), intent(inout), dimension(:), allocatable :: array
+    real(4), intent(inout), dimension(:), allocatable :: array !< array to shrink
+    integer, intent(in) :: nkeep                               !< number of elements kept
     real(4), dimension(:), allocatable :: tmp
-    integer, intent(in) :: nkeep
     ! ----------------------------------------------------------------------
     allocate(tmp(nkeep), source=array(1:nkeep))
     deallocate(array)
@@ -464,10 +525,12 @@ contains
   END SUBROUTINE truncate_float_array
 
   !====================================================================================
+  !> truncate_array for real(8) arrays.
+  !====================================================================================
   SUBROUTINE truncate_dble_array(array, nkeep)
-    real(8), intent(inout), dimension(:), allocatable :: array
+    real(8), intent(inout), dimension(:), allocatable :: array !< array to shrink
+    integer, intent(in) :: nkeep                               !< number of elements kept
     real(8), dimension(:), allocatable :: tmp
-    integer, intent(in) :: nkeep
     ! ----------------------------------------------------------------------
     allocate(tmp(nkeep), source=array(1:nkeep))
     deallocate(array)
@@ -475,10 +538,12 @@ contains
   END SUBROUTINE truncate_dble_array
 
   !====================================================================================
+  !> truncate_array for integer arrays.
+  !====================================================================================
   SUBROUTINE truncate_int_array(array, nkeep)
-    integer, intent(inout), dimension(:), allocatable :: array
+    integer, intent(inout), dimension(:), allocatable :: array !< array to shrink
+    integer, intent(in) :: nkeep                               !< number of elements kept
     integer, dimension(:), allocatable :: tmp
-    integer, intent(in) :: nkeep
     ! ----------------------------------------------------------------------
     allocate(tmp(nkeep), source=array(1:nkeep))
     deallocate(array)
@@ -486,33 +551,42 @@ contains
   END SUBROUTINE truncate_int_array
 
   !====================================================================================
+  !> truncate_array for logical arrays.
+  !====================================================================================
   SUBROUTINE truncate_bool_array(array, nkeep)
-    logical, intent(inout), dimension(:), allocatable :: array
+    logical, intent(inout), dimension(:), allocatable :: array !< array to shrink
+    integer, intent(in) :: nkeep                               !< number of elements kept
     logical, dimension(:), allocatable :: tmp
-    integer, intent(in) :: nkeep
     ! ----------------------------------------------------------------------
     allocate(tmp(nkeep), source=array(1:nkeep))
     deallocate(array)
     call move_alloc(tmp, array)
   END SUBROUTINE truncate_bool_array
 
-  ! ==============================================================================
+  !==============================================================================
+  !> Reports the invalid value what in array label at index idx on the error console.
+  !==============================================================================
   SUBROUTINE report_invalid (what, label, idx)
-    character(len=*), intent(in) :: what, label
-    integer, intent(in) :: idx(:)
+    character(len=*), intent(in) :: what  !< kind of invalid value, e.g. NaN
+    character(len=*), intent(in) :: label !< name of the array
+    integer, intent(in) :: idx(:)         !< index of the element
     character(len=256) :: msg
     ! ----------------------------------------------------------------------
     write(msg,'(4a,*(1x,i0))') what, ' in ', trim(label), ' at position', idx
     call console_error (msg)
   END SUBROUTINE report_invalid
 
+  !===============================================================================
+  !> check_array for real(8) arrays, flattened into arr with their shape arr_shape.
+  !===============================================================================
   SUBROUTINE check_array_core_dp(arr, arr_shape, label, abort, check_zero, check_negative, ok)
-    real(8), intent(in), dimension(:) :: arr
-    integer, intent(in), dimension(:) :: arr_shape
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(8), intent(in), dimension(:) :: arr        !< array, flattened
+    integer, intent(in), dimension(:) :: arr_shape  !< shape of the array
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     
     logical :: has_issue, do_check_zero, do_check_negative
     integer :: i, d, remainder
@@ -554,13 +628,17 @@ contains
     end if
   END SUBROUTINE check_array_core_dp
 
+  !===============================================================================
+  !> check_array for real(4) arrays, flattened into arr with their shape arr_shape.
+  !===============================================================================
   SUBROUTINE check_array_core_sp(arr, arr_shape, label, abort, check_zero, check_negative, ok)
-    real(4), intent(in), dimension(:) :: arr
-    integer, intent(in), dimension(:) :: arr_shape
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(4), intent(in), dimension(:) :: arr        !< array, flattened
+    integer, intent(in), dimension(:) :: arr_shape  !< shape of the array
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     
     logical :: has_issue, do_check_zero, do_check_negative
     integer :: i, d, remainder
@@ -601,104 +679,129 @@ contains
     end if
   END SUBROUTINE check_array_core_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 1D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_1d_array_dp(arr, label, abort, check_zero, check_negative, ok)
-    real(8), intent(in), dimension(:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(8), intent(in), dimension(:) :: arr        !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_dp(arr, shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_1d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 2D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_2d_array_dp(arr, label, abort, check_zero, check_negative, ok)
-    real(8), intent(in), dimension(:,:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(8), intent(in), dimension(:,:) :: arr      !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_dp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_2d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 3D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_3d_array_dp(arr, label, abort, check_zero, check_negative, ok)
-    real(8), intent(in), dimension(:,:,:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(8), intent(in), dimension(:,:,:) :: arr    !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_dp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_3d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 4D real(8) arrays.
+  !==============================================================================
   SUBROUTINE check_4d_array_dp(arr, label, abort, check_zero, check_negative, ok)
-    real(8), intent(in), dimension(:,:,:,:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(8), intent(in), dimension(:,:,:,:) :: arr  !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_dp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_4d_array_dp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 1D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_1d_array_sp(arr, label, abort, check_zero, check_negative, ok)
-    real(4), intent(in), dimension(:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(4), intent(in), dimension(:) :: arr        !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_sp(arr, shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_1d_array_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 2D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_2d_array_sp(arr, label, abort, check_zero, check_negative, ok)
-    real(4), intent(in), dimension(:,:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(4), intent(in), dimension(:,:) :: arr      !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_sp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_2d_array_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 3D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_3d_array_sp(arr, label, abort, check_zero, check_negative, ok)
-    real(4), intent(in), dimension(:,:,:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(4), intent(in), dimension(:,:,:) :: arr    !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_sp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_3d_array_sp
 
-  ! ==============================================================================
+  !==============================================================================
+  !> check_array for 4D real(4) arrays.
+  !==============================================================================
   SUBROUTINE check_4d_array_sp(arr, label, abort, check_zero, check_negative, ok)
-    real(4), intent(in), dimension(:,:,:,:) :: arr
-    character(len=*), intent(in) :: label
-    logical, intent(in) :: abort
-    logical, intent(in), optional :: check_zero, check_negative
-    logical, optional, intent(out) :: ok
+    real(4), intent(in), dimension(:,:,:,:) :: arr  !< array to check
+    character(len=*), intent(in) :: label           !< name of the array in the report
+    logical, intent(in) :: abort                    !< stop the run on an invalid element
+    logical, intent(in), optional :: check_zero     !< also report zeros
+    logical, intent(in), optional :: check_negative !< also report negative elements
+    logical, optional, intent(out) :: ok            !< no invalid element
     ! ----------------------------------------------------------------------
     call check_array_core_sp(reshape(arr, [size(arr)]), shape(arr), label, abort, check_zero, check_negative, ok)
   END SUBROUTINE check_4d_array_sp
 
 
-  ! ==============================================================================
+  !===============================================================================
+  !> Build a symmetric log-spaced grid with preferred-number mantissas
+  !> (1, 1.5, 2, 3, 4, 6, 8) per decade, mirrored about zero.
+  !> The endpoints are snapped to the nearest preferred mantissa.
+  !> Output q has the shape  [-q_n, ..., -q_1, 0, q_1, ..., q_n].
+  !===============================================================================
   PURE SUBROUTINE symmetric_log_grid(q0, qmax, q)
-    ! Build a symmetric log-spaced grid with preferred-number mantissas
-    ! (1, 1.5, 2, 3, 4, 6, 8) per decade, mirrored about zero.
-    ! The endpoints are snapped to the nearest preferred mantissa.
-    ! Output q has the shape  [-q_n, ..., -q_1, 0, q_1, ..., q_n].
-    ! ----------------------------------------------------------------------
-    real(8),              intent(in)  :: q0, qmax
-    real(8), allocatable, intent(out) :: q(:)
+    real(8),              intent(in)  :: q0   !< smallest positive point
+    real(8),              intent(in)  :: qmax !< largest point
+    real(8), allocatable, intent(out) :: q(:) !< grid
 
     real(8), parameter :: mantissas(*) = &
         [1.0_8, 1.5_8, 2.0_8, 3.0_8, 4.0_8, 6.0_8, 8.0_8]

@@ -1,9 +1,15 @@
+!===============================================================================
+!> Chemical elements of HOP's equation of state and their ionisation equilibrium.
+!===============================================================================
 MODULE element_mod
   USE prec_mod
   USE op_math_mod
   USE ion_mod
   implicit none
 
+  !===============================================================================
+  !> An element with its ionisation stages, abundance and isotopes.
+  !===============================================================================
   type, extends(isotope_type) :: element_type
     integer :: np, nion, nmolec, niso=1, mcount
     real(dp) :: abund=-100
@@ -19,11 +25,17 @@ MODULE element_mod
 contains
 
   !===============================================================================
+  !> Sets ion%part, the ln of the partition function, of every ionisation stage: a
+  !> fixed value, the Irwin polynomial, or the sum g exp(-xion/kT) over the levels,
+  !> with the Fischel & Sparks sum for levels that start a hydrogenic series.
+  !===============================================================================
   SUBROUTINE compute_partition_functions(self, temp, e_kT, ne)
     class(element_type), target :: self
+    real(dp), dimension(:,:,:), intent(in) :: temp !< temperature [K]
+    real(dp), dimension(:,:,:), intent(in) :: e_kT !< 1 eV / kT
+    real(dp), dimension(:,:,:), intent(in) :: ne   !< electron number density [cm^-3]
     type(ion_type), pointer :: ion
     type(level_type), pointer :: lvl
-    real(dp), dimension(:,:,:), intent(in) :: temp, e_kT, ne
     real(dp), dimension(:,:,:), allocatable :: beta
     integer :: i, j, l, u
     !---------------------------------------------------------------------------
@@ -57,9 +69,15 @@ contains
   END SUBROUTINE compute_partition_functions
 
   !===============================================================================
+  !> Sets the Saha ratios ion%saha = n(j+1)/n(j) and the fractions ion%f = n(j)/n_H
+  !> of the ionisation stages from the partition functions, with the ionisation
+  !> energies lowered by dxi times ion%dxi_fac.
+  !===============================================================================
   SUBROUTINE compute_ion_equilibrium(self, e_kT, lsaha, dxi)
     class(element_type), target :: self
-    real(dp), dimension(:,:,:), intent(in) :: e_kT, dxi, lsaha
+    real(dp), dimension(:,:,:), intent(in) :: e_kT  !< 1 eV / kT
+    real(dp), dimension(:,:,:), intent(in) :: lsaha !< ln(2 (2 pi m_e kT/h^2)^(3/2) / ne)
+    real(dp), dimension(:,:,:), intent(in) :: dxi   !< ionisation energy lowering per unit charge [eV]
     real(dp), dimension(:,:,:), allocatable :: fil
     integer :: j, l, u
     !---------------------------------------------------------------------------

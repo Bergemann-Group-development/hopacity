@@ -1,16 +1,28 @@
+!===============================================================================
+!> Numerical helpers: searches in sorted arrays, linear equation solvers,
+!> polynomial evaluation and the merging of wavelength intervals.
+!===============================================================================
 MODULE op_math_mod
   USE prec_mod
   implicit none
 
+  !===============================================================================
+  !> Index of the element of the ascending array arr closest to val.
+  !===============================================================================
   interface find_closest
     module procedure find_closest4, find_closest8
   end interface find_closest
 
+  !===============================================================================
+  !> Index i of the interval arr(i) < val <= arr(i+1) of the ascending array arr, or 1
+  !> for val = arr(1).  Outside the array it returns -1, or with outbounds_ok 0 below
+  !> arr(1) and size(arr) above arr(size(arr)).
+  !===============================================================================
   interface searchsorted
     module procedure searchsorted4, searchsorted8
   end interface searchsorted
 
-  ! A wavelength range [blue_vac, red_vac]; the line-list masks hold vacuum Angstrom
+  !> A wavelength range [blue_vac, red_vac]; the line-list masks hold vacuum Angstrom
   type, public :: interval_t
     real(dp) :: blue_vac, red_vac
   end type interval_t
@@ -18,8 +30,11 @@ MODULE op_math_mod
 contains
 
   !====================================================================================
+  !> bool if present, else default if present, else .false.
+  !====================================================================================
   PURE FUNCTION option(bool, default) result(out)
-    logical, intent(in), optional :: bool, default
+    logical, intent(in), optional :: bool    !< value, if given
+    logical, intent(in), optional :: default !< value without bool (default .false.)
     logical :: out
     !---------------------------------------------------------------------------------
     if (present(bool)) then
@@ -34,8 +49,11 @@ contains
   END FUNCTION option
 
   !====================================================================================
+  !> find_closest for real(4).
+  !====================================================================================
   pure FUNCTION find_closest4(arr, val) result(i)
-    real(4), intent(in) :: arr(:), val
+    real(4), intent(in) :: arr(:) !< ascending array
+    real(4), intent(in) :: val    !< value to look up
     integer :: i
     !----------------------------------------------------------------------------
     i = searchsorted4(arr, val, outbounds_ok=.true.)
@@ -49,8 +67,11 @@ contains
   end FUNCTION find_closest4
 
   !====================================================================================
+  !> find_closest for real(8).
+  !====================================================================================
   pure FUNCTION find_closest8(arr, val) result(i)
-    real(8), intent(in) :: arr(:), val
+    real(8), intent(in) :: arr(:) !< ascending array
+    real(8), intent(in) :: val    !< value to look up
     integer :: i
     !----------------------------------------------------------------------------
     i = searchsorted8(arr, val, outbounds_ok=.true.)
@@ -64,11 +85,12 @@ contains
   end FUNCTION find_closest8
 
   !====================================================================================
-  ! Finds index of element after which value should be inserted to maintain order.
+  !> searchsorted for real(4).
   !====================================================================================
   pure FUNCTION searchsorted4(arr, val, outbounds_ok) result(i)
-    real(4), intent(in) :: arr(:), val
-    logical, optional, intent(in) :: outbounds_ok
+    real(4), intent(in) :: arr(:)                 !< ascending array
+    real(4), intent(in) :: val                    !< value to look up
+    logical, optional, intent(in) :: outbounds_ok !< 0 or size(arr) outside the array instead of -1
     logical :: ob_ok, above, below
     integer :: i, n
     !----------------------------------------------------------------------------
@@ -95,11 +117,12 @@ contains
   end FUNCTION searchsorted4
 
   !====================================================================================
-  ! Finds index of element after which value should be inserted to maintain order.
+  !> searchsorted for real(8).
   !====================================================================================
   pure FUNCTION searchsorted8(arr, val, outbounds_ok) result(i)
-    real(8), intent(in) :: arr(:), val
-    logical, optional, intent(in) :: outbounds_ok
+    real(8), intent(in) :: arr(:)                 !< ascending array
+    real(8), intent(in) :: val                    !< value to look up
+    logical, optional, intent(in) :: outbounds_ok !< 0 or size(arr) outside the array instead of -1
     logical :: ob_ok, above, below
     integer :: i, n
     !----------------------------------------------------------------------------
@@ -126,10 +149,13 @@ contains
   end FUNCTION searchsorted8
 
   !====================================================================================
+  !> Bisection of searchsorted4 on arr(l:r), for arr(l) <= x <= arr(r).
+  !====================================================================================
   pure recursive FUNCTION BinarySearch4(arr, l, r, x) result(idx)
-    real(4), intent(in) :: arr(:)
-    real(4), intent(in) :: x
-    integer, intent(in) :: l, r
+    real(4), intent(in) :: arr(:) !< ascending array
+    real(4), intent(in) :: x      !< value to look up
+    integer, intent(in) :: l      !< first index of the search range
+    integer, intent(in) :: r      !< last index of the search range
     integer :: idx, mid
     !----------------------------------------------------------------------------
     if (r - l > 1) then
@@ -148,10 +174,13 @@ contains
   end FUNCTION BinarySearch4
 
   !====================================================================================
+  !> Bisection of searchsorted8 on arr(l:r), for arr(l) <= x <= arr(r).
+  !====================================================================================
   pure recursive FUNCTION BinarySearch8(arr, l, r, x) result(idx)
-    real(8), intent(in) :: arr(:)
-    real(8), intent(in) :: x
-    integer, intent(in) :: l, r
+    real(8), intent(in) :: arr(:) !< ascending array
+    real(8), intent(in) :: x      !< value to look up
+    integer, intent(in) :: l      !< first index of the search range
+    integer, intent(in) :: r      !< last index of the search range
     integer :: idx, mid
     !----------------------------------------------------------------------------
     if (r - l > 1) then
@@ -182,9 +211,15 @@ contains
   END FUNCTION linspace
 
   !====================================================================================
+  !> Index range lo:up of the elements of the ascending array arr within
+  !> [lower, upper], equal elements included; lo > up when there are none.
+  !====================================================================================
   pure SUBROUTINE get_interval(arr, lower, upper, lo, up)
-    real(8), intent(in) :: arr(:), lower, upper
-    integer, intent(out) ::lo, up
+    real(8), intent(in) :: arr(:) !< ascending array
+    real(8), intent(in) :: lower  !< lower bound
+    real(8), intent(in) :: upper  !< upper bound
+    integer, intent(out) :: lo    !< first index within the bounds
+    integer, intent(out) :: up    !< last index within the bounds
     integer :: n
     !----------------------------------------------------------------------------
     lo = searchsorted(arr, lower, outbounds_ok=.true.) + 1
@@ -205,10 +240,12 @@ contains
   end SUBROUTINE get_interval
 
   !====================================================================================
+  !> Polynomial p(1) x^(m-1) + ... + p(m), m = size(p), at every element of x.
+  !====================================================================================
   SUBROUTINE poly3d(x, p, res)
-    real(dp), intent(in), dimension(:,:,:) :: x
-    real(dp), intent(in), dimension(:) :: p
-    real(dp), intent(out), dimension(:,:,:) :: res
+    real(dp), intent(in), dimension(:,:,:) :: x    !< argument
+    real(dp), intent(in), dimension(:) :: p        !< coefficients, highest power first
+    real(dp), intent(out), dimension(:,:,:) :: res !< polynomial at x
     integer :: i
     !----------------------------------------------------------------------------
     res = p(1)
@@ -218,14 +255,15 @@ contains
   END SUBROUTINE poly3d
 
   !===============================================================================
-  !  finds solution of system of linear equations
-  !  with gaussian elimination with pivoting
-  !: lineq  90-06-05  new routine: (martin j stift)
+  !> Solves the linear system a x = b by Gaussian elimination with pivoting; b
+  !> returns x.
+  !>
+  !> Written by Martin J. Stift (1990).
   !===============================================================================
   SUBROUTINE lineq(a,b,n)
-    integer :: n
-    real(dp), dimension(n,n) :: a
-    real(dp), dimension(n)   :: b
+    integer :: n                  !< order of the system
+    real(dp), dimension(n,n) :: a !< matrix, overwritten
+    real(dp), dimension(n)   :: b !< right-hand side, returns the solution
 
     real(dp), dimension(n)  :: c
     integer, dimension(n) :: icol
@@ -318,26 +356,18 @@ contains
   !---------------------------------------------------------------------
 
   !===============================================================================
-  !  solves the equation  system  a*x=b.
-  !  when newmat=true, the system is rearranged into u*x=l*b, where u
-  !  is upper and l is lower triangular. these are then reused in later
-  !  calls with newmat=false and new right hand sides b. the solution
-  !  vector is returned in b. no pivoting, i.e. the matrix a is assumed
-  !  to have nonzero diagonal elements.
-  !
-  !  coded by: a. nordlund (feb-1979)
-  !
-  !  this is a modified version of eqsyst which tests for zero elements
-  !  below the diagonal and also stops at the last non-zero element above
-  !  the diagonal. considerable savings are obtained for loose matrices.
-  !
-  !  this is a column oriented version (m. carlsson jan-1986)
-  !  temporary scalars bl, all, alm and bk are used to show the compiler
-  !  that there is no vector dependency in the innermost do-loop
+  !> Solves the linear system a x = b without pivoting, so the diagonal elements of a
+  !> must be nonzero; b returns x and a is overwritten.  It skips zero elements below
+  !> the diagonal and stops at the last nonzero element above it, which saves much work
+  !> for sparse matrices.  The temporary scalars bl, all, alm and bk show the compiler
+  !> that the innermost loop has no vector dependency.
+  !>
+  !> Written by Åke Nordlund (1979); column-oriented version by Mats Carlsson (1986).
   !===============================================================================
   SUBROUTINE eqsyst(a,b,n)
-    integer :: n
-    real(8) :: a(n,n), b(n)
+    integer :: n      !< order of the system
+    real(8) :: a(n,n) !< matrix, overwritten
+    real(8) :: b(n)   !< right-hand side, returns the solution
     real(8) :: all, bl, alm, bk
     integer :: lastn(n), l, k, m
     !-----------------------------------------------------------------------------
@@ -383,9 +413,14 @@ contains
   END SUBROUTINE eqsyst
 
   !===============================================================================
+  !> Solves the linear system a x = b by LU decomposition without pivoting,
+  !> skipping zero elements of the upper rows; a returns its LU factors and b
+  !> returns x.
+  !===============================================================================
   SUBROUTINE lineq_no_pivot (a, b, n)
-    integer :: n
-    real(8):: a(n,n), b(n)
+    integer :: n     !< order of the system
+    real(8):: a(n,n) !< matrix, returns its LU factors
+    real(8):: b(n)   !< right-hand side, returns the solution
     integer :: i, j, k
     !-----------------------------------------------------------------------------
     do k=1,n-1
@@ -414,20 +449,26 @@ contains
   END SUBROUTINE lineq_no_pivot
 
   !===============================================================================
-  ! Orthogonal PCA basis of 2D scatter data (x1,x2), e.g. (lnT, lnNe) samples.
-  ! Returns the mean, rotation into principal-axis coordinates, and the origin/
-  ! spacing/node count of a rectangular grid laid out along those axes with
-  ! projected resolution d1,d2 (in x1,x2 units) and npad extra nodes past the
-  ! data hull on each end. Caller passes x1,x2 pre-transformed (e.g. logged)
-  ! so the transform is computed once rather than repeated per moment/extent.
+  !> Orthogonal PCA basis of 2D scatter data (x1,x2), e.g. (lnT, lnNe) samples.
+  !> Returns the mean, rotation into principal-axis coordinates, and the origin/
+  !> spacing/node count of a rectangular grid laid out along those axes with
+  !> projected resolution d1,d2 (in x1,x2 units) and npad extra nodes past the
+  !> data hull on each end. Caller passes x1,x2 pre-transformed (e.g. logged)
+  !> so the transform is computed once rather than repeated per moment/extent.
   !===============================================================================
   SUBROUTINE pca_grid_2d(x1, x2, d1, d2, npad, mu, rot, c0, dc, n1, n2, use_pca)
-    real(8), intent(in)  :: x1(:), x2(:)     ! sample coordinates, e.g. (lnT, lnNe)
-    real(8), intent(in)  :: d1, d2           ! requested resolution along x1, x2
-    integer, intent(in)  :: npad             ! extra nodes past the data hull, each end
-    real(8), intent(out) :: mu(2), rot(2,2), c0(2), dc(2)
-    integer, intent(out) :: n1, n2
-    logical, intent(in), optional :: use_pca ! .false. -> axis-aligned (no rotation)
+    real(8), intent(in)  :: x1(:)            !< first sample coordinate, e.g. lnT
+    real(8), intent(in)  :: x2(:)            !< second sample coordinate, e.g. lnNe
+    real(8), intent(in)  :: d1               !< requested resolution along x1
+    real(8), intent(in)  :: d2               !< requested resolution along x2
+    integer, intent(in)  :: npad             !< extra nodes past the data hull, each end
+    real(8), intent(out) :: mu(2)            !< mean of the samples
+    real(8), intent(out) :: rot(2,2)         !< principal axes, one per column
+    real(8), intent(out) :: c0(2)            !< grid origin in principal-axis coordinates
+    real(8), intent(out) :: dc(2)            !< grid spacings along the principal axes
+    integer, intent(out) :: n1               !< nodes along the first principal axis
+    integer, intent(out) :: n2               !< nodes along the second principal axis
+    logical, intent(in), optional :: use_pca !< .false. -> axis-aligned (no rotation)
     real(8) :: a, b, d, tr, disc, l1, l2, tiny_b, vn
     real(8) :: pmin1, pmax1, pmin2, pmax2
     real(8), dimension(size(x1)) :: p1, p2
@@ -484,27 +525,27 @@ contains
     n2    = ceiling((pmax2 - pmin2)/dc(2)) + 1 + 2*np
   END SUBROUTINE pca_grid_2d
   !=====================================================================================
-  ! Build a union of wavelength windows and return it sorted and merged.
-  ! Input:
-  !   windows(:,1) = blue edges [Angstrom]
-  !   windows(:,2) = red edges [Angstrom]
-  !   dlam = expansion margin (in Angstrom)
-  ! Output:
-  !   merged_intervals = sorted, non-overlapping intervals
-  !   n_merged = number of merged intervals
-  !
-  ! The routine:
-  ! 1. Expands each window by dlam on both sides
-  ! 2. Clamps the lower edge to a physically valid wavelength
-  ! 3. Sorts the expanded intervals
-  ! 4. Merges overlapping or touching intervals
-  !-------------------------------------------------------------------------------------
+  !> Build a union of wavelength windows and return it sorted and merged.
+  !> Input:
+  !>   windows(:,1) = blue edges [Angstrom]
+  !>   windows(:,2) = red edges [Angstrom]
+  !>   dlam = expansion margin (in Angstrom)
+  !> Output:
+  !>   merged_intervals = sorted, non-overlapping intervals
+  !>   n_merged = number of merged intervals
+  !>
+  !> The routine:
+  !> 1. Expands each window by dlam on both sides
+  !> 2. Clamps the lower edge to a physically valid wavelength
+  !> 3. Sorts the expanded intervals
+  !> 4. Merges overlapping or touching intervals
+  !=====================================================================================
   SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
-    real(dp), intent(in) :: windows(:,:)
-    integer, intent(in) :: n_windows
-    real(dp), intent(in) :: dlam
-    type(interval_t), intent(out), allocatable :: merged_intervals(:)
-    integer, intent(out) :: n_merged
+    real(dp), intent(in) :: windows(:,:)                              !< blue (:,1) and red (:,2) edges of the windows [AA]
+    integer, intent(in) :: n_windows                                  !< number of windows
+    real(dp), intent(in) :: dlam                                      !< expansion on each side [AA]
+    type(interval_t), intent(out), allocatable :: merged_intervals(:) !< merged intervals, ascending
+    integer, intent(out) :: n_merged                                  !< number of merged intervals
     type(interval_t), allocatable :: expanded(:), trimmed(:)
     integer :: i
     real(dp) :: min_lam = 1.0_dp  ! physically valid minimum wavelength
@@ -554,11 +595,11 @@ contains
   END SUBROUTINE merge_intervals
 
   !=====================================================================================
-  ! Sort an array of intervals by blue edge (ascending).
-  !-------------------------------------------------------------------------------------
+  !> Sort an array of intervals by blue edge (ascending).
+  !=====================================================================================
   SUBROUTINE sort_intervals(intervals, n)
-    type(interval_t), intent(inout) :: intervals(:)
-    integer, intent(in) :: n
+    type(interval_t), intent(inout) :: intervals(:) !< intervals to sort
+    integer, intent(in) :: n                        !< number of intervals sorted, from the first
     integer :: i, j
     type(interval_t) :: temp
     !-----------------------------------------------------------------------------------

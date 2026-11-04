@@ -3,11 +3,11 @@
 !> format that atom_mod%read_pandas reads.
 !>
 !> dispatch.x reads every model atom through read_pandas: a MULTI atom is parsed
-!> here, written as <run_dir>/atoms/<id>.txt and read back, so the copy in the run
+!> here, written as `<run_dir>/atoms/<id>.txt` and read back, so the copy in the run
 !> directory is the atom the run used.  atom_convert.x (HOP/standalone) is the same
 !> conversion as a program for the Python layer.
 !>
-!> The parsing follows the MULTI conventions dispatch has always applied:
+!> The parsing follows these MULTI conventions:
 !>  - level energies are given in cm^-1; a line's vacuum wavelength follows from
 !>    its level energies and is written as an air wavelength, which read_pandas
 !>    converts back;
@@ -37,27 +37,30 @@ MODULE atom_convert_mod
   implicit none
   private
 
+  !===============================================================================
+  !> A MULTI model atom as parsed, in the columns of the table format.
+  !===============================================================================
   type, public :: classic_atom_t
     character(len=20) :: id = ''
     real(8) :: abnd = 0, awgt = 0
     integer :: nlevel = 0, nline = 0, nbf = 0, ncol = 0
-    real(8), allocatable :: ev(:), g(:)               ! [eV]
+    real(8), allocatable :: ev(:), g(:)               !< [eV]
     integer, allocatable :: ion(:)
     character(len=64), allocatable :: label(:)
-    ! bound-bound records as written, components already split
+    !> bound-bound records as written, components already split
     integer, allocatable :: li(:), lj(:), nq(:), parent(:)
     real(8), allocatable :: lam_vac(:), loggf(:), grad(:), gvdw(:), gstk(:), qmax(:), q0(:)
-    ! bound-free nodes, each continuum from its threshold to shorter wavelengths
+    !> bound-free nodes, each continuum from its threshold to shorter wavelengths
     integer, allocatable :: bf_i(:), bf_j(:)
-    real(8), allocatable :: bf_lam(:), bf_alpha(:)  ! [AA], [cm^2]
+    real(8), allocatable :: bf_lam(:), bf_alpha(:)  !< [AA], [cm^2]
     logical :: excited_bf = .false.
-    ! collision records on one temperature grid
+    !> collision records on one temperature grid
     real(8), allocatable :: temp(:), col_val(:,:)
     character(len=8), allocatable :: col_key(:)
     integer, allocatable :: col_l(:), col_u(:)
   end type classic_atom_t
 
-  ! a MULTI line with its components (none for a single line)
+  !> a MULTI line with its components (none for a single line)
   type :: line_rec_t
     integer :: i, j, nq, io
     real(8) :: f, qmax, q0, grad, gvdw, gstk
@@ -76,7 +79,8 @@ CONTAINS
 !> Convert the MULTI atom in_file to the table format in out_file.
 !===============================================================================
 SUBROUTINE convert_classic_atom (in_file, out_file)
-  character(len=*), intent(in) :: in_file, out_file
+  character(len=*), intent(in) :: in_file  !< MULTI atom
+  character(len=*), intent(in) :: out_file !< table-format atom written
   type(classic_atom_t) :: atom
   !-----------------------------------------------------------------------------
   call read_classic_atom(in_file, atom)
@@ -87,8 +91,8 @@ END SUBROUTINE convert_classic_atom
 !> Parse the MULTI atom in atom_file.
 !===============================================================================
 SUBROUTINE read_classic_atom (atom_file, atom)
-  character(len=*), intent(in) :: atom_file
-  type(classic_atom_t), intent(out) :: atom
+  character(len=*), intent(in) :: atom_file !< MULTI atom
+  type(classic_atom_t), intent(out) :: atom !< parsed atom
   type(line_rec_t), allocatable :: lines(:)
   integer :: latom, ios, nline, ncont, nrfix, i
   logical :: exists, abort
@@ -251,7 +255,7 @@ END SUBROUTINE split_components
 
 !===============================================================================
 !> The bound-free records: tabulated (qmax < 0) or hydrogenic.  A second record
-!> for the same lower level is ignored, as dispatch always did.
+!> for the same lower level is ignored.
 !===============================================================================
 SUBROUTINE read_continua (latom, atom, ncont, abort)
   integer, intent(in) :: latom, ncont
@@ -540,8 +544,9 @@ END SUBROUTINE union_grid
 !> from Python agree; the run that converts a MULTI atom uses the rounded values.
 !===============================================================================
 SUBROUTINE write_pandas_atom (atom, out_file, source)
-  type(classic_atom_t), intent(in) :: atom
-  character(len=*), intent(in) :: out_file, source
+  type(classic_atom_t), intent(in) :: atom !< atom to write
+  character(len=*), intent(in) :: out_file !< table-format atom written
+  character(len=*), intent(in) :: source   !< name of the converted file, for the header
   integer :: u, i, k, wl, wk
   ! field widths without the separating blank
   integer, parameter :: w_awgt=8, w_n=6, w_ev=11, w_g=4, w_ion=3, w_lam=14, w_loggf=8, &
@@ -623,22 +628,28 @@ SUBROUTINE write_pandas_atom (atom, out_file, source)
   endif
   close(u)
 CONTAINS
-  ! edit descriptor of the index column of a table with n rows
+  !===============================================================================
+  !> edit descriptor of the index column of a table with n rows
+  !===============================================================================
   SUBROUTINE set_index (n)
     integer, intent(in) :: n
     write(idx, '(a,i0)') 'i', ndigits(n-1)
   END SUBROUTINE set_index
-  ! name right-aligned over a field of width w after its separating blank
+  !===============================================================================
+  !> name right-aligned over a field of width w after its separating blank
+  !===============================================================================
   FUNCTION title (name, w) result (s)
     character(len=*), intent(in) :: name
     integer, intent(in) :: w
     character(len=w+1) :: s
     s = repeat(' ', w+1-len(name))//name
   END FUNCTION title
-  ! x to p significant digits as Python's '{:.<p>g}' writes it, right-aligned in w
-  ! characters or wider when it needs more: positional for a decimal exponent
-  ! -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
-  ! after rounding to p digits.
+  !===============================================================================
+  !> x to p significant digits as Python's `'{:.<p>g}'` writes it, right-aligned in w
+  !> characters or wider when it needs more: positional for a decimal exponent
+  !> -4 <= e < p, scientific otherwise, without trailing zeros.  The exponent is taken
+  !> after rounding to p digits.
+  !===============================================================================
   FUNCTION g_format (x, p, w) result (s)
     real(8), intent(in) :: x
     integer, intent(in) :: p, w
@@ -664,8 +675,10 @@ CONTAINS
     allocate(character(len=max(w, len_trim(t))) :: s)
     s = repeat(' ', len(s)-len_trim(t))//trim(t)
   END FUNCTION g_format
-  ! a decimal number without the trailing zeros of its fraction, and without the point
-  ! when nothing is left after it
+  !===============================================================================
+  !> a decimal number without the trailing zeros of its fraction, and without the point
+  !> when nothing is left after it
+  !===============================================================================
   FUNCTION strip_zeros (t) result (u)
     character(len=*), intent(in) :: t
     character(len=len(t)) :: u

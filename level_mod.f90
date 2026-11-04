@@ -1,12 +1,28 @@
+!===============================================================================
+!> Energy levels of the background opacity data: their partition-function terms,
+!> and the occupation probabilities and bound-free opacity of H I levels.
+!===============================================================================
 MODULE level_mod
   USE prec_mod
   implicit none
 
+  !===============================================================================
+  !> Energy and per-cell populations shared by levels and particles.  xion is a
+  !> level's excitation energy or an ion's ionisation energy [eV].  For a level,
+  !> f is the Boltzmann factor g exp(-xion/kT) and n the number density
+  !> [cm^-3]; for a particle, n is the number density and f = n/n_H.
+  !===============================================================================
   type :: state_type
     real(dp) :: xion=999.99
     real(dp), dimension(:,:,:), allocatable :: n, f
   end type
 
+  !===============================================================================
+  !> An energy level of an ion in the background opacity data (absdat): statistical
+  !> weight g and, for H I, principal quantum number i and occupation probability w
+  !> per cell.  A level with xl > 0 stands for the hydrogenic series from n = xl up
+  !> to the pressure cutoff, whose partition-function sum fischel_sparks adds.
+  !===============================================================================
   type, extends(state_type) :: level_type
     integer :: i
     real(dp) :: xl, g=0
@@ -21,10 +37,15 @@ MODULE level_mod
 contains
 
   !===============================================================================
+  !> Partition-function sum of the hydrogenic series of ion stage ion from
+  !> n = xl up to the pressure cutoff set by ne, in the asymptotic form of
+  !> Fischel & Sparks.
+  !===============================================================================
   elemental real(dp) FUNCTION fischel_sparks(self, ion, e_kT, ne)
     class(level_type), intent(in) :: self
-    real(dp), intent(in) :: e_kT, ne
-    integer, intent(in) :: ion
+    integer, intent(in) :: ion   !< ionisation stage (1 is neutral)
+    real(dp), intent(in) :: e_kT !< 1 eV / kT
+    real(dp), intent(in) :: ne   !< electron number density [cm^-3]
     real(dp) :: a, a2, r, r2, r3, axl2, p, p2, p3, p4
     real(dp) :: bk_err
     !---------------------------------------------------------------------------
@@ -53,9 +74,14 @@ contains
   end FUNCTION fischel_sparks
 
   !===============================================================================
+  !> Hard-sphere volumes x1 (H) and x2 (He) and the charged-perturber factor k of
+  !> an H I state with effective quantum number ns, for wcalc and wcalc2.
+  !===============================================================================
   PURE SUBROUTINE calc_x_and_k(ns, x1, x2, k)
-    real(dp), intent(in) :: ns
-    real(dp), intent(out) :: x1, x2, k
+    real(dp), intent(in) :: ns  !< effective principal quantum number
+    real(dp), intent(out) :: x1 !< hard-sphere volume for H perturbers [cm^3], without the 4 pi/3
+    real(dp), intent(out) :: x2 !< hard-sphere volume for He perturbers [cm^3], without the 4 pi/3
+    real(dp), intent(out) :: k  !< charged-perturber factor of Hubeny et al. (1994)
     real(dp) :: ns2, rih
     !---------------------------------------------------------------------------
     ns2 = ns*ns
@@ -71,25 +97,24 @@ contains
   END SUBROUTINE calc_x_and_k
 
   !===============================================================================
-  ! Computes the occupation probability for a H atom in
-  ! state with effective principle quantum number NS in a plasma
-  ! enviroment with NH, NE, NHE number densities of H, ions,
-  ! and He atoms respectively.  This code assumes the perturbing
-  ! neutral H and He are in the ground state, (noting the hard
-  ! sphere approximation used is quite crude anyway) and that ions
-  ! are predominantly singly ionized (ie. N(Z=1 ions) = Ne).
-  ! See eqn 4.71 Hummer & Milhalas (1988)
-  ! Ions are now treated via Appendix A Hubeny, Hummer & Lanz (1994)
-  ! which is a fit to detailed calculation including correlations,
-  ! thus the temperature dependence
-  ! Sizes of neutral atoms adopted are sqrt(<r^2>)
-  ! Coded by Paul Barklem and Kjell Eriksson, Aug 2003
-  ! Optimized by Richard Hoppe, Jul 2023
+  !> Occupation probability w of an H I state with effective principal quantum
+  !> number ns, in every cell.  Neutral H and He perturbers (assumed in their
+  !> ground state, radius sqrt(<r^2>)) follow the hard-sphere form of
+  !> [Hummer & Mihalas (1988)](https://ui.adsabs.harvard.edu/abs/1988ApJ...331..794H),
+  !> eq. 4.71; ions, assumed singly charged, the fit of
+  !> [Hubeny, Hummer & Lanz (1994)](https://ui.adsabs.harvard.edu/abs/1994A&A...282..151H),
+  !> appendix A, which includes correlations and so depends on temperature
+  !> through shield.
+  !>
+  !> Written by Paul Barklem and Kjell Eriksson (2003).
   !===============================================================================
   PURE SUBROUTINE wcalc(nh, nhe, ne, shield, ns, w)
-    real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    real(dp), intent(in) :: ns
-    real(dp), intent(out), dimension(:,:,:) :: w
+    real(dp), intent(in) , dimension(:,:,:) :: nh     !< neutral H number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: nhe    !< neutral He number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: ne     !< electron number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: shield !< (1+a)^3.15/ne, a = 0.09 ne^(1/6)/sqrt(T) [cm^3]
+    real(dp), intent(in) :: ns                        !< effective principal quantum number
+    real(dp), intent(out), dimension(:,:,:) :: w      !< occupation probability
     real(dp) :: x1, x2, neutr, k1, k2, x, frac, charg, res
     real(dp), parameter :: pi43=4.18879d0 ! 4*pi/3
     integer :: i,j,k, m(3)
@@ -120,14 +145,22 @@ contains
   END SUBROUTINE wcalc
 
   !===============================================================================
+  !> Adds the bound-free opacity of H I level self to chi, including the
+  !> dissolved-level (pseudo-continuum) part below the series limit that the
+  !> occupation probability formalism gives, as Barklem's HBOP does.
+  !===============================================================================
   SUBROUTINE wcalc2(self, chi, lam, ab, nh, nhe, ne, shield, wocc, nlvl, beyond_limit)
     class(level_type), target :: self
-    real(4), intent(inout), dimension(:,:,:,:) :: chi
-    real(dp), intent(in), dimension(:) :: lam
-    real(4), intent(in), dimension(:) :: ab
-    real(dp), intent(in) , dimension(:,:,:) :: nh, nhe, ne, shield
-    real(dp), intent(in), dimension(:,:,:), optional, target :: wocc, nlvl
-    ! .false. leaves out the wavelengths beyond the series limit (default .true.)
+    real(4), intent(inout), dimension(:,:,:,:) :: chi                !< opacity (frequency, x, y, z), added to
+    real(dp), intent(in), dimension(:) :: lam                        !< wavelengths [AA]
+    real(4), intent(in), dimension(:) :: ab                          !< bound-free table of the level, interpolated to lam
+    real(dp), intent(in) , dimension(:,:,:) :: nh                    !< neutral H number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: nhe                   !< neutral He number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: ne                    !< electron number density [cm^-3]
+    real(dp), intent(in) , dimension(:,:,:) :: shield                !< (1+a)^3.15/ne, as in wcalc [cm^3]
+    real(dp), intent(in), dimension(:,:,:), optional, target :: wocc !< occupation probability (default self%w)
+    real(dp), intent(in), dimension(:,:,:), optional, target :: nlvl !< level population [cm^-3] (default self%n)
+    !> .false. leaves out the wavelengths beyond the series limit (default .true.)
     logical, intent(in), optional :: beyond_limit
     real(dp), dimension(:,:,:), pointer :: wp, np
     real(dp), dimension(:), allocatable :: kd

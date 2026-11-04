@@ -1,22 +1,28 @@
+!===============================================================================
+!> Bound-bound transitions: the transition type, its Einstein coefficients and the
+!> line broadening constants shared by model-atom and line-list lines.
+!===============================================================================
 MODULE bbtrans_mod
   USE prec_mod
   USE const_mod
   implicit none
 
+  !===============================================================================
+  !> A bound-bound transition of a model atom: its rest frequency and wavelengths,
+  !> Einstein coefficients and line broadening constants.
+  !===============================================================================
   type :: bbtrans_type
     real(dp) :: nu0
     real(dp) :: lam0
     real(dp) :: lam_air
-    integer :: nnu ! number of frequencies in the line
-    real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 ! line broadening (damping) constants
-    real(dp) :: grad_in=0, gstk_in=0, gv_in=0 ! input values for line broadening
+    integer :: nnu                                          !< number of frequencies in the line
+    real(dp) :: grad=0, gw1=0, gw2=0, gw3=0, gstk=0, gvdw=0 !< line broadening (damping) constants
+    real(dp) :: grad_in=0, gstk_in=0, gv_in=0               !< input values for line broadening
     real(dp) :: lower_ev, upper_g=1, loggf
-    real(dp) :: Aji, Aij, Bji, Bij ! Einstein coefficients, Bij is the
-    ! transition from the lower to the upper
-    ! level
+    real(dp) :: Aji, Aij, Bji, Bij !< Einstein coefficients, ij from the lower to the upper level; Bij and Bji include h/(4 pi)
     logical :: active=.true., unsold
-    integer :: i=0 ! lower level
-    integer :: j=0 ! upper level
+    integer :: i=0 !< lower level
+    integer :: j=0 !< upper level
   contains
     procedure :: init_einstein_coefficients
     procedure :: damping => line_damping
@@ -26,24 +32,31 @@ MODULE bbtrans_mod
     procedure :: deactivate
   end type
 
-  logical, public :: disable_stk=.false., disable_vdw=.false., disable_rad=.false.
-  ! Molecular lines may take damping estimates from the molecule's ionisation energy:
-  ! the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
-  ! and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
-  ! is an enhancement factor. The same switch applies the tabulated negative gvdw forms
-  ! (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
-  ! apply none of these to molecules, and their presets switch them off.
+  logical, public :: disable_stk=.false. !< no Stark broadening
+  logical, public :: disable_vdw=.false. !< no van der Waals broadening
+  logical, public :: disable_rad=.false. !< no radiative damping
+  !> Molecular lines may take damping estimates from the molecule's ionisation energy:
+  !> the Cowley Stark estimate (prepare_stark) for a line with no tabulated Stark width
+  !> and the Unsold van der Waals estimate (prepare_vanderwaals) for a line whose gvdw
+  !> is an enhancement factor. The same switch applies the tabulated negative gvdw forms
+  !> (log C6, Turbospectrum 'W') to molecular lines, as Korg does. MULTI and Turbospectrum
+  !> apply none of these to molecules, and their presets switch them off.
   logical, public :: molecule_damping_estimates=.true.
-  real(4), public, save :: tolerance=1e-4
+  real(4), public, save :: tolerance=1e-4 !< line opacity below tolerance times the continuum is left out
+  !> lines below max(tolerance, line_reject_frac)*tolerance times the line opacity
+  !> already accumulated are left out
   real(4), public, save :: line_reject_frac=0.0
-  real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3
+  real(8), parameter :: f_conv = 8.0d0 * pi**2 * ec**2 / em / cc**3 !< 8 pi^2 e^2/(m_e c^3); f_conv gf nu0^2 = g_u A_ul [s^-1]
 
 contains
 
   !====================================================================================
+  !> Sets the Einstein coefficients of the line from its oscillator strength.
+  !====================================================================================
   SUBROUTINE init_einstein_coefficients(self, f, gij)
     class(bbtrans_type), intent(inout) :: self
-    real(8), intent(in) :: f, gij
+    real(8), intent(in) :: f   !< oscillator strength
+    real(8), intent(in) :: gij !< statistical weight ratio g_i/g_j, lower over upper
     !----------------------------------------------------------------------------------
     ! Aji is the Einstein coefficient of spontaneous emission [1/s] and Aij = Aji/gij.
     ! Bij and Bji carry the factor h/4pi of the line opacity, which
@@ -60,10 +73,17 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
+  !> Damping parameter adamp = Gamma/(4 pi nu0) of the line in each cell, the sum of its
+  !> van der Waals, Stark and radiative damping.
+  !====================================================================================
   PURE ELEMENTAL SUBROUTINE line_damping (self, adamp, ne, tothi, vbar2, stark_pe, unsold)
     class(bbtrans_type), intent(in)  :: self
-    real(4), intent(in)  :: ne, tothi, vbar2, stark_pe, unsold
-    real(4), intent(inout) :: adamp
+    real(4), intent(in)  :: ne       !< electron number density [cm^-3]
+    real(4), intent(in)  :: tothi    !< neutral H number density [cm^-3]
+    real(4), intent(in)  :: vbar2    !< mean relative speed squared with H, compute_vbar2 [cm^2 s^-2]
+    real(4), intent(in)  :: stark_pe !< ne T^(1/6), for the T-dependent Stark recipes
+    real(4), intent(in)  :: unsold   !< vbar2^0.3 tothi, for the Unsold-type van der Waals recipes
+    real(4), intent(inout) :: adamp  !< damping parameter
     !----------------------------------------------------------------------------------
     adamp = 0
     ! Van der Waals Broadening
@@ -85,40 +105,52 @@ contains
   !------------------------------------------------------------------------------------
 
   !====================================================================================
-  ! Line broadening constants for model-atom lines (the type-bound forms) and
-  ! line-list lines (linelist_mod%build_linelist, which calls the scalar forms
-  ! directly).  All results are scaled by over_4pi/nu0.
-  !------------------------------------------------------------------------------------
+  !> Sets the line's Stark constant gstk with prepare_stark.
+  !====================================================================================
   PURE ELEMENTAL SUBROUTINE bb_prepare_Stark(self, gstk, j, cnt_ev, is_mol)
     class(bbtrans_type), intent(inout)  :: self
-    real(dp), intent(in) :: gstk, cnt_ev
-    integer, intent(in) :: j
-    logical, intent(in) :: is_mol
+    real(dp), intent(in) :: gstk   !< Stark recipe value, gstk_in of prepare_stark
+    integer, intent(in) :: j       !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in) :: cnt_ev !< ionisation limit [eV]
+    logical, intent(in) :: is_mol  !< molecular line
     !----------------------------------------------------------------------------------
     call prepare_stark(self%gstk, gstk, self%nu0, self%lower_ev, j, cnt_ev, is_mol)
   END SUBROUTINE bb_prepare_Stark
 
+  !====================================================================================
+  !> Sets the line's radiative damping grad with prepare_radiative.
+  !====================================================================================
   PURE ELEMENTAL SUBROUTINE bb_prepare_Radiative(self, grad)
     class(bbtrans_type), intent(inout)  :: self
-    real(dp), intent(in) :: grad
+    real(dp), intent(in) :: grad !< radiative damping rate [s^-1], 0 for the default
     !----------------------------------------------------------------------------------
     call prepare_radiative(self%grad, grad, self%nu0, self%loggf)
   END SUBROUTINE bb_prepare_Radiative
 
+  !====================================================================================
+  !> Sets the line's van der Waals constants gw1, gw2 and unsold with prepare_vanderwaals.
+  !====================================================================================
   PURE SUBROUTINE bb_prepare_VanderWaals(self, gvdw, lower_ion, cnt_ev, vbar2e4, is_mol)
     class(bbtrans_type), intent(inout)  :: self
-    integer, intent(in) :: lower_ion
-    real(dp), intent(in) :: gvdw, cnt_ev, vbar2e4
-    logical, intent(in) :: is_mol
+    real(dp), intent(in) :: gvdw     !< van der Waals recipe value, as in prepare_vanderwaals
+    integer, intent(in) :: lower_ion !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in) :: cnt_ev   !< ionisation limit [eV]
+    real(dp), intent(in) :: vbar2e4  !< compute_vbar2 at 10^4 K [cm^2 s^-2]
+    logical, intent(in) :: is_mol    !< molecular line
     !----------------------------------------------------------------------------------
     call prepare_vanderwaals(self%gw1, self%gw2, self%unsold, gvdw, self%nu0, &
                              self%lower_ev, lower_ion, cnt_ev, vbar2e4, is_mol)
   END SUBROUTINE bb_prepare_VanderWaals
 
   !====================================================================================
+  !> Radiative damping of a line, scaled by 1/(4 pi nu0): grad_in [s^-1], or for
+  !> grad_in = 0 the value g_u A_ul = 8 pi^2 e^2 nu0^2 gf/(m_e c^3) that Korg uses.
+  !====================================================================================
   PURE SUBROUTINE prepare_radiative(grad, grad_in, nu0, loggf)
-    real(dp), intent(out) :: grad
-    real(dp), intent(in)  :: grad_in, nu0, loggf
+    real(dp), intent(out) :: grad    !< radiative damping / (4 pi nu0)
+    real(dp), intent(in)  :: grad_in !< radiative damping rate [s^-1], 0 for the default
+    real(dp), intent(in)  :: nu0     !< line frequency [Hz]
+    real(dp), intent(in)  :: loggf   !< log10 gf
     !----------------------------------------------------------------------------------
     if (grad_in == 0) then
       ! Default as in Korg: 8 pi^2 e^2 nu0^2 gf / (m_e c^3) = g_u A_ul. Turbospectrum
@@ -134,11 +166,27 @@ contains
   END SUBROUTINE prepare_radiative
 
   !====================================================================================
+  !> Stark broadening constant of a line, scaled by 1/(4 pi nu0).  gstk_in selects
+  !> the recipe, and a negative result marks the T-dependent ones for line_damping:
+  !>
+  !> | gstk_in  | meaning                                                                         |
+  !> |----------|---------------------------------------------------------------------------------|
+  !> | < -10    | log10 C4 as in SIU, converted with Gray (2005), eqs. 11.26-11.27                |
+  !> | -10 to 0 | log10 gamma_4/n_e at 10^4 K, scaled as T^(1/6)                                  |
+  !> | 0        | Cowley (1971) estimate at 10^4 K, none if the upper level is at or above cnt_ev |
+  !> | > 0      | gamma_4/n_e as given                                                            |
+  !>
+  !> [Gray (2005)](https://ui.adsabs.harvard.edu/abs/2005oasp.book.....G),
+  !> [Cowley (1971)](https://ui.adsabs.harvard.edu/abs/1971Obs....91..139C)
+  !====================================================================================
   PURE SUBROUTINE prepare_stark(gstk, gstk_in, nu0, lower_ev, j, cnt_ev, is_mol)
-    real(dp), intent(out) :: gstk
-    real(dp), intent(in)  :: gstk_in, nu0, lower_ev, cnt_ev
-    integer,  intent(in)  :: j
-    logical,  intent(in)  :: is_mol
+    real(dp), intent(out) :: gstk     !< Stark constant / (4 pi nu0), negative for the T-dependent recipes
+    real(dp), intent(in)  :: gstk_in  !< recipe value, see the table
+    real(dp), intent(in)  :: nu0      !< line frequency [Hz]
+    real(dp), intent(in)  :: lower_ev !< lower level energy [eV]
+    integer,  intent(in)  :: j        !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in)  :: cnt_ev   !< ionisation limit [eV]
+    logical,  intent(in)  :: is_mol   !< molecular line
     real(dp), parameter :: scale = 1e4**(-one_sixth)   ! (T/1e4 K)**(1/6), with T**(1/6) in stark_pe
     real(dp), parameter :: c19 = log10(39. * (8. / (PI*EM*BK**5))**one_sixth) ! ~19.4
     real(dp) :: upper_ev, c1
@@ -174,13 +222,32 @@ contains
   END SUBROUTINE prepare_stark
 
   !====================================================================================
+  !> Van der Waals broadening constants of a line: gw1, scaled by 1/(4 pi nu0), and
+  !> the velocity exponent gw2; unsold marks the recipes that line_damping evaluates
+  !> with the Unsold temperature dependence.  gvdw selects the recipe:
+  !>
+  !> | gvdw     | meaning                                                                              |
+  !> |----------|--------------------------------------------------------------------------------------|
+  !> | >= 20    | ABO cross section [a0^2] at 10^4 m/s (integer part) and velocity exponent (fraction) |
+  !> | < -20    | log10 C6 as in SIU                                                                   |
+  !> | -20 to 0 | log10 gamma_6/n_H at 10^4 K (Turbospectrum 'W')                                      |
+  !> | 0        | none                                                                                 |
+  !> | 0 to 20  | Unsold estimate times gvdw, none if the upper level is at or above cnt_ev            |
+  !>
+  !> Molecular lines take the recipes below 20 only with molecule_damping_estimates.
+  !====================================================================================
   PURE SUBROUTINE prepare_vanderwaals(gw1, gw2, unsold, gvdw, nu0, lower_ev, lower_ion, &
                                       cnt_ev, vbar2e4, is_mol)
-    real(dp), intent(out) :: gw1, gw2
-    logical,  intent(out) :: unsold
-    real(dp), intent(in)  :: gvdw, nu0, lower_ev, cnt_ev, vbar2e4
-    integer,  intent(in)  :: lower_ion
-    logical,  intent(in)  :: is_mol
+    real(dp), intent(out) :: gw1       !< van der Waals constant / (4 pi nu0)
+    real(dp), intent(out) :: gw2       !< exponent of vbar2 in line_damping
+    logical,  intent(out) :: unsold    !< Unsold temperature dependence
+    real(dp), intent(in)  :: gvdw      !< recipe value, see the table
+    real(dp), intent(in)  :: nu0       !< line frequency [Hz]
+    real(dp), intent(in)  :: lower_ev  !< lower level energy [eV]
+    integer,  intent(in)  :: lower_ion !< ionisation stage of the lower level (1 is neutral)
+    real(dp), intent(in)  :: cnt_ev    !< ionisation limit [eV]
+    real(dp), intent(in)  :: vbar2e4   !< compute_vbar2 at 10^4 K [cm^2 s^-2]
+    logical,  intent(in)  :: is_mol    !< molecular line
     real(dp) :: upper_ev, sigma, alpha, gx, gammaf, balfac, c1, c625
     ! uns = 17*C_U**0.4 (CGS, energies in eV). Unsold (1955, eqs. 82.48 and 82.55) gives
     ! gamma_6 = 17 C6**0.4 v**0.6 N with C6 = 1.61e-33*(13.5*Z)**2*[...], i.e. C_U = 2.93e-31
@@ -234,6 +301,8 @@ contains
   !------------------------------------------------------------------------------------
 
   
+  !====================================================================================
+  !> Marks the line inactive.
   !====================================================================================
   PURE SUBROUTINE deactivate(self)
     class(bbtrans_type), intent(inout) :: self

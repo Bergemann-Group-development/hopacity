@@ -1,3 +1,7 @@
+!===============================================================================
+!> Molecules of HOP's equation of state and the molecular and ionisation
+!> equilibrium.
+!===============================================================================
 MODULE molecule_mod
   USE hop_env_mod, only: os, trace
   USE console_mod
@@ -7,22 +11,26 @@ MODULE molecule_mod
   USE handyfuncs_mod
   implicit none
 
+  !===============================================================================
+  !> A molecule with its constituent ions, dissociation energies and equilibrium
+  !> constant.
+  !===============================================================================
   type, extends(particle_type) :: molec_type
     integer :: nions
     class(ion_pointer_t), allocatable :: ions(:)
-    ! atomic number of each constituent, parallel to ions(:)
+    !> atomic number of each constituent, parallel to ions(:)
     integer, allocatable :: z(:)
-    real(dp) :: dc(5) ! dissociation_constants
-    ! Total nuclear spin statistical weight, prod over constituent nuclei of
-    ! (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
-    ! the tabulated partition function counts nuclear spin states, as modern
-    ! molecular line lists do (the BT2/Barber H2O g column carries the 3:1
-    ! ortho/para weight, so its Q must carry the matching factor 4 = 2*2*1).
-    ! The line-opacity path therefore uses %part as-is, while get_dis divides
-    ! it out to reach the nuclear-spin-free convention the atomic partition
-    ! functions use. The factor cancels identically in the equilibrium
-    ! constant anyway (it appears once in Q_mol and once in prod Q_atom), so
-    ! this only keeps the two sides on the same footing; it is never physics.
+    real(dp) :: dc(5) !< dissociation_constants
+    !> Total nuclear spin statistical weight, prod over constituent nuclei of
+    !> (2I+1). This is a pure convention marker for %part: g_nuclear > 1 means
+    !> the tabulated partition function counts nuclear spin states, as modern
+    !> molecular line lists do (the BT2/Barber H2O g column carries the 3:1
+    !> ortho/para weight, so its Q must carry the matching factor 4 = 2*2*1).
+    !> The line-opacity path therefore uses %part as-is, while get_dis divides
+    !> it out to reach the nuclear-spin-free convention the atomic partition
+    !> functions use. The factor cancels identically in the equilibrium
+    !> constant anyway (it appears once in Q_mol and once in prod Q_atom), so
+    !> this only keeps the two sides on the same footing; it is never physics.
     real(dp) :: g_nuclear = 1
     ! The molecule's ionisation energy in eV is its %xion, the limit the line-list
     ! Cowley Stark and Unsold van der Waals estimates are hydrogenic in (prepare_stark,
@@ -31,7 +39,7 @@ MODULE molecule_mod
     ! molecule_damping_estimates = .false. (bbtrans_mod) withholds both from all
     ! molecules. The dissociation energy is no such limit: it ends the nuclear-motion
     ! levels, not the Rydberg series of the electron.
-    real(dp), dimension(:), allocatable :: de ! dissociation_energies
+    real(dp), dimension(:), allocatable :: de !< dissociation_energies
     real(dp), dimension(:,:,:), allocatable :: dis
   contains
     procedure :: read_molec_data
@@ -43,15 +51,19 @@ MODULE molecule_mod
     procedure :: canonical_iso
   end type
 
-  logical, public :: irwin_dis=.true.
+  logical, public :: irwin_dis=.true. !< equilibrium constants from the partition functions, not the dc polynomial
 
 contains
 
   !===============================================================================
+  !> Reads the next molecule record from lunit: the header (id, defix, the number of
+  !> Irwin coefficients and optionally g_nuclear, irwin_tmin and xion), then the
+  !> dissociation energies, the dc polynomial and the Irwin coefficients.
+  !===============================================================================
   SUBROUTINE read_molec_data(self, lunit, iostat)
     class(molec_type), intent(inout) :: self
-    integer, intent(in) :: lunit
-    integer, intent(out) :: iostat
+    integer, intent(in) :: lunit   !< unit to read
+    integer, intent(out) :: iostat !< iostat of the header read, nonzero at the end of the data
     integer :: defix, n_irwin, n_de, ios
     character(256) :: line
     !---------------------------------------------------------------------------
@@ -99,12 +111,14 @@ contains
   END SUBROUTINE read_molec_data
 
   !===============================================================================
-  ! Computes the equilibrium constant log(P(AB)/(P(A)*P(B))) for molecules
+  !> Computes the equilibrium constant log(P(AB)/(P(A)*P(B))) for molecules
   !===============================================================================
   SUBROUTINE get_dis(self, temp, teta, e_kT, dis)
     class(molec_type), intent(in) :: self
-    real(dp), intent(in), dimension(:,:,:) :: temp, teta, e_kT
-    real(dp), intent(out), dimension(:,:,:) :: dis
+    real(dp), intent(in), dimension(:,:,:) :: temp !< temperature [K]
+    real(dp), intent(in), dimension(:,:,:) :: teta !< 5040 K / T
+    real(dp), intent(in), dimension(:,:,:) :: e_kT !< 1 eV / kT
+    real(dp), intent(out), dimension(:,:,:) :: dis !< ln of the equilibrium constant
     real(dp) :: awgt15, scalar, const_term
     real(dp), parameter :: const_base = log((2*PI*UU/HH**2)**(-1.5) * BK**(-2.5))
     integer :: j, nm1
@@ -134,10 +148,16 @@ contains
   END SUBROUTINE get_dis
 
   !===============================================================================
+  !> Energy of the molecules per volume relative to their free atoms [eV cm^-3]: -n
+  !> times the dissociation energy less the rotational and vibrational energy, with
+  !> the lowered H ionisation energy added for molecules that contain hydrogen.
+  !===============================================================================
   FUNCTION calc_e(self, teta, temp, dxi) result(e)
     class(molec_type), intent(in) :: self
+    real(dp), dimension(:,:,:) :: teta !< 5040 K / T
+    real(dp), dimension(:,:,:) :: temp !< temperature [K]
+    real(dp), dimension(:,:,:) :: dxi  !< ionisation energy lowering per unit charge [eV]
     class(ion_type), pointer :: ion
-    real(dp), dimension(:,:,:) :: teta, temp, dxi
     real(dp), dimension(:,:,:), allocatable :: de, e
     integer :: i
     !---------------------------------------------------------------------------
@@ -164,47 +184,45 @@ contains
   END FUNCTION calc_e
 
   !=========================================================================
-  ! Molecular + ionization equilibrium, solved cell by cell.
-  !
-  ! The caller supplies the molecules and the solve elements: one neutral
-  ! "root" ion per molecule-forming element (ions).  The routine runs at
-  ! fixed electron density, so within one cell the Saha ratios between the
-  ! ionization stages of every element, the electron pressure, and the
-  ! dissociation constants are all constants.  With yi = ln f_i for the
-  ! neutral fraction of each solve element and ye = ln fe, every molecular
-  ! fraction is an explicit function of the unknowns,
-  !
-  !   ln f_mol = C_m + sum_i nu_im*yi - (n_m - 1)*ye ,
-  !
-  ! where the per-cell constant C_m absorbs the dissociation constant, the
-  ! electron pressure, and the Saha factors of charged constituents (H2+).
-  ! The nonlinear system is number conservation for each solve element plus
-  ! charge conservation,
-  !
-  !   F_i = f_i*phi_i + sum_m nu_im*f_mol - A_i           = 0
-  !   F_e = xnecno + sum_i q_i*f_i + sum_m q_m*f_mol - fe = 0 ,
-  !
-  ! with phi_i (total nuclei per neutral) and q_i (electrons per neutral)
-  ! given by the fixed Saha ladder of element i.  It is solved by a damped
-  ! Newton method in log space: analytic Jacobian, step capped in ln f,
-  ! Armijo backtracking on |F|^2.  One iteration costs nions+nmol+1
-  ! exponentials plus an (nions+1)^2 linear solve; there are no logarithms,
-  ! pointer walks, 3D-array accesses, or array-syntax statements inside the
-  ! iteration, and the working set is O((nions+1)^2) scalars.
+  !> Molecular + ionization equilibrium, solved cell by cell.
+  !>
+  !> The caller supplies the molecules and the solve elements: one neutral
+  !> "root" ion per molecule-forming element (ions).  The routine runs at
+  !> fixed electron density, so within one cell the Saha ratios between the
+  !> ionization stages of every element, the electron pressure, and the
+  !> dissociation constants are all constants.  With yi = ln f_i for the
+  !> neutral fraction of each solve element and ye = ln fe, every molecular
+  !> fraction is an explicit function of the unknowns,
+  !> ln f_mol = C_m + sum_i nu_im yi - (n_m - 1) ye, where the per-cell constant C_m
+  !> absorbs the dissociation constant, the electron pressure, and the Saha factors
+  !> of charged constituents (H2+).  The nonlinear system is number conservation for
+  !> each solve element, F_i = f_i phi_i + sum_m nu_im f_mol - A_i = 0, plus charge
+  !> conservation, F_e = xnecno + sum_i q_i f_i + sum_m q_m f_mol - fe = 0, with
+  !> phi_i (total nuclei per neutral) and q_i (electrons per neutral) given by the
+  !> fixed Saha ladder of element i.  It is solved by a damped Newton method in log
+  !> space: analytic Jacobian, step capped in ln f, Armijo backtracking on |F|^2.
   !=========================================================================
   SUBROUTINE molecular_equilibrium(molecules, ions, tmolim, temp, teta, e_kT, &
                                    pe, xnecno, fe, ysave, same_state)
-    class(molec_type), target, intent(inout) :: molecules(:)
-    type(ion_pointer_t), intent(in) :: ions(:)
-    real(dp), intent(in) :: tmolim
-    real(dp), dimension(:,:,:), intent(in) :: temp, teta, e_kT, pe, xnecno
-    real(dp), dimension(:,:,:), intent(inout) :: fe
-    ! caller-owned per-cell seeds, carried across calls: the ne iteration
-    ! re-solves the same cells at nearly the same state, so each cell's own
-    ! previous solution is the best possible Newton start
+    ! One iteration costs nions+nmol+1 exponentials plus an (nions+1)^2 linear
+    ! solve; there are no logarithms, pointer walks, 3D-array accesses, or
+    ! array-syntax statements inside the iteration, and the working set is
+    ! O((nions+1)^2) scalars.
+    class(molec_type), target, intent(inout) :: molecules(:) !< molecules, whose f, n, part and dis are set
+    type(ion_pointer_t), intent(in) :: ions(:)               !< neutral root ion of each molecule-forming element
+    real(dp), intent(in) :: tmolim                           !< temperature [K] from which on there are no molecules
+    real(dp), dimension(:,:,:), intent(in) :: temp           !< temperature [K]
+    real(dp), dimension(:,:,:), intent(in) :: teta           !< 5040 K / T
+    real(dp), dimension(:,:,:), intent(in) :: e_kT           !< 1 eV / kT
+    real(dp), dimension(:,:,:), intent(in) :: pe             !< electron pressure [dyn cm^-2]
+    real(dp), dimension(:,:,:), intent(in) :: xnecno         !< electrons per H nucleus from elements without molecules
+    real(dp), dimension(:,:,:), intent(inout) :: fe          !< electrons per H nucleus
+    !> caller-owned per-cell seeds, carried across calls: the ne iteration
+    !> re-solves the same cells at nearly the same state, so each cell's own
+    !> previous solution is the best possible Newton start
     real(dp), dimension(:,:,:,:), allocatable, intent(inout), optional :: ysave
-    ! temp (and hence teta, e_kT) is identical to the previous call's, so
-    ! temp-only setup (mol%part, mol%dis) may be reused where valid
+    !> temp (and hence teta, e_kT) is identical to the previous call's, so
+    !> temp-only setup (mol%part, mol%dis) may be reused where valid
     logical, intent(in), optional :: same_state
     class(molec_type), pointer :: mol
     type(ion_type), pointer :: pt
@@ -795,11 +813,11 @@ contains
     call trace%end(itimer)
 
   contains
-    !---------------------------------------------------------------------------
-    ! The molecule's current auction allocation encoded as one integer: the
-    ! element it locked (limel) when it holds a lock, else 0.  Single-sourced
-    ! so the round-to-round comparison and the store into plim cannot drift.
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> The molecule's current auction allocation encoded as one integer: the
+    !> element it locked (limel) when it holds a lock, else 0.  Single-sourced
+    !> so the round-to-round comparison and the store into plim cannot drift.
+    !===========================================================================
     integer function alloc_code(mm)
       integer, intent(in) :: mm
       if (lockf(mm) >= 0d0) then
@@ -809,14 +827,14 @@ contains
       endif
     end function alloc_code
 
-    !---------------------------------------------------------------------------
-    ! Damped Newton on the full coupled system from the current yv, for at
-    ! most nit iterations: analytic Jacobian, step capped in ln f, Armijo
-    ! backtracking on |F|^2.  Leaves yv, fi, fm, Fv, norm2, fe_c consistent
-    ! with the last accepted state and mutates the shared Newton scratch
-    ! (Amat, stp, yt, fit, fmt, errf, norm2t); ok reports scaled-residual
-    ! convergence.
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> Damped Newton on the full coupled system from the current yv, for at
+    !> most nit iterations: analytic Jacobian, step capped in ln f, Armijo
+    !> backtracking on |F|^2.  Leaves yv, fi, fm, Fv, norm2, fe_c consistent
+    !> with the last accepted state and mutates the shared Newton scratch
+    !> (Amat, stp, yt, fit, fmt, errf, norm2t); ok reports scaled-residual
+    !> convergence.
+    !===========================================================================
     subroutine newton_solve(nit, ok)
       integer, intent(in)  :: nit
       logical, intent(out) :: ok
@@ -946,13 +964,13 @@ contains
       end do
     end subroutine newton_solve
 
-    !---------------------------------------------------------------------------
-    ! Solve element ii's scalar conservation equation over yv(ii), all other
-    ! unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
-    ! Newton on ln H - ln A: ln of a positive sum of increasing exponentials
-    ! is increasing and convex with slope in [1, nu_max], so this converges
-    ! globally; the step cap only guards exp overflow.
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> Solve element ii's scalar conservation equation over yv(ii), all other
+    !> unknowns held fixed:  H(y) = phi_ii e^y + sum_m nu_m f_m(y) = A_ii .
+    !> Newton on ln H - ln A: ln of a positive sum of increasing exponentials
+    !> is increasing and convex with slope in [1, nu_max], so this converges
+    !> globally; the step cap only guards exp overflow.
+    !===========================================================================
     subroutine solve_element(ii)
       integer, intent(in) :: ii
       real(dp) :: yy1, HH, dHH, bb, ss, ddy
@@ -990,12 +1008,12 @@ contains
       dH_last = dHH ! d H/d y at the solution, reused as J22 by solve_pair
     end subroutine solve_element
 
-    !---------------------------------------------------------------------------
-    ! Jointly solve the two conservation equations of elements i1 and i2
-    ! (everything else fixed): the inner loop keeps F_i2 = 0 exactly via
-    ! solve_element, the outer Newton moves yv(i1) along the constraint with
-    ! the Schur-complement slope J11 - J12^2/J22 of the pair's SPD Jacobian.
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> Jointly solve the two conservation equations of elements i1 and i2
+    !> (everything else fixed): the inner loop keeps F_i2 = 0 exactly via
+    !> solve_element, the outer Newton moves yv(i1) along the constraint with
+    !> the Schur-complement slope J11 - J12^2/J22 of the pair's SPD Jacobian.
+    !===========================================================================
     subroutine solve_pair(i1, i2)
       integer, intent(in) :: i1, i2
       real(dp) :: H1, J11, J12, J22, bb, ss, ddy, slope
@@ -1051,11 +1069,11 @@ contains
       call solve_element(i2)
     end subroutine solve_pair
 
-    !---------------------------------------------------------------------------
-    ! Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
-    ! Also updates the host fe_c to exp(yy(np1)), so that after the accepted
-    ! line-search evaluation fe_c always matches the current state.
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> Residual F and its ingredients at state yy = (ln f_1..ln f_nions, ln fe).
+    !> Also updates the host fe_c to exp(yy(np1)), so that after the accepted
+    !> line-search evaluation fe_c always matches the current state.
+    !===========================================================================
     subroutine eval(yy, fatom, fmol, resid, nrm)
       real(dp), intent(in)  :: yy(:)
       real(dp), intent(out) :: fatom(:), fmol(:), resid(:), nrm
@@ -1096,10 +1114,10 @@ contains
       end do
     end subroutine eval
 
-    !---------------------------------------------------------------------------
-    ! Find the solve-list index of the neutral root of constituent ion c, and
-    ! the charge that c carries relative to it
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> Find the solve-list index of the neutral root of constituent ion c, and
+    !> the charge that c carries relative to it
+    !===========================================================================
     subroutine constituent_root(c, idx, charge)
       type(ion_type), pointer, intent(in) :: c
       integer, intent(out) :: idx, charge
@@ -1142,9 +1160,13 @@ contains
   END SUBROUTINE molecular_equilibrium
 
   !===============================================================================
+  !> Allocates the arrays f, n, dis and part with shape m, unless they have it
+  !> already, and registers their memory.
+  !===============================================================================
   SUBROUTINE allocate_molec (self, m)
     class(molec_type) :: self
-    integer :: m(3), mold(3), s, p
+    integer :: m(3) !< array shape
+    integer :: mold(3), s, p
     !---------------------------------------------------------------------------
     if (all(m == self%m)) return
     self%m = m
@@ -1169,6 +1191,9 @@ contains
   END SUBROUTINE allocate_molec
 
   !===============================================================================
+  !> Deallocates f and dis, and n and part unless the opacity or the line list still
+  !> needs them.
+  !===============================================================================
   SUBROUTINE deallocate_molec (self)
     class(molec_type) :: self
     integer :: m(3), s, p
@@ -1190,13 +1215,14 @@ contains
   END SUBROUTINE deallocate_molec
 
   !===============================================================================
-  ! Isotopologue labels follow Turbospectrum's mass part: three digits per constituent,
-  ! constituents in ascending atomic number, mass numbers ascending among equal atomic
-  ! numbers, 000 for the natural mixture.  12C14N is 012014, 1H12C is 000012 since
-  ! hydrogen has no isotope table, and 12C13C is 012013.  The label is stored as an
-  ! integer, which drops the leading zeros; the number of constituents restores them.
-  ! A constituent without an isotope table is always 000.  Combinations that differ
-  ! only in the order of equal atoms share a label, and their fractions are summed.
+  !> Isotopologue labels follow Turbospectrum's mass part: three digits per constituent,
+  !> constituents in ascending atomic number, mass numbers ascending among equal atomic
+  !> numbers, 000 for the natural mixture.  12C14N is 012014, 1H12C is 000012 since
+  !> hydrogen has no isotope table, and 12C13C is 012013.  The label is stored as an
+  !> integer, which drops the leading zeros; the number of constituents restores them.
+  !> A constituent without an isotope table is always 000.  Combinations that differ
+  !> only in the order of equal atoms share a label, and their fractions are summed.
+  !===============================================================================
   SUBROUTINE generate_isotopic_combinations(self)
     class(molec_type), intent(inout) :: self
     class(ion_type), pointer :: ion
@@ -1265,13 +1291,14 @@ contains
   END SUBROUTINE generate_isotopic_combinations
 
   !===============================================================================
-  ! The isotopologue label of a line-list header in the convention above.  An
-  ! explicit mass for a constituent without an isotope table that equals its
-  ! natural mass number (hydrogen written 001) reads as the natural mixture, and the
-  ! masses of equal atoms are put in ascending order.
+  !> The isotopologue label of a line-list header in the convention above.  An
+  !> explicit mass for a constituent without an isotope table that equals its
+  !> natural mass number (hydrogen written 001) reads as the natural mixture, and the
+  !> masses of equal atoms are put in ascending order.
+  !===============================================================================
   INTEGER FUNCTION canonical_iso(self, iso) result(label)
     class(molec_type), intent(in) :: self
-    integer, intent(in) :: iso
+    integer, intent(in) :: iso !< label as the line-list header gives it
     integer, allocatable :: order(:), mass(:)
     integer :: i, rest
     !---------------------------------------------------------------------------
@@ -1295,7 +1322,8 @@ contains
   END FUNCTION canonical_iso
 
   !===============================================================================
-  ! Masses given in ascending atomic number, packed three digits each.
+  !> Masses given in ascending atomic number, packed three digits each.
+  !===============================================================================
   INTEGER FUNCTION pack_label(self, mass) result(label)
     class(molec_type), intent(in) :: self
     integer, intent(inout) :: mass(:)

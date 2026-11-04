@@ -1,35 +1,39 @@
+!===============================================================================
+!>  Tabulated hydrogen line profiles, selected at runtime with hydrogen_profiles:
+!>
+!>  - 'stehle': Stark profiles of
+!>    [Stehle & Hutcheon (1999)](https://ui.adsabs.harvard.edu/abs/1999A&AS..140...93S)
+!>    (Model Microfield Method for electrons and ions), convolved with thermal
+!>    Doppler broadening, for Balmer and Paschen lines up to n=20 and 21,
+!>    with the Lemke tables for the Brackett series. Converted from
+!>    Korg.jl's copy of CDS VI/98A onto the Lemke grid; beyond a line's
+!>    last tabulated density the profile is kept fixed in dnu/F0
+!>    (Holtsmark scaling). They contain no resonance broadening and no
+!>    radiative damping.
+!>  - 'lemke': VCS (Vidal-Cooper-Smith) profiles of
+!>    [Lemke (1997)](https://ui.adsabs.harvard.edu/abs/1997A&AS..122..285L),
+!>    convolved with thermal Doppler broadening, radiative damping
+!>    and, along an N(HI) axis for H alpha to H delta, Ali & Griem
+!>    resonance broadening.
+!>  - 'analytic': no table; the Griem+VCS Stark profiles of hprofl_mod.
+!>
+!>  The reader and interpolation are ported from the SIU/lineform routines
+!>  READ_HYDPROF and HYDL_AG_CON (T. Gehren / F. Grupp / M. Bergemann) and the
+!>  QPOL quadratic interpolator. Lyman lines and members missing from a table
+!>  use the analytic path in hprofl_mod; hprofl_mod adds the broadening a
+!>  table lacks (vcs_resonance, vcs_radiative).
+!>
+!>  The tabulated profile is the whole Doppler-convolved line shape, so it
+!>  replaces the analytic Voigt-core + Stark-wing
+!>  construction. vcs_prepare builds the profile for one (line, cell) and
+!>  vcs_eval samples it at a fractional frequency detuning q = (nu-nu0)/nu0,
+!>  returning a lineshape normalised to unit area in q (phi_nu*nu0), matching
+!>  the convention of hvoigt/stark1. The tables are symmetric about a single
+!>  line centre; hprofl_mod applies the fine-structure component pattern on
+!>  top (vcs_fine), as it does in the analytic path, and the populations
+!>  (nlo*Bij).
+!===============================================================================
 MODULE hvcs_mod
-  !  Tabulated hydrogen line profiles, selected at runtime with hydrogen_profiles:
-  !
-  !  'stehle'  Stark profiles of Stehle & Hutcheon (1999, A&AS 140, 93; Model
-  !            Microfield Method for electrons and ions), convolved with thermal
-  !            Doppler broadening, for Balmer and Paschen lines up to n=20 and 21,
-  !            with the Lemke tables for the Brackett series. Converted from
-  !            Korg.jl's copy of CDS VI/98A onto the Lemke grid; beyond a line's
-  !            last tabulated density the profile is kept fixed in dnu/F0
-  !            (Holtsmark scaling). They contain no resonance broadening and no
-  !            radiative damping.
-  !  'lemke'   VCS (Vidal-Cooper-Smith) profiles of M. Lemke (1997, A&AS 122,
-  !            285), convolved with thermal Doppler broadening, radiative damping
-  !            and, along an N(HI) axis for H alpha to H delta, Ali & Griem
-  !            resonance broadening.
-  !  'analytic' no table; the Griem+VCS Stark profiles of hprofl_mod.
-  !
-  !  The reader and interpolation are ported from the SIU/lineform routines
-  !  READ_HYDPROF and HYDL_AG_CON (T. Gehren / F. Grupp / M. Bergemann) and the
-  !  QPOL quadratic interpolator. Lyman lines and members missing from a table
-  !  use the analytic path in hprofl_mod; hprofl_mod adds the broadening a
-  !  table lacks (vcs_resonance, vcs_radiative).
-  !
-  !  The tabulated profile is the whole Doppler-convolved line shape, so it
-  !  replaces the analytic Voigt-core + Stark-wing
-  !  construction. vcs_prepare builds the profile for one (line, cell) and
-  !  vcs_eval samples it at a fractional frequency detuning q = (nu-nu0)/nu0,
-  !  returning a lineshape normalised to unit area in q (phi_nu*nu0), matching
-  !  the convention of hvoigt/stark1. The tables are symmetric about a single
-  !  line centre; hprofl_mod applies the fine-structure component pattern on
-  !  top (vcs_fine), as it does in the analytic path, and the populations
-  !  (nlo*Bij).
   USE const_mod, only: cc
   USE interpol_mod, only: pchip_slopes, hermite_value
   USE console_mod
@@ -38,60 +42,63 @@ MODULE hvcs_mod
 
   !  VCS table grid dimensions (from the SIU lf_param.inc); the product
   !  NNHW*NNHT*NNHE == 2288 is asserted against every profile block on read.
-  integer, parameter :: NNHW   = 44   ! wavelength (delta-lambda) points
-  integer, parameter :: NNHT   = 4    ! temperature nodes
-  integer, parameter :: NNHE   = 13   ! electron-density nodes
-  integer, parameter :: NNHH   = 13   ! hydrogen-density (resonance) nodes
-  integer, parameter :: NNHMAX = 18   ! max lines per series
-  integer, parameter :: NSER   = 3    ! Balmer, Paschen, Brackett
-  !  Longest axis qpol4 is ever handed (NH, T or Ne) -- sizes its scratch.
+  integer, parameter :: NNHW   = 44 !< wavelength (delta-lambda) points
+  integer, parameter :: NNHT   = 4  !< temperature nodes
+  integer, parameter :: NNHE   = 13 !< electron-density nodes
+  integer, parameter :: NNHH   = 13 !< hydrogen-density (resonance) nodes
+  integer, parameter :: NNHMAX = 18 !< max lines per series
+  integer, parameter :: NSER   = 3  !< Balmer, Paschen, Brackett
+  !>  Longest axis qpol4 is ever handed (NH, T or Ne); it sizes its scratch.
   integer, parameter :: NNAXMAX = max(NNHH, max(NNHT, NNHE))
 
-  !  Per-series grid + axes (log10 quantities), loaded once at setup.
+  !>  Per-series grid + axes (log10 quantities), loaded once at setup.
   real(4), save :: grid_vcs(NNHW,NNHH,NNHT,NNHE,NNHMAX,NSER) = 0.0
-  real(4), save :: nw_vcs(NNHW,NSER) = 0.0   ! log10 delta-lambda [AA]
-  real(4), save :: nt_vcs(NNHT,NSER) = 0.0   ! log10 T
-  real(4), save :: ne_vcs(NNHE,NSER) = 0.0   ! log10 Ne
-  real(4), save :: nh_vcs(NNHH,NSER) = 0.0   ! log10 N(HI)
-  !  Node slopes along the T axis (qpol4's) of the lines without an N(HI) axis,
-  !  where the T interpolation reads the grid directly.
+  real(4), save :: nw_vcs(NNHW,NSER) = 0.0 !< log10 delta-lambda [AA]
+  real(4), save :: nt_vcs(NNHT,NSER) = 0.0 !< log10 T
+  real(4), save :: ne_vcs(NNHE,NSER) = 0.0 !< log10 Ne
+  real(4), save :: nh_vcs(NNHH,NSER) = 0.0 !< log10 N(HI)
+  !>  Node slopes along the T axis (qpol4's) of the lines without an N(HI) axis,
+  !>  where the T interpolation reads the grid directly.
   real(4), save :: tslope_vcs(NNHW,NNHT,NNHE,NNHMAX,NSER) = 0.0
   !  Derived from nw_vcs at load time, so the frequency scan never pays for them:
   !  the delta-lambda nodes in linear AA, and the reciprocal of the (uniform)
   !  log10 node spacing used to bracket without a search.
-  real(4), save :: dw_lin(NNHW,NSER)  = 0.0  ! 10**nw_vcs
-  real(4), save :: nw_invdx(NSER)     = 0.0  ! 1/ddw
-  real(8), save :: dw_first(NSER)     = 0.d0 ! 10**nw_vcs(1,s), the table's inner edge
-  real(8), save :: dw_last(NSER)      = 0.d0 ! 10**nw_vcs(NNHW,s), its outer edge
+  real(4), save :: dw_lin(NNHW,NSER)  = 0.0  !< 10**nw_vcs
+  real(4), save :: nw_invdx(NSER)     = 0.0  !< 1/ddw
+  real(8), save :: dw_first(NSER)     = 0.d0 !< 10**nw_vcs(1,s), the table's inner edge
+  real(8), save :: dw_last(NSER)      = 0.d0 !< 10**nw_vcs(NNHW,s), its outer edge
   integer, save :: nlow(NNHMAX,NSER)  = 0
   integer, save :: nup (NNHMAX,NSER)  = 0
   integer, save :: nhhnr(NNHMAX,NSER) = 0
   integer, save :: nlines(NSER)       = 0
-  logical, save :: radiative(NSER)    = .false.  ! the series' table includes radiative damping
+  logical, save :: radiative(NSER)    = .false.  !< the series' table includes radiative damping
   logical, save :: vcs_loaded = .false.
 
   !  Runtime controls (exposed in the composition_params namelist).
-  character(len=16), public :: hydrogen_profiles = 'stehle'
-  character(len=4096), public :: vcs_data_dir = './input/vcs'
+  character(len=16), public :: hydrogen_profiles = 'stehle'   !< profile tables: 'stehle', 'lemke' or 'analytic'
+  character(len=4096), public :: vcs_data_dir = './input/vcs' !< folder of the profile tables
 
-  real(8), parameter :: AA_PER_S = cc*1.d8   ! speed of light [AA/s]
+  real(8), parameter :: AA_PER_S = cc*1.d8   !< speed of light [AA/s]
   real(8), parameter :: LN10 = 2.30258509299404568402d0
 
-  !  One cell's worth of prepared profile: the (NH,T,Ne) interpolation of the
-  !  grid, which is constant over a whole frequency scan. Callers that sweep
-  !  frequency hold one of these as a LOCAL (vcs_prepare once, vcs_eval per
-  !  point) -- keeping it off module scope is what keeps the inner loop clear of
-  !  threadprivate/TLS lookups, which on macOS gfortran cost a
-  !  pthread_getspecific per reference. The (line, cell) stamp makes prepare
-  !  idempotent, so a caller that keeps one per cell and line (rt_patch's hvcs)
-  !  builds each only once.
+  !===============================================================================
+  !>  One cell's worth of prepared profile: the (NH,T,Ne) interpolation of the
+  !>  grid, which is constant over a whole frequency scan. Callers that sweep
+  !>  frequency hold one of these as a LOCAL (vcs_prepare once, vcs_eval per
+  !>  point). The (line, cell) stamp makes prepare
+  !>  idempotent, so a caller that keeps one per cell and line (rt_patch's hvcs)
+  !>  builds each only once.
+  !===============================================================================
   type, public :: vcs_profile_t
-    real(4) :: lp(NNHW) = 0.0     ! log10 profile on the delta-lambda grid
-    real(8) :: lognorm  = 0.d0    ! log10 of its area in delta-lambda
-    real(8) :: lam0     = 0.d0    ! line centre wavelength [AA]
-    real(8) :: q_tail   = 0.d0    ! |q| of the outer table edge; beyond it a power law
+    ! Keeping the profile off module scope keeps the inner loop clear of
+    ! threadprivate/TLS lookups, which on macOS gfortran cost a
+    ! pthread_getspecific per reference.
+    real(4) :: lp(NNHW) = 0.0  !< log10 profile on the delta-lambda grid
+    real(8) :: lognorm  = 0.d0 !< log10 of its area in delta-lambda
+    real(8) :: lam0     = 0.d0 !< line centre wavelength [AA]
+    real(8) :: q_tail   = 0.d0 !< |q| of the outer table edge; beyond it a power law
     real(8) :: ta = 0.d0, ts = 0.d0   ! ... phi = exp(ta + ts*ln|q|), see vcs_tail
-    integer :: n = -1, m = -1     ! stamp: line ...
+    integer :: n = -1, m = -1     !< stamp: line ...
     real(8) :: nu0 = -1.d0        ! ...
     real(4) :: t = -1.0, e = -1.0, h = -1.0   ! ... and cell it was built for
     logical :: ok = .false.
@@ -103,10 +110,11 @@ MODULE hvcs_mod
 contains
 
   !====================================================================
-  !  Load the grid files hydrogen_profiles selects, once. Idempotent; call during
-  !  (serial) setup, before any profile evaluation.
+  !>  Load the grid files hydrogen_profiles selects, once. Idempotent; call during
+  !>  (serial) setup, before any profile evaluation.
+  !====================================================================
   SUBROUTINE ensure_vcs_loaded(dir)
-    character(len=*), intent(in), optional :: dir
+    character(len=*), intent(in), optional :: dir !< folder of the tables (default vcs_data_dir)
     character(len=len(vcs_data_dir)) :: d
     !------------------------------------------------------------------
     if (vcs_loaded) return
@@ -197,35 +205,41 @@ contains
   END SUBROUTINE read_vcs_grid
 
   !====================================================================
-  !  True when the tabulated path is enabled, loaded, and the line (n,m) has a
-  !  grid entry.
+  !>  True when the tabulated path is enabled, loaded, and the line (n,m) has a
+  !>  grid entry.
+  !====================================================================
   LOGICAL FUNCTION vcs_supported(n, m)
-    integer, intent(in) :: n, m
+    integer, intent(in) :: n !< lower principal quantum number
+    integer, intent(in) :: m !< upper principal quantum number
     !------------------------------------------------------------------
     vcs_supported = vcs_loaded .and. (vcs_row(n,m) > 0)
   END FUNCTION vcs_supported
 
   !====================================================================
-  !  True when the table of a supported line (n,m) carries resonance broadening
-  !  along its N(HI) axis.
+  !>  True when the table of a supported line (n,m) carries resonance broadening
+  !>  along its N(HI) axis.
+  !====================================================================
   LOGICAL FUNCTION vcs_resonance(n, m)
-    integer, intent(in) :: n, m
+    integer, intent(in) :: n !< lower principal quantum number
+    integer, intent(in) :: m !< upper principal quantum number
     !------------------------------------------------------------------
     vcs_resonance = nhhnr(vcs_row(n,m), n-1) > 1
   END FUNCTION vcs_resonance
 
   !====================================================================
-  !  True when the table of series n includes radiative damping.
+  !>  True when the table of series n includes radiative damping.
+  !====================================================================
   LOGICAL FUNCTION vcs_radiative(n)
-    integer, intent(in) :: n
+    integer, intent(in) :: n !< lower principal quantum number of the series
     !------------------------------------------------------------------
     vcs_radiative = radiative(n-1)
   END FUNCTION vcs_radiative
 
   !====================================================================
-  !  Row index of line (n,m) in its series grid, or 0 if absent. Paschen/Brackett
-  !  grids do not start at the alpha member, so we match (nlow,nup) rather than
-  !  assume row = m-n.
+  !>  Row index of line (n,m) in its series grid, or 0 if absent. Paschen/Brackett
+  !>  grids do not start at the alpha member, so we match (nlow,nup) rather than
+  !>  assume row = m-n.
+  !====================================================================
   INTEGER FUNCTION vcs_row(n, m) result(r)
     integer, intent(in) :: n, m
     integer :: s, k
@@ -242,13 +256,17 @@ contains
   END FUNCTION vcs_row
 
   !====================================================================
-  !  Build (or reuse) the prepared profile for line (n,m) in one cell. Idempotent
-  !  for a repeated (line, cell) stamp, so callers may call it unconditionally.
+  !>  Build (or reuse) the prepared profile for line (n,m) in one cell. Idempotent
+  !>  for a repeated (line, cell) stamp, so callers may call it unconditionally.
+  !====================================================================
   SUBROUTINE vcs_prepare(n, m, nu0, temp, ne, nh, c)
-    integer, intent(in) :: n, m
-    real(8), intent(in) :: nu0
-    real(4), intent(in) :: temp, ne, nh
-    type(vcs_profile_t), intent(inout) :: c
+    integer, intent(in) :: n                !< lower principal quantum number
+    integer, intent(in) :: m                !< upper principal quantum number
+    real(8), intent(in) :: nu0              !< line frequency [Hz]
+    real(4), intent(in) :: temp             !< temperature [K]
+    real(4), intent(in) :: ne               !< electron number density [cm^-3]
+    real(4), intent(in) :: nh               !< neutral H number density [cm^-3]
+    type(vcs_profile_t), intent(inout) :: c !< prepared profile
     real(4) :: lognorm
     !------------------------------------------------------------------
     if (c%n == n .and. c%m == m .and. c%nu0 == nu0 .and. c%t == temp .and. &
@@ -263,12 +281,13 @@ contains
   END SUBROUTINE vcs_prepare
 
   !====================================================================
-  !  Evaluate a prepared profile at fractional frequency detuning q. This is the
-  !  frequency-scan inner loop: everything that does not depend on q lives in
-  !  vcs_prepare, leaving one log10 and one exp per point.
+  !>  Evaluate a prepared profile at fractional frequency detuning q.
+  !====================================================================
   PURE REAL(8) FUNCTION vcs_eval(c, q) result(phi)
-    type(vcs_profile_t), intent(in) :: c
-    real(8), intent(in) :: q
+    ! This is the frequency-scan inner loop: everything that does not depend on q
+    ! lives in vcs_prepare, leaving one log10 and one exp per point.
+    type(vcs_profile_t), intent(in) :: c !< prepared profile
+    real(8), intent(in) :: q             !< (nu-nu0)/nu0
     real(8) :: dlam_AA, deltaw, p
     !------------------------------------------------------------------
     if (.not. c%ok) then
@@ -293,9 +312,10 @@ contains
   END FUNCTION vcs_eval
 
   !====================================================================
-  !  The power law that vcs_eval continues past the outer table edge (qpol's
-  !  linear log-log extrapolation through the last two nodes), with the area
-  !  normalisation and the Jacobian lam0 folded in: ln(phi_q) = ta + ts*ln|q|.
+  !>  The power law that vcs_eval continues past the outer table edge (qpol's
+  !>  linear log-log extrapolation through the last two nodes), with the area
+  !>  normalisation and the Jacobian lam0 folded in: ln(phi_q) = ta + ts*ln|q|.
+  !====================================================================
   SUBROUTINE tail_coef(c)
     type(vcs_profile_t), intent(inout) :: c
     real(8) :: slope, a
@@ -307,11 +327,12 @@ contains
   END SUBROUTINE tail_coef
 
   !====================================================================
-  !  vcs_eval beyond the outer table edge (|q| > q_tail), from ln|q|. Callers
-  !  that sweep many cells at the same frequencies can share ln|q| between them.
+  !>  vcs_eval beyond the outer table edge (|q| > q_tail), from ln|q|. Callers
+  !>  that sweep many cells at the same frequencies can share ln|q| between them.
+  !====================================================================
   PURE REAL(8) FUNCTION vcs_tail(c, lnq) result(phi)
-    type(vcs_profile_t), intent(in) :: c
-    real(8), intent(in) :: lnq
+    type(vcs_profile_t), intent(in) :: c !< prepared profile
+    real(8), intent(in) :: lnq           !< ln|q|
     !------------------------------------------------------------------
     if (c%ok) then
       phi = exp(c%ta + c%ts*lnq)
@@ -321,9 +342,10 @@ contains
   END FUNCTION vcs_tail
 
   !====================================================================
-  !  Interpolate the stored grid over (log NH, log T, log Ne) for one cell,
-  !  yielding the log10 profile lp(:) on the delta-lambda grid, plus lognorm =
-  !  log10 of its area in delta-lambda (used to renormalise to unit area).
+  !>  Interpolate the stored grid over (log NH, log T, log Ne) for one cell,
+  !>  yielding the log10 profile lp(:) on the delta-lambda grid, plus lognorm =
+  !>  log10 of its area in delta-lambda (used to renormalise to unit area).
+  !====================================================================
   SUBROUTINE vcs_cell_profile(n, m, temp, ne, nh, lp, lognorm, ok)
     integer, intent(in)  :: n, m
     real(4), intent(in)  :: temp, ne, nh
@@ -401,10 +423,11 @@ contains
   END SUBROUTINE vcs_cell_profile
 
   !====================================================================
-  !  Quadratic (3-point) interpolation, ported verbatim from SIU qpol.f90 so the
-  !  tabulated profiles are reproduced with the same scheme. a(:) must be sorted
-  !  ascending; array-element actual arguments (sequence association) supply the
-  !  per-series column.
+  !>  Quadratic (3-point) interpolation, ported verbatim from SIU qpol.f90 so the
+  !>  tabulated profiles are reproduced with the same scheme. a(:) must be sorted
+  !>  ascending; array-element actual arguments (sequence association) supply the
+  !>  per-series column.
+  !====================================================================
   REAL(4) FUNCTION qpol(x, a, f, no) result(res)
     integer, intent(in) :: no
     real(4), intent(in) :: x, a(no), f(no)
@@ -438,13 +461,14 @@ contains
   END FUNCTION qpol
 
   !====================================================================
-  !  qpol specialised to the delta-lambda axis of series s, which read_vcs_grid
-  !  lays down as a UNIFORM log10 ladder (nw_vcs(i,s) = dw0 + (i-1)*ddw). The
-  !  bracketing index is therefore one multiply instead of qpol's binary search
-  !  -- worth having, as this runs once per frequency point. The arithmetic that
-  !  follows is qpol verbatim, and the two bracketings agree: qpol's search
-  !  returns the largest k with a(k) < x, which differs from the truncation only
-  !  when x lands exactly on a node, and there both stencils collapse to f(node).
+  !>  qpol specialised to the delta-lambda axis of series s, which read_vcs_grid
+  !>  lays down as a UNIFORM log10 ladder (nw_vcs(i,s) = dw0 + (i-1)*ddw). The
+  !>  bracketing index is therefore one multiply instead of qpol's binary search,
+  !>  which matters because this runs once per frequency point. The arithmetic that
+  !>  follows is qpol verbatim, and the two bracketings agree: qpol's search
+  !>  returns the largest k with a(k) < x, which differs from the truncation only
+  !>  when x lands exactly on a node, and there both stencils collapse to f(node).
+  !====================================================================
   PURE REAL(4) FUNCTION qpol_w(x, s, f) result(res)
     real(4), intent(in) :: x
     integer, intent(in) :: s
@@ -478,8 +502,9 @@ contains
   END FUNCTION qpol_w
 
   !====================================================================
-  !  qpol4's bracketing interval [a(j),a(j+1)]: the largest j in [1,size(a)-1]
-  !  with a(j) <= x, or 1.
+  !>  qpol4's bracketing interval [a(j),a(j+1)]: the largest j in [1,size(a)-1]
+  !>  with a(j) <= x, or 1.
+  !====================================================================
   PURE INTEGER FUNCTION bracket(x, a) result(j)
     real(4), intent(in) :: x, a(:)
     integer :: kk
@@ -491,14 +516,15 @@ contains
   END FUNCTION bracket
 
   !====================================================================
-  !  Piecewise cubic HERMITE interpolation, C1 continuous. Used for the grid
-  !  axes (NH,T,Ne). Node slopes are the canonical monotone (Fritsch-Carlson
-  !  harmonic-mean) rule shared with the rest of the code via interpol_mod
-  !  (pchip_slopes), of which only the two bracketing ones are actually computed;
-  !  the slope at each node is single-valued, so value AND first derivative are
-  !  continuous at every node (no wiggly wings from stencil
-  !  shifts). a(:) ascending; inputs on the grid axes are pre-clamped to
-  !  [a(1),a(no)] so no extrapolation occurs. Falls back to qpol for <3 nodes.
+  !>  Piecewise cubic HERMITE interpolation, C1 continuous. Used for the grid
+  !>  axes (NH,T,Ne). Node slopes are the canonical monotone (Fritsch-Carlson
+  !>  harmonic-mean) rule shared with the rest of the code via interpol_mod
+  !>  (pchip_slopes), of which only the two bracketing ones are actually computed;
+  !>  the slope at each node is single-valued, so value AND first derivative are
+  !>  continuous at every node (no wiggly wings from stencil
+  !>  shifts). a(:) ascending; inputs on the grid axes are pre-clamped to
+  !>  [a(1),a(no)] so no extrapolation occurs. Falls back to qpol for <3 nodes.
+  !====================================================================
   REAL(4) FUNCTION qpol4(x, a, f, no) result(res)
     integer, intent(in) :: no
     real(4), intent(in) :: x, a(no), f(no)

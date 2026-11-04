@@ -1,3 +1,7 @@
+!===============================================================================
+!> The gas composition: elements, ions and molecules with their equilibrium
+!> populations, and the continuous and line opacity they produce.
+!===============================================================================
 MODULE composition_mod
   USE hop_env_mod, only: io, os, trace
   USE console_mod
@@ -29,18 +33,24 @@ MODULE composition_mod
   implicit none
   private
 
-  ! One species' answer for one abundance set: either the populations a
-  ! molecular re-solve produced, or -- for an element outside the network, whose
-  ! stages simply follow its abundance at fixed (T, ne) -- the scalar that
-  ! multiplies the base populations. Both are resolved when the sets are
-  ! prepared, so the opacity loop only ever matches an id against this table.
+  !===============================================================================
+  !> One species' answer for one abundance set: either the populations a
+  !> molecular re-solve produced, or, for an element outside the network whose
+  !> stages simply follow its abundance at fixed (T, ne), the scalar that
+  !> multiplies the base populations. Both are resolved when the sets are
+  !> prepared, so the opacity loop only ever matches an id against this table.
+  !===============================================================================
   type :: set_population_t
-    integer :: i_set=0
-    character(len=6) :: id=''
-    real(dp) :: scale=1d0
-    real(dp), dimension(:,:,:), pointer :: n => null()
+    integer :: i_set=0                                 !< abundance set
+    character(len=6) :: id=''                          !< ion or molecule id
+    real(dp) :: scale=1d0                              !< factor on the base populations
+    real(dp), dimension(:,:,:), pointer :: n => null() !< re-solved number density [cm^-3]
   end type set_population_t
 
+  !===============================================================================
+  !> The elements, ions and molecules of a model, their state in every cell of a
+  !> patch, and the opacities that follow from it.
+  !===============================================================================
   type, public :: composition_type
     logical :: initialised, ll_initialised=.false., loaded=.false.
     integer :: nel, nmolec, nline
@@ -53,41 +63,41 @@ MODULE composition_mod
     real(dp), dimension(:,:,:), allocatable :: temp, ne, rho, zero
     real(dp), dimension(:,:,:), allocatable :: e_kT, pe, dxi, toth, tothi
     real(dp), dimension(:,:,:), allocatable :: saha, lsaha, stark_pe
-    ! per-cell warm-start seeds for molecular_equilibrium, carried across
-    ! calls (the ne iteration re-solves the same cells with nearly the
-    ! same state); allocated and maintained by molecular_equilibrium
+    !> per-cell warm-start seeds for molecular_equilibrium, carried across
+    !> calls (the ne iteration re-solves the same cells with nearly the
+    !> same state); allocated and maintained by molecular_equilibrium
     real(dp), dimension(:,:,:,:), allocatable :: moleq_seed
-    ! electron fraction per hydrogen nucleus the last molecular equilibrium
-    ! converged on. It is not ne/toth: toth is rebuilt from the model's own rho,
-    ! while this is the fe that balanced the molecules, and re-entering the
-    ! solver with anything else moves a converged state (see
-    ! prepare_abundance_sets)
+    !> electron fraction per hydrogen nucleus the last molecular equilibrium
+    !> converged on. It is not ne/toth: toth is rebuilt from the model's own rho,
+    !> while this is the fe that balanced the molecules, and re-entering the
+    !> solver with anything else moves a converged state (see
+    !> prepare_abundance_sets)
     real(dp), dimension(:,:,:), allocatable :: moleq_fe
-    ! set by set_aux_data: temp identical to the previous call's, so
-    ! temp-only derived quantities (molecular part/dis) may be reused
+    !> set by set_aux_data: temp identical to the previous call's, so
+    !> temp-only derived quantities (molecular part/dis) may be reused
     logical :: same_temp = .false.
-    ! converged occupation-weighted H I log-partition (mhd_eos), carried
-    ! across thermal_equilibrium calls as a warm start for the inner loop
+    !> converged occupation-weighted H I log-partition (mhd_eos), carried
+    !> across thermal_equilibrium calls as a warm start for the inner loop
     real(dp), dimension(:,:,:), allocatable :: part_hocc
     real(dp), dimension(:,:,:), allocatable :: teta, pg, E, p6, shield, fo, vbar2h, t3nhe, eh
     real(4), dimension(:,:,:), allocatable :: chi500, vmic
-    ! velocities in units of c, already masked by use_vel; the rotated copies each
-    ! carry their own, which is what makes them the right home for the RT Doppler shift
+    !> velocities in units of c, already masked by use_vel; the rotated copies each
+    !> carry their own, which is what makes them the right home for the RT Doppler shift
     real(4), dimension(:,:,:), allocatable :: vx, vy, vz
-    ! partial derivatives of ln(T) and of Pe (linear, not log) per code length
-    ! unit, evaluated on the PCHIP interpolant of the input snapshot
-    ! (set_gradients), plus a real(4) copy of Pe itself; consumed by the
-    ! chain-rule 'hermite' RT solvers, which assume chi/Pe linear along the ray.
-    ! Rotated copies carry only the z pair (their columns already run along the
-    ! ray); only the unrotated composition holds the horizontal partials
+    !> partial derivatives of ln(T) and of Pe (linear, not log) per code length
+    !> unit, evaluated on the PCHIP interpolant of the input snapshot
+    !> (set_gradients), plus a real(4) copy of Pe itself; consumed by the
+    !> chain-rule 'hermite' RT solvers, which assume chi/Pe linear along the ray.
+    !> Rotated copies carry only the z pair (their columns already run along the
+    !> ray); only the unrotated composition holds the horizontal partials
     real(4), dimension(:,:,:), allocatable :: dlnt_dx, dlnt_dy, dlnt_dz
     real(4), dimension(:,:,:), allocatable :: dpe_dx, dpe_dy, dpe_dz
     real(4), dimension(:,:,:), allocatable :: pe4
-    ! PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
-    ! ferried from init_tabulated_comp down to each rt_patch's opac table
+    !> PCA transform of (lnT, lnNe) used by the sampled opacity table grid;
+    !> ferried from init_tabulated_comp down to each rt_patch's opac table
     type(pca_transform_type) :: pca
-    real(dp), allocatable :: set_da(:,:)       ! (atomic number, output set)
-    logical, allocatable :: set_element(:,:)   ! explicit manifest entries
+    real(dp), allocatable :: set_da(:,:)     !< (atomic number, output set)
+    logical, allocatable :: set_element(:,:) !< explicit manifest entries
     type(set_population_t), allocatable :: set_pop(:)
   contains
     procedure :: init => injon
@@ -132,24 +142,29 @@ MODULE composition_mod
     procedure :: write_linelists
   end type
 
-  ! The levels and bound-bound transitions of the model atom a departure set belongs
-  ! to, read from its table-format atom file (departure_atom).  One instance per file
-  ! is shared by every patch and every ray-aligned copy.
+  !===============================================================================
+  !> The levels and bound-bound transitions of the model atom a departure set belongs
+  !> to, read from its table-format atom file (departure_atom).  One instance per file
+  !> is shared by every patch and every ray-aligned copy.
+  !===============================================================================
   type, public :: departure_atom_t
     character(len=4096) :: file=''
-    real(8), allocatable :: ev(:)        ! 100*stage + energy above the stage's ground [eV]
-    real(8), allocatable :: level_ev(:)  ! energy above the atom's ground [eV]
-    integer, allocatable :: line_lo(:), line_up(:)  ! level indices of each transition
-    real(8), allocatable :: line_lam(:)  ! vacuum wavelength of each transition [AA]
+    real(8), allocatable :: ev(:)                  !< 100*stage + energy above the stage's ground [eV]
+    real(8), allocatable :: level_ev(:)            !< energy above the atom's ground [eV]
+    integer, allocatable :: line_lo(:), line_up(:) !< level indices of each transition
+    real(8), allocatable :: line_lam(:)            !< vacuum wavelength of each transition [AA]
     type(departure_atom_t), pointer :: next => null()
   end type departure_atom_t
 
+  !===============================================================================
+  !> The departure coefficients of one species, with the model atom they refer to.
+  !===============================================================================
   type, public :: departure_pointer_t
-    character(len=6) :: key=''  ! species key: element symbol ('Mg') or molecule formula ('H2O')
-    logical :: is_set=.false.   ! an unset key must never match anything
-    real(4), pointer :: mem(:,:,:,:) => null()
-    type(departure_atom_t), pointer :: atom => null()
-    integer :: nlevel=0
+    character(len=6) :: key=''                        !< species key: element symbol ('Mg') or molecule formula ('H2O')
+    logical :: is_set=.false.                         !< an unset key must never match anything
+    real(4), pointer :: mem(:,:,:,:) => null()        !< departure coefficients (x, y, z, level)
+    type(departure_atom_t), pointer :: atom => null() !< the model atom
+    integer :: nlevel=0                               !< number of levels
   contains
     procedure :: set_key => departure_set_key
     procedure :: matches => departure_matches
@@ -160,28 +175,30 @@ MODULE composition_mod
   type(departure_atom_t), pointer, save :: departure_atoms => null()
   public :: departure_atom
 
-  character(128), public, save :: exclude_elements='', only_elements=''
-  ! feed the Hummer-Mihalas occupation-weighted H I partition function into the
-  ! ionization and molecular equilibrium (pressure ionization consistent with
-  ! the H_occupation_probability opacity treatment)
+  character(128), public, save :: exclude_elements='' !< elements and molecules left out of the line list
+  character(128), public, save :: only_elements=''    !< if set, the only elements and molecules in the line list
+  !> feed the Hummer-Mihalas occupation-weighted H I partition function into the
+  !> ionization and molecular equilibrium (pressure ionization consistent with
+  !> the H_occupation_probability opacity treatment)
   logical, public :: mhd_eos=.true.
-  logical, public :: helium_scattering=.true.
-  real(dp), public :: debug_opac=0
-  real(dp), public :: ref_lam=5000.d0
-  character(len=1024), public :: abundances
-  logical, public :: relative_abundances=.false.
-  logical, public :: read_departures=.false.
-  ! match line-list lines without level indices to the model atom as Turbospectrum's
-  ! line-list conversion does (departure_assign_levels); without it only lines with
-  ! both indices are in NLTE
+  logical, public :: helium_scattering=.true.    !< include Rayleigh scattering by He I
+  real(dp), public :: debug_opac=0               !< air wavelength [AA] of print_opacity_contributions; 0 for none
+  real(dp), public :: ref_lam=5000.d0            !< air wavelength [AA] of the reference opacity chi500
+  character(len=1024), public :: abundances      !< abundance overrides, "Fe=7.45 Mg=7.5", log eps on the H=12 scale
+  logical, public :: relative_abundances=.false. !< abundances are offsets [dex] from the input abundances
+  logical, public :: read_departures=.false.     !< read departure coefficients with a saved atmosphere
+  !> match line-list lines without level indices to the model atom as Turbospectrum's
+  !> line-list conversion does (departure_assign_levels); without it only lines with
+  !> both indices are in NLTE
   logical, public :: match_nlte_levels=.false.
-  logical, public :: sample_linelist=.false.
-  ! split LTE line-list opacity into true absorption and scattering with the
-  ! stage-correct van Regemorter epsilon (osmet_mod%compute_epsilon_stage);
-  ! NLTE lines are untouched -- their scattering lives in the rate equations
+  logical, public :: sample_linelist=.false. !< LTE line-list opacity from a sampled table instead of line by line
+  !> split LTE line-list opacity into true absorption and scattering with the
+  !> stage-correct van Regemorter epsilon (osmet_mod%compute_epsilon_stage);
+  !> NLTE lines are untouched, as their scattering lives in the rate equations
   logical, public :: line_scattering=.false.
-  real(4), public :: opac_table_vmic=-1
+  real(4), public :: opac_table_vmic=-1 !< microturbulence [km/s] of the sampled opacity tables
 
+  !> element symbols by atomic number
   character(len=3), parameter, public :: &
     element_ids(92) = [ &
     'H ','He','Li','Be','B ','C ','N ','O ','F ', &
@@ -203,27 +220,27 @@ MODULE composition_mod
 contains
 
   !===============================================================================
-  ! Set the species key of a departure set.  An empty id leaves the set unmatched.
-  !-------------------------------------------------------------------------------
+  !> Set the species key of a departure set.  An empty id leaves the set unmatched.
+  !===============================================================================
   SUBROUTINE departure_set_key(self, id)
     class(departure_pointer_t) :: self
-    character(len=*), intent(in) :: id
+    character(len=*), intent(in) :: id !< element symbol or molecule formula
     !---------------------------------------------------------------------------
     self%key = adjustl(id)
     self%is_set = len_trim(self%key) > 0
   END SUBROUTINE departure_set_key
 
   !===============================================================================
-  ! True when this departure set belongs to the species of ptc.  Ion ids are
-  ! '<Sym> <ROMAN>' (H- is 'H -', so it too carries the blank) while molecule ids
-  ! never contain a blank, so the token before the first blank is the element
-  ! symbol and a blank-free id is a whole molecule.  The match is at species level:
-  ! key 'Mg' covers Mg I, Mg II, ... -- dep%atom%ev spans every stage, tagged 100*stage --
-  ! but never MgH or Mn I.
-  !-------------------------------------------------------------------------------
+  !> True when this departure set belongs to the species of ptc.  Ion ids are
+  !> `'<Sym> <ROMAN>'` (H- is 'H -', so it too carries the blank) while molecule ids
+  !> never contain a blank, so the token before the first blank is the element
+  !> symbol and a blank-free id is a whole molecule.  The match is at species level:
+  !> key 'Mg' covers Mg I, Mg II, ... (dep%atom%ev spans every stage, tagged 100*stage)
+  !> but never MgH or Mn I.
+  !===============================================================================
   LOGICAL FUNCTION departure_matches(self, ptc) RESULT(hit)
     class(departure_pointer_t), intent(in) :: self
-    class(particle_type), intent(in) :: ptc
+    class(particle_type), intent(in) :: ptc !< ion or molecule
     character(len=6) :: pid
     integer :: ib
     !---------------------------------------------------------------------------
@@ -236,12 +253,12 @@ contains
   END FUNCTION departure_matches
 
   !===============================================================================
-  ! The levels and transitions of the table-format model atom in file, read on the
-  ! first request and shared afterwards.  The format is the one atom_mod%read_pandas
-  ! reads; level and transition indices are 0-based in the file.
-  !-------------------------------------------------------------------------------
+  !> The levels and transitions of the table-format model atom in file, read on the
+  !> first request and shared afterwards.  The format is the one atom_mod%read_pandas
+  !> reads; level and transition indices are 0-based in the file.
+  !===============================================================================
   FUNCTION departure_atom(file) RESULT(atom)
-    character(len=*), intent(in) :: file
+    character(len=*), intent(in) :: file !< path of the model atom
     type(departure_atom_t), pointer :: atom
     integer :: lunit, nlevel, nline, idx, l
     integer, allocatable :: stage(:)
@@ -300,16 +317,16 @@ contains
   END FUNCTION departure_atom
 
   !===============================================================================
-  ! The departure-set levels of the H I lines.  As in Turbospectrum (hydropac.f), the
-  ! principal quantum numbers n_lo/n_up, which lev_i/lev_j start as, are the indices of
-  ! the atom's levels, so the atom must have one level per n, in order from n=1.  Each
-  ! index is checked against the line's energy (lower_ev, and lower_ev + h nu0 for the
-  ! upper end) to TS's relative tolerance; a mismatch stops the run.  A line with an n
-  ! beyond the atom's H I levels is set to -1 and stays in LTE.
-  !-------------------------------------------------------------------------------
+  !> The departure-set levels of the H I lines.  As in Turbospectrum (hydropac.f), the
+  !> principal quantum numbers n_lo/n_up, which lev_i/lev_j start as, are the indices of
+  !> the atom's levels, so the atom must have one level per n, in order from n=1.  Each
+  !> index is checked against the line's energy (lower_ev, and lower_ev + h nu0 for the
+  !> upper end) to TS's relative tolerance; a mismatch stops the run.  A line with an n
+  !> beyond the atom's H I levels is set to -1 and stays in LTE.
+  !===============================================================================
   SUBROUTINE departure_assign_h_levels(self, hll)
     class(departure_pointer_t), intent(in) :: self
-    type(linelist_type), intent(inout) :: hll
+    type(linelist_type), intent(inout) :: hll !< the H I line list, whose lev_i and lev_j are set
     real(8), parameter :: ts_ev_rel=1d-3
     integer :: l
     !---------------------------------------------------------------------------
@@ -324,7 +341,9 @@ contains
       call check_energy(hll%lev_j(l), hll%lower_ev(l) + H_E*hll%nu0(l))
     end do
   CONTAINS
-    ! level n is an H I level of the atom
+    !===============================================================================
+    !> level n is an H I level of the atom
+    !===============================================================================
     LOGICAL FUNCTION bound(n)
       integer, intent(in) :: n
       bound = n <= size(self%atom%ev)
@@ -347,22 +366,22 @@ contains
   END SUBROUTINE departure_assign_h_levels
 
   !===============================================================================
-  ! Give each line of ptc's line lists the departure-set levels of its two ends.  A
-  ! level index from the line list is kept and must name a level of the line's own
-  ! stage.  Without match_nlte_levels a line is in NLTE only when the list gives both
-  ! indices.  With it, the ends without an index (0) are matched as Turbospectrum's
-  ! convert_lte_to_nlte.py assigns indices: a line without any index first takes both
-  ! levels of the first atom transition of its stage within ts_dlam of its wavelength
-  ! whose lower level agrees with lower_ev to the factor ts_ev_factor.  An end still
-  ! unmatched takes the nearest level of the stage within that factor, the last of
-  ! equally near ones as in TS.  Both tolerances are TS's.  The energies are compared
-  ! above the atom's ground, the line's lower_ev shifted by the atom's energy of the
-  ! stage's first level, so the window is wider for ions.  An end that finds no level
-  ! is set to -1, which leaves the line in LTE, as does an end left at 0.
-  !-------------------------------------------------------------------------------
+  !> Give each line of ptc's line lists the departure-set levels of its two ends.  A
+  !> level index from the line list is kept and must name a level of the line's own
+  !> stage.  Without match_nlte_levels a line is in NLTE only when the list gives both
+  !> indices.  With it, the ends without an index (0) are matched as Turbospectrum's
+  !> convert_lte_to_nlte.py assigns indices: a line without any index first takes both
+  !> levels of the first atom transition of its stage within ts_dlam of its wavelength
+  !> whose lower level agrees with lower_ev to the factor ts_ev_factor.  An end still
+  !> unmatched takes the nearest level of the stage within that factor, the last of
+  !> equally near ones as in TS.  Both tolerances are TS's.  The energies are compared
+  !> above the atom's ground, the line's lower_ev shifted by the atom's energy of the
+  !> stage's first level, so the window is wider for ions.  An end that finds no level
+  !> is set to -1, which leaves the line in LTE, as does an end left at 0.
+  !===============================================================================
   SUBROUTINE departure_assign_levels(self, ptc)
     class(departure_pointer_t), intent(in) :: self
-    class(particle_type), intent(inout) :: ptc
+    class(particle_type), intent(inout) :: ptc !< ion or molecule whose line lists get lev_i and lev_j
     real(8), parameter :: ts_dlam=0.02d0, ts_ev_factor=1.0005d0
     real(8) :: ground_ev, e_lo, e_up
     integer :: kiso, l, t, lo
@@ -406,7 +425,9 @@ contains
         error stop 'assign_levels: a line-list level index names a level of another stage'
     END SUBROUTINE check_level
 
-    ! TS's acceptance window: e lies within the factor ts_ev_factor of level_ev
+    !===============================================================================
+    !> TS's acceptance window: e lies within the factor ts_ev_factor of level_ev
+    !===============================================================================
     LOGICAL FUNCTION within(level_ev, e)
       real(8), intent(in) :: level_ev, e
       within = level_ev*ts_ev_factor >= e .and. e >= level_ev/ts_ev_factor
@@ -429,15 +450,25 @@ contains
   END SUBROUTINE departure_assign_levels
 
   !===============================================================================
+  !> Sets up the composition from the absdat file (elements, ions, their partition
+  !> function data and the continuous opacity components), the abundance file, the
+  !> molecule file and the isotope file.  The abundances are scaled by FeH (except H,
+  !> He and Li) and by the alpha and r-process enhancements, then replaced by
+  !> external_abund and by the abundances overrides.
+  !===============================================================================
   SUBROUTINE injon(self, absdat_file, abund_file, FeH, &
     isotope_file, molec_file, tmolim, external_abund, alpha_enhancement, &
     r_process_enhancement)
     class(composition_type), target :: self
-    character(len=*), intent(in) :: absdat_file, abund_file
-    character(len=*), intent(in), optional :: isotope_file, molec_file
-    real(4), intent(in), optional :: tmolim
-    real(8), intent(in) :: FeH
-    real(4), intent(in), optional :: external_abund(:), alpha_enhancement, r_process_enhancement
+    character(len=*), intent(in) :: absdat_file            !< path of the absdat file
+    character(len=*), intent(in) :: abund_file             !< path of the abundance file
+    character(len=*), intent(in), optional :: isotope_file !< path of the isotope file; '' for none
+    character(len=*), intent(in), optional :: molec_file   !< path of the molecule file
+    real(4), intent(in), optional :: tmolim                !< molecules only below this [K]; replaces absdat's if > -98
+    real(8), intent(in) :: FeH                             !< [Fe/H]; ignored at -99 and below
+    real(4), intent(in), optional :: external_abund(:)     !< log eps by atomic number, H=12
+    real(4), intent(in), optional :: alpha_enhancement     !< [alpha/Fe] added to O, Ne, Mg, Si, S, Ar, Ca and Ti
+    real(4), intent(in), optional :: r_process_enhancement !< [r/Fe] added to Ga and the heavier r-process elements
     integer :: absdat, lunit, iostat
     integer :: i, j, k, l, m, nl, nk, niso
     integer :: lvl_count, skip_back
@@ -1021,6 +1052,9 @@ contains
   END SUBROUTINE injon
 
   !===============================================================================
+  !> Removes from the line list the elements and molecules that exclude_elements and
+  !> only_elements leave out.
+  !===============================================================================
   SUBROUTINE mask_linelist (self)
     class(composition_type), target :: self
     class(element_type), pointer :: element
@@ -1058,16 +1092,16 @@ contains
   END SUBROUTINE mask_linelist
 
   !===============================================================================
-  ! Whether the line-list block of species id (an element symbol or a molecule
-  ! formula, the first word of a block header) is to be read at all. This is the
-  ! test mask_linelist applies to the composition, hoisted to read time so the
-  ! blocks of unwanted species are never parsed: with only_elements naming the one
-  ! species a run synthesises, the master list is skipped a block at a time.
-  ! Both spellings are tried, since element ids are capitalised ('Fe') while
-  ! molecule formulae keep the list's own case ('MgH').
+  !> Whether the line-list block of species id (an element symbol or a molecule
+  !> formula, the first word of a block header) is to be read at all. This is the
+  !> test mask_linelist applies to the composition, hoisted to read time so the
+  !> blocks of unwanted species are never parsed: with only_elements naming the one
+  !> species a run synthesises, the master list is skipped a block at a time.
+  !> Both spellings are tried, since element ids are capitalised ('Fe') while
+  !> molecule formulae keep the list's own case ('MgH').
   !===============================================================================
   FUNCTION linelist_species_wanted (id) RESULT (wanted)
-    character(len=*), intent(in) :: id
+    character(len=*), intent(in) :: id !< element symbol or molecule formula
     character(len=512) :: drop, only
     character(len=8) :: sym, cap
     logical :: wanted
@@ -1090,16 +1124,16 @@ contains
   END FUNCTION linelist_species_wanted
 
   !===============================================================================
-  ! Disable the line list for every species named in ids (element symbol or
-  ! molecule formula), at the same per-element / per-molecule granularity as the
-  ! departure_matches association (an element key covers all its ion stages).
-  ! Used to strip the departure-carrying (NLTE) species out of tab_comp before
-  ! building the sampled LTE line-list table, so those lines are instead handled
-  ! in detail per cell with their departure coefficients.
+  !> Disable the line list for every species named in ids (element symbol or
+  !> molecule formula), at the same per-element / per-molecule granularity as the
+  !> departure_matches association (an element key covers all its ion stages).
+  !> Used to strip the departure-carrying (NLTE) species out of tab_comp before
+  !> building the sampled LTE line-list table, so those lines are instead handled
+  !> in detail per cell with their departure coefficients.
   !===============================================================================
   SUBROUTINE mask_departure_species (self, ids)
     class(composition_type), target :: self
-    character(len=*), intent(in), dimension(:) :: ids
+    character(len=*), intent(in), dimension(:) :: ids !< element symbols or molecule formulae
     class(element_type), pointer :: element
     class(molec_type), pointer :: mol
     integer :: i, di
@@ -1138,17 +1172,20 @@ contains
   END SUBROUTINE mask_departure_species
 
   !===============================================================================
-  ! Whether a particle, or any ion stage of an element, holds line-list lines.
-  !-------------------------------------------------------------------------------
+  !> Whether a particle holds line-list lines.
+  !===============================================================================
   LOGICAL FUNCTION has_lines (p)
-    class(particle_type), intent(in) :: p
+    class(particle_type), intent(in) :: p !< ion or molecule
     !-----------------------------------------------------------------------------
     has_lines = .false.
     if (allocated(p%ll)) has_lines = any(p%ll%nline > 0)
   END FUNCTION has_lines
 
+  !===============================================================================
+  !> Whether any ion stage of an element holds line-list lines.
+  !===============================================================================
   LOGICAL FUNCTION element_has_lines (element)
-    class(element_type), intent(in) :: element
+    class(element_type), intent(in) :: element !< the element
     integer :: j
     !-----------------------------------------------------------------------------
     element_has_lines = any([(has_lines(element%ions(j)), &
@@ -1156,22 +1193,23 @@ contains
   END FUNCTION element_has_lines
 
   !===============================================================================
-  ! init_linelist -- structure-of-arrays reader for the bulk linelist.
-  ! Walks the file's per-species blocks through linelist_reader_mod, which addresses
-  ! and bisects a block's records without reading what lies between them, and builds
-  ! each particle's SoA linelist (particle%ll) via linelist_mod from the byte ranges
-  ! the windows select. Hydrogen lines (Stark profiles) are read by add_h_block into
-  ! the hydrogen extension of the H I store, which handles both the embedded H I
-  ! block layout and the dedicated 'Hlinedata' column layout (selected by the
-  ! hlinedata flag); its block is read whole and masked there.
-  !-------------------------------------------------------------------------------
+  !> Structure-of-arrays reader for the bulk linelist; without lam and intervals
+  !> every line is read.
+  !> Walks the file's per-species blocks through linelist_reader_mod, which addresses
+  !> and bisects a block's records without reading what lies between them, and builds
+  !> each particle's SoA linelist (particle%ll) via linelist_mod from the byte ranges
+  !> the windows select. Hydrogen lines (Stark profiles) are read by add_h_block into
+  !> the hydrogen extension of the H I store, which handles both the embedded H I
+  !> block layout and the dedicated 'Hlinedata' column layout (selected by the
+  !> hlinedata flag); its block is read whole and masked there.
+  !===============================================================================
   SUBROUTINE init_linelist (self, linelist_file, dlam, lam, intervals)
     class(composition_type), target :: self
+    character(len=*) :: linelist_file                                 !< path of the line list
+    real(dp), intent(in) :: dlam                                      !< margin [AA] around lam within which lines are read
+    real(dp), intent(in), dimension(:), optional :: lam               !< vacuum wavelengths [AA] to read lines for
+    type(interval_t), intent(in), dimension(:), optional :: intervals !< vacuum wavelength windows, used instead of lam
     class(particle_type), pointer :: particle
-    character(len=*) :: linelist_file
-    real(dp), intent(in) :: dlam
-    real(dp), intent(in), dimension(:), optional :: lam
-    type(interval_t), intent(in), dimension(:), optional :: intervals
     character(len=:), allocatable :: buf
     integer(8), allocatable :: lstart(:), lend(:)
     character(20) :: ion_id
@@ -1422,10 +1460,12 @@ contains
     call trace%end(itimer)
 
   contains
-    ! A Turbospectrum species code: Z.AAA for an atom, or two-digit atomic numbers in
-    ! ascending order followed by their three-digit masses for a molecule (0607.012014
-    ! is 12C14N, 000 the natural mixture).  Gives the composition id, the atomic
-    ! number (0 for a molecule) and the mass part as an isotope label.
+    !===============================================================================
+    !> A Turbospectrum species code: Z.AAA for an atom, or two-digit atomic numbers in
+    !> ascending order followed by their three-digit masses for a molecule (0607.012014
+    !> is 12C14N, 000 the natural mixture).  Gives the composition id, the atomic
+    !> number (0 for a molecule) and the mass part as an isotope label.
+    !===============================================================================
     subroutine ts_species (code, ion, id, iel, label, found)
       character(len=*), intent(in) :: code
       integer, intent(in) :: ion
@@ -1478,9 +1518,11 @@ contains
       end do
     end subroutine ts_species
 
-    ! the byte range [b0,b1) of the open list as buf, with its record boundaries;
-    ! the offsets are into the slice, which is what build_linelist and add_h_block
-    ! index with
+    !===============================================================================
+    !> the byte range [b0,b1) of the open list as buf, with its record boundaries;
+    !> the offsets are into the slice, which is what build_linelist and add_h_block
+    !> index with
+    !===============================================================================
     subroutine read_slice (b0, b1)
       integer(8), intent(in) :: b0, b1
       !-------------------------------------------------------------------------
@@ -1490,7 +1532,9 @@ contains
       call trace%end(it_read)
     end subroutine read_slice
 
-    ! allocate the per-isotope SoA linelist array ll(0:niso) once (0 = main isotope)
+    !===============================================================================
+    !> allocate the per-isotope SoA linelist array ll(0:niso) once (0 = main isotope)
+    !===============================================================================
     subroutine ensure_ll_allocated(p)
       class(particle_type), intent(inout) :: p
       integer :: niso
@@ -1501,18 +1545,20 @@ contains
       allocate(p%ll(0:niso))
     end subroutine ensure_ll_allocated
 
-    ! hydrogen block -> particle%ll(0), with the principal quantum numbers that select
-    ! the Stark profile (append_h_line). Two column layouts are accepted, selected by
-    ! hlinedata:
-    !   hlinedata=.true.  (dedicated 'Hlinedata' file):
-    !       lam, i, j, lower_ev, upper_ev, loggf, label, grad_in
-    !     -- principal quantum numbers i,j are read directly from the file.
-    !   hlinedata=.false. (H I block embedded in a metal file):
-    !       lam, lower_ev, loggf, gvdw, grad, gstk, i, j
-    !     -- i,j are the principal quantum numbers when both are given, else derived
-    !        from the level energies with the ionisation energy of hydrogen.
-    ! lam is in vacuum for the Lyman lines (i = 1) and in air for the others. The
-    ! broadening columns are inert: hydrogen_line supplies the widths.
+    !===============================================================================
+    !> hydrogen block -> particle%ll(0), with the principal quantum numbers that select
+    !> the Stark profile (append_h_line). Two column layouts are accepted, selected by
+    !> hlinedata:
+    !>   hlinedata=.true.  (dedicated 'Hlinedata' file):
+    !>       lam, i, j, lower_ev, upper_ev, loggf, label, grad_in
+    !>     with the principal quantum numbers i,j read directly from the file.
+    !>   hlinedata=.false. (H I block embedded in a metal file):
+    !>       lam, lower_ev, loggf, gvdw, grad, gstk, i, j
+    !>     with i,j the principal quantum numbers when both are given, else derived
+    !>     from the level energies with the ionisation energy of hydrogen.
+    !> lam is in vacuum for the Lyman lines (i = 1) and in air for the others. The
+    !> broadening columns are inert: hydrogen_line supplies the widths.
+    !===============================================================================
     subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &
                            intervals_arg, use_intervals_arg)
       class(particle_type), pointer :: particle
@@ -1586,49 +1632,54 @@ contains
   END SUBROUTINE init_linelist
 
   !===============================================================================
-  ! add_linelist_opacities -- line opacity orchestrator. The H I lines use the
-  ! Stark-profile kernel add_h_opacities; metals and molecules the linelist_mod kernel.
-  !-------------------------------------------------------------------------------
+  !> Line opacity orchestrator. The H I lines use the Stark-profile kernel
+  !> add_h_opacities; metals and molecules the linelist_mod kernel.
+  !>
+  !> only_departures skips every particle that has no matching departure set, so
+  !> only the NLTE species are processed: the complement of the masked tab_comp
+  !> that builds the sampled LTE line table (sample_linelist). lte_of adds the
+  !> species of those departure sets back in LTE, the LTE companion set of a run
+  !> whose sampled table leaves them out.
+  !>
+  !> With line_scattering, one_m_eps holds the scattering fractions 1-eps per
+  !> stage group, and chi_scat receives the (1-eps)-weighted LTE line opacity;
+  !> hydrogen stays thermal. The kernels accumulate chi_scat in working units
+  !> (pre-stimulated-emission, like all_chi); with beta present it is converted to
+  !> physical 1/cm on the way out, so callers never see the raw form.
+  !>
+  !> all_chi holds the continuum on entry, which sets each line's cutoff.  The stage
+  !> groups of one_m_eps are 1 for neutrals and molecules and 2 for ions.  With dlam
+  !> = 0 a hydrogen line is placed only on a grid point at its own wavelength.  The
+  !> cells i0:i1 of the first axis default to all of them.
+  !===============================================================================
   SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures, &
                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
                                     i_set, window_lam, chi_lines, eta_lines, lte_of)
     class(composition_type), target :: self
+    class(spectrum_type) :: sp                                                           !< the wavelength grid
+    real(4), intent(inout), dimension(:,:,:,:) :: all_chi                                !< working xhat (freq, x, y, z), added to
+    real(4), intent(inout), dimension(:,:,:,:) :: all_eta                                !< working ehat (freq, x, y, z), added to
+    real(8), intent(in) :: dlam                                                          !< line selection half-width [AA]
+    real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj         !< projected velocity / c (default 0)
+    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures !< departure sets of the NLTE species
+    logical, intent(in), optional :: only_departures                                     !< only species with departure sets
+    real(4), intent(in),    dimension(:,:,:,:,:), optional :: one_m_eps                  !< 1-eps (freq, x, y, z, stage group)
+    real(4), intent(inout), dimension(:,:,:,:),   optional :: chi_scat                   !< LTE line scattering, entering zeroed
+    real(4), intent(in),    dimension(:,:,:,:),   optional :: beta                       !< Boltzmann factor exp(-h nu/kT)
+    integer, intent(in), optional :: i0                                                  !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1                                                  !< last cell of the first axis
+    real(8), intent(in), dimension(:), optional, target :: llam_in                       !< ln of sp%lam, if at hand
+    integer, intent(in), optional :: i_set                                               !< abundance set (default 0, the base)
+    real(dp), intent(in), optional :: window_lam(2)                                      !< [blue, red] window_file window [AA]
+    real(4), intent(out), dimension(:,:,:,:), optional :: chi_lines                      !< the increment of all_chi over i0:i1
+    real(4), intent(out), dimension(:,:,:,:), optional :: eta_lines                      !< the increment of all_eta over i0:i1
+    class(departure_pointer_t), intent(in), dimension(:), optional :: lte_of             !< species to add in LTE
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
     class(molec_type), pointer :: mol
     class(departure_pointer_t), pointer :: dep
     type(hline_t) :: hline
-    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
-    ! only_departures=.true. skips every particle that has no matching departure
-    ! set, i.e. processes only NLTE species -- the complement of the masked
-    ! tab_comp used to build the sampled LTE line table (sample_linelist).
-    logical, intent(in), optional :: only_departures
-    ! lte_of: with only_departures, also processes the species that these departure
-    ! sets belong to, in LTE (no departures passed): the LTE companion set of a run
-    ! whose sampled table leaves them out.
-    class(departure_pointer_t), intent(in), dimension(:), optional :: lte_of
-    ! line_scattering: precomputed scattering fractions 1-eps per stage group
-    ! (last index 1=neutral incl. molecules, 2=ionized) and the accumulator the
-    ! (1-eps)-weighted LTE line opacity is added to; hydrogen stays thermal
-    ! chi_scat must enter zeroed.  The kernels accumulate it in working units
-    ! (pre-stimulated-emission, like all_chi); with beta present it is converted
-    ! to physical 1/cm on the way out, so callers never see the raw form.
-    real(4), intent(in),    dimension(:,:,:,:,:), optional :: one_m_eps
-    real(4), intent(inout), dimension(:,:,:,:),   optional :: chi_scat
-    real(4), intent(in),    dimension(:,:,:,:),   optional :: beta
-    integer, intent(in), optional :: i0, i1
-    integer, intent(in), optional :: i_set
-    ! window_lam: [blue, red] wavelength in Angstrom of the window_file window this
-    ! output patch lies in (see below)
-    real(dp), intent(in), optional :: window_lam(2)
-    ! chi_lines, eta_lines: receive the line increments added to all_chi and all_eta
-    ! over i0:i1, so a caller can add them again later with the same result
-    real(4), intent(out), dimension(:,:,:,:), optional :: chi_lines, eta_lines
-    class(spectrum_type) :: sp
-    real(4), intent(inout), dimension(:,:,:,:) :: all_chi, all_eta
-    real(8), intent(in) :: dlam
     real(8) :: llam_lines(2)
-    real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj
     real(4), dimension(:,:,:), allocatable :: tothi, stark_pe, ne, temp, e_kT
     real(4), dimension(:,:,:), allocatable :: inv_df, vbar2, fo, t3nhe, ni, nj
     real(4), dimension(:,:,:), allocatable :: vmic_c
@@ -1640,7 +1691,6 @@ contains
     real(dp) :: set_scale
     real(8), dimension(:), allocatable, target :: llam_mem
     real(8), dimension(:), pointer :: llam
-    real(8), intent(in), dimension(:), optional, target :: llam_in
     real(4) :: log_tol_over_voigt_peak
     real(dp) :: lam0, nu0, Bij
     integer :: i, j, k, l, f, f0, m(3), nf, lo, hi, io, nn, set_index, n_lo, n_up
@@ -1896,14 +1946,14 @@ contains
   END SUBROUTINE add_linelist_opacities
 
   !===============================================================================
-  ! Accumulate the line-list diagnostics (used, strength, reach) of src, a copy of
-  ! self made after init_linelist, into self. The kernels write them per copy, which
-  ! keeps the hot loops free of shared writes; merging every copy into the composition
-  ! they were made from gives the maximum over all of them.
-  !-------------------------------------------------------------------------------
+  !> Accumulate the line-list diagnostics (used, strength, reach) of src, a copy of
+  !> self made after init_linelist, into self. The kernels write them per copy, which
+  !> keeps the hot loops free of shared writes; merging every copy into the composition
+  !> they were made from gives the maximum over all of them.
+  !===============================================================================
   SUBROUTINE merge_line_diagnostics(self, src)
     class(composition_type), target :: self
-    class(composition_type), intent(in) :: src
+    class(composition_type), intent(in) :: src !< a copy of self
     integer :: i, j
     !-----------------------------------------------------------------------------
     do i=1, self%nel
@@ -1927,6 +1977,10 @@ contains
     end subroutine merge_particle
   END SUBROUTINE merge_line_diagnostics
 
+  !===============================================================================
+  !> Points the ion neighbours, abundances, molecule constituents and absdat
+  !> components at this composition's own elements and molecules, after a copy
+  !> took over the pointers of the composition it was copied from.
   !===============================================================================
   SUBROUTINE reassign_pointer(self)
     class(composition_type), target :: self
@@ -1987,18 +2041,30 @@ contains
   END SUBROUTINE reassign_pointer
 
   !===============================================================================
+  !> Sets the state of every cell: with use_ne the ionisation and molecular
+  !> equilibrium at the given temp and ne, otherwise at the ne that reproduces rho;
+  !> with use_rho the given rho is kept, otherwise the equilibrium's.  Then the
+  !> number densities, the auxiliary quantities, the H I levels, the abundance sets
+  !> and the reference opacity chi500 at ref_lam.
+  !===============================================================================
   SUBROUTINE load_state_variables(self, temp, ne, rho, use_rho, use_ne, vmic, vx, vy, vz, &
                                   set_da, set_element)
     class(composition_type), target :: self
+    real(dp), intent(in), dimension(:,:,:) :: temp               !< temperature [K]
+    real(dp), intent(in), dimension(:,:,:) :: ne                 !< electron number density [cm^-3]
+    real(dp), intent(in), dimension(:,:,:) :: rho                !< mass density [g cm^-3]
+    logical, intent(in), optional :: use_rho                     !< keep rho (default .true.)
+    logical, intent(in), optional :: use_ne                      !< take ne as given (default .true.)
+    real(4), intent(in), dimension(:,:,:), optional :: vmic      !< microturbulence [km/s]
+    real(4), intent(in), dimension(:,:,:), optional :: vx        !< velocity / c along x
+    real(4), intent(in), dimension(:,:,:), optional :: vy        !< velocity / c along y
+    real(4), intent(in), dimension(:,:,:), optional :: vz        !< velocity / c along z
+    real(8), intent(in), dimension(:,:), optional :: set_da      !< abundance offsets [dex] (atomic number, set)
+    logical, intent(in), dimension(:,:), optional :: set_element !< elements each set names (atomic number, set)
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion
     class(molec_type), pointer :: mol
     type(spectrum_type) :: ref_sp
-    real(dp), intent(in), dimension(:,:,:) :: temp, ne, rho
-    logical, intent(in), optional :: use_rho, use_ne
-    real(4), intent(in), dimension(:,:,:), optional :: vmic, vx, vy, vz
-    real(8), intent(in), dimension(:,:), optional :: set_da
-    logical, intent(in), dimension(:,:), optional :: set_element
     real(dp), dimension(:,:,:), allocatable :: ro
     real(4), dimension(:,:,:,:), pointer :: chi500
     real(dp) :: nudebug(1)
@@ -2019,8 +2085,8 @@ contains
 
     ! NOTE: this cleanup is partial (chi500/fo/vbar2h/t3nhe are not freed, and
     ! ion_type retains partial state after the deallocate loop below), so a
-    ! second call on the same instance aborts.  Every caller -- dispatch and
-    ! the standalone hop_c_api -- copies a never-loaded composition and loads
+    ! second call on the same instance aborts.  Every caller, dispatch and
+    ! the standalone hop_c_api, copies a never-loaded composition and loads
     ! exactly once per copy.
     if (self%loaded) then
       deallocate(self%temp)
@@ -2116,12 +2182,16 @@ contains
   !> and cache a real(4) copy of Pe, so the chain-rule RT solvers never
   !> convert precision in hot code.  Must be called after
   !> load_state_variables, which finalizes self%pe.  The horizontal partials
-  !> are optional -- rotated compositions carry only the z pair.
+  !> are optional; rotated compositions carry only the z pair.
   !=========================================================================
   SUBROUTINE set_gradients(self, dlnt_dz, dpe_dz, dlnt_dx, dlnt_dy, dpe_dx, dpe_dy)
     class(composition_type) :: self
-    real(4), intent(in), dimension(:,:,:) :: dlnt_dz, dpe_dz
-    real(4), intent(in), dimension(:,:,:), optional :: dlnt_dx, dlnt_dy, dpe_dx, dpe_dy
+    real(4), intent(in), dimension(:,:,:) :: dlnt_dz           !< d ln T/dz
+    real(4), intent(in), dimension(:,:,:) :: dpe_dz            !< d Pe/dz [dyn cm^-2]
+    real(4), intent(in), dimension(:,:,:), optional :: dlnt_dx !< d ln T/dx
+    real(4), intent(in), dimension(:,:,:), optional :: dlnt_dy !< d ln T/dy
+    real(4), intent(in), dimension(:,:,:), optional :: dpe_dx  !< d Pe/dx [dyn cm^-2]
+    real(4), intent(in), dimension(:,:,:), optional :: dpe_dy  !< d Pe/dy [dyn cm^-2]
     !---------------------------------------------------------------------------
     if (.not. self%loaded) then
       call console_error ('set_gradients must be called after load_state_variables')
@@ -2142,12 +2212,17 @@ contains
   END SUBROUTINE set_gradients
 
   !=========================================================================
+  !> Ionisation and molecular equilibrium at the given temp and ne, with the
+  !> occupation-weighted H I partition function when mhd_eos, and the mass
+  !> density that charge neutrality then implies.
+  !=========================================================================
   SUBROUTINE thermal_equilibrium(self, temp, ne, rho)
     class(composition_type), target :: self
+    real(dp), intent(in),  dimension(:,:,:) :: temp !< temperature [K]
+    real(dp), intent(in),  dimension(:,:,:) :: ne   !< electron number density [cm^-3]
+    real(dp), intent(out), dimension(:,:,:) :: rho  !< mass density [g cm^-3]
     class(element_type), pointer :: element
     class(ion_type), pointer :: ion, HI, HeI
-    real(dp), intent(in),  dimension(:,:,:) :: temp, ne
-    real(dp), intent(out), dimension(:,:,:) :: rho
     real(dp), dimension(:,:,:), allocatable :: fe, xnen, xnecno, toth, hpart
     type(ion_pointer_t), dimension(:), allocatable :: mions
     integer :: i, j, nions, itimer=0, itimer2=0, itimer3=0, x, y, z
@@ -2300,7 +2375,9 @@ contains
     call trace%end(itimer)
 
   contains
-    ! hydrogen's electron contribution per H nucleus (H- has j=0: -f)
+    !===============================================================================
+    !> hydrogen's electron contribution per H nucleus (H- has j=0: -f)
+    !===============================================================================
     subroutine h_electrons(s)
       real(dp), dimension(:,:,:), intent(out) :: s
       integer :: jj
@@ -2314,9 +2391,14 @@ contains
   END SUBROUTINE thermal_equilibrium
 
   !=========================================================================
+  !> Stores temp and ne and the quantities derived from them alone: 5040 K/T,
+  !> 1 eV/kT, Pe, the log Saha factor, the Holtsmark field and the ionisation
+  !> energy lowering.
+  !=========================================================================
   SUBROUTINE set_aux_data(self, temp, ne)
     class(composition_type), target :: self
-    real(dp), intent(in),  dimension(:,:,:) :: temp, ne
+    real(dp), intent(in),  dimension(:,:,:) :: temp !< temperature [K]
+    real(dp), intent(in),  dimension(:,:,:) :: ne   !< electron number density [cm^-3]
     real(dp), parameter :: fo_const = 2*PI*(4./15.)**two_third*EC ! 1.25e-9
     real(dp), parameter :: dxi_const = (EC**3 * sqrt(8*PI)) / (temp_to_theta*BK*EE) ! 4.98e-4
     !---------------------------------------------------------------------------
@@ -2344,14 +2426,18 @@ contains
   END SUBROUTINE set_aux_data
 
   !=========================================================================
-  ! find a state variables consistent with given temp & rho
+  !> The electron density at which thermal_equilibrium reproduces rho: a secant
+  !> iteration in ln ne per cell, falling back to bisection in a cycle.  With
+  !> ne(1,1,1) = 0 it starts from a charge-neutrality guess.  Cells that do not
+  !> converge get NaN in self%ne, self%pg and self%E.
   !=========================================================================
   SUBROUTINE iterate_thermal_eq(self, temp, rho, ne, tol)
     class(composition_type), target :: self
+    real(dp), dimension(:,:,:), intent(in) :: temp !< temperature [K]
+    real(dp), dimension(:,:,:), intent(in) :: rho  !< mass density [g cm^-3]
+    real(dp), dimension(:,:,:), intent(out) :: ne  !< electron number density [cm^-3]
+    real(dp), intent(in) :: tol                    !< tolerance in ln rho and ln ne
     class(element_type), pointer :: element
-    real(dp), dimension(:,:,:), intent(in) :: temp, rho
-    real(dp), dimension(:,:,:), intent(out) :: ne
-    real(dp), intent(in) :: tol ! stop criterion
     logical, dimension(:,:,:), allocatable :: ne_converged
     real(dp), dimension(:,:,:), allocatable :: a, b, c, x, xold, xprev2, xprev3, fx, fa, fb, ro, pg
     real(dp), dimension(:,:,:), allocatable :: lrho
@@ -2484,11 +2570,11 @@ contains
     deallocate(x,xold,a,b,fx,fa,fb)
 
   contains
-    !---------------------------------------------------------------------------
-    ! Stable root of the Saha quadratic ne^2 = s*(a - ne) for one donor
-    ! species of number density a and Saha function s, branch-selected so
-    ! that neither 4*a/s nor the subtraction can overflow or cancel
-    !---------------------------------------------------------------------------
+    !===========================================================================
+    !> Stable root of the Saha quadratic ne^2 = s*(a - ne) for one donor
+    !> species of number density a and Saha function s, branch-selected so
+    !> that neither 4*a/s nor the subtraction can overflow or cancel
+    !===========================================================================
     function donor_ne(a, s) result(nel)
       real(dp), intent(in) :: a, s
       real(dp) :: nel
@@ -2504,9 +2590,9 @@ contains
   END SUBROUTINE iterate_thermal_eq
 
   !===============================================================================
-  ! Hummer-Mihalas charged-perturber shielding parameter; depends on (temp, ne),
-  ! so it must be refreshed whenever the state changes
-  !-------------------------------------------------------------------------------
+  !> Hummer-Mihalas charged-perturber shielding parameter; depends on (temp, ne),
+  !> so it must be refreshed whenever the state changes
+  !===============================================================================
   SUBROUTINE compute_shield(self)
     class(composition_type), target :: self
     !---------------------------------------------------------------------------
@@ -2519,15 +2605,16 @@ contains
   END SUBROUTINE compute_shield
 
   !===============================================================================
-  ! Occupation-weighted H I partition function U_w = sum_i g_i w_i exp(-E_i/kT)
-  ! (linear, not log).  Refreshes the (temp, ne)-dependent inputs itself, so it
-  ! is safe to call at any point of the ne iteration; the Boltzmann factors
-  ! lvl%f are reused when temp is unchanged (same_temp).
-  !-------------------------------------------------------------------------------
+  !> Occupation-weighted H I partition function U_w = sum_i g_i w_i exp(-E_i/kT)
+  !> (linear, not log).  Refreshes the (temp, ne)-dependent inputs itself, so it
+  !> is safe to call at any point of the ne iteration; the Boltzmann factors
+  !> lvl%f are reused when temp is unchanged (same_temp).
+  !===============================================================================
   SUBROUTINE Hoccupation_partition(self, nh, nhe, part)
     class(composition_type), target :: self
-    real(dp), intent(in), dimension(:,:,:) :: nh, nhe
-    real(dp), intent(out), dimension(:,:,:) :: part
+    real(dp), intent(in), dimension(:,:,:) :: nh    !< H I number density [cm^-3]
+    real(dp), intent(in), dimension(:,:,:) :: nhe   !< He I number density [cm^-3]
+    real(dp), intent(out), dimension(:,:,:) :: part !< partition function
     class(ion_type), pointer :: HI
     class(level_type), pointer :: lvl
     logical :: fresh
@@ -2571,13 +2658,13 @@ contains
   END SUBROUTINE Hoccupation_partition
 
   !===============================================================================
-  ! Give H I the HI%nk hydrogenic levels n=1..HI%nk that Hoccupation_partition
-  ! fills.  A legacy-format absdat gives H I its partition-function terms as
-  ! levels instead (four in input/absdat/MULTI_absdat.txt), and a line list with higher upper
-  ! levels raises HI%nk after the levels exist, so any other count is replaced.
-  !-------------------------------------------------------------------------------
+  !> Give H I the HI%nk hydrogenic levels n=1..HI%nk that Hoccupation_partition
+  !> fills.  A legacy-format absdat gives H I its partition-function terms as
+  !> levels instead (four in input/absdat/MULTI_absdat.txt), and a line list with higher upper
+  !> levels raises HI%nk after the levels exist, so any other count is replaced.
+  !===============================================================================
   SUBROUTINE size_H_levels(HI)
-    class(ion_type), pointer :: HI
+    class(ion_type), pointer :: HI !< H I
     !---------------------------------------------------------------------------
     if (allocated(HI%levels)) then
       if (size(HI%levels) == HI%nk) return
@@ -2587,11 +2674,11 @@ contains
   END SUBROUTINE size_H_levels
 
   !===============================================================================
-  ! Free the H I levels.  Their per-cell arrays (f and w of
-  ! Hoccupation_partition, n of init_H_levels) leave the memory registry with them.
-  !-------------------------------------------------------------------------------
+  !> Free the H I levels.  Their per-cell arrays (f and w of
+  !> Hoccupation_partition, n of init_H_levels) leave the memory registry with them.
+  !===============================================================================
   SUBROUTINE release_H_levels(HI)
-    class(ion_type), pointer :: HI
+    class(ion_type), pointer :: HI !< H I
     class(level_type), pointer :: lvl
     integer :: i
     !---------------------------------------------------------------------------
@@ -2604,6 +2691,11 @@ contains
     deallocate(HI%levels)
   END SUBROUTINE release_H_levels
 
+  !===============================================================================
+  !> LTE populations of the hydrogenic H I levels n = 1 to HI%nk.  With
+  !> H_occupation_probability the occupation probabilities w enter the partition
+  !> function but not the level populations, which the opacity applies them to;
+  !> otherwise the levels above n = sqrt(RYD/dxi) are dissolved.
   !===============================================================================
   SUBROUTINE init_H_levels(self)
     class(composition_type), target :: self
@@ -2668,6 +2760,11 @@ contains
   END SUBROUTINE init_H_levels
 
   !===============================================================================
+  !> Per-cell inputs of the line broadening: the thermal speed of hydrogen squared,
+  !> (T/1e4 K)^0.3 n(He I), ne T^(1/6), n(H I), log10 of the van der Waals
+  !> perturber pressure p6, and the density of the Peach pseudo-ion of the minor
+  !> metals.
+  !===============================================================================
   SUBROUTINE compute_damping_aux(self)
     class(composition_type), target :: self
     class(element_type), pointer :: element
@@ -2708,17 +2805,17 @@ contains
   END SUBROUTINE compute_damping_aux
 
   !=============================================================================
-  ! Boltzmann factor beta = exp(-h nu / kT), clamped to the smallest positive
-  ! real(4) so that ehat = eta/beta can never divide by zero.  beta is the one
-  ! quantity that converts between physical extinction and the working
-  ! (xhat, ehat) pair, so every routine below takes it as an argument rather
-  ! than recomputing the exponential.
+  !> Boltzmann factor beta = exp(-h nu / kT), clamped to the smallest positive
+  !> real(4) so that ehat = eta/beta can never divide by zero.  beta is the one
+  !> quantity that converts between physical extinction and the working
+  !> (xhat, ehat) pair, so every routine below takes it as an argument rather
+  !> than recomputing the exponential.
   !=============================================================================
   SUBROUTINE boltzmann_factor(self, sp, beta, temp)
     class(composition_type), target :: self
-    class(spectrum_type), intent(in) :: sp
-    real(4), dimension(:,:,:,:), contiguous, intent(out) :: beta
-    real(dp), dimension(:,:,:), intent(in), optional, target :: temp
+    class(spectrum_type), intent(in) :: sp                           !< the frequency grid
+    real(4), dimension(:,:,:,:), contiguous, intent(out) :: beta     !< (frequency, x, y, z)
+    real(dp), dimension(:,:,:), intent(in), optional, target :: temp !< temperature [K] (default self%temp)
     real(dp), dimension(:,:,:), pointer :: t
     integer :: x, y, z, f, nf, m(3)
     real(8) :: hk_T
@@ -2749,8 +2846,8 @@ contains
   !=============================================================================
   ! OPACITY PIPELINE
   !
-  ! Three primitives -- continuum_opacities, add_absmet_opacities and
-  ! add_linelist_opacities -- accumulate onto the same two buffers, and
+  ! Three primitives, continuum_opacities, add_absmet_opacities and
+  ! add_linelist_opacities, accumulate onto the same two buffers, and
   ! `opacity` below is a thin wrapper that runs all three for the callers that
   ! want one call.  The anisotropic rt_patch foreground drives the same
   ! primitives directly, interleaved with its bound-free/bound-bound kernels, so
@@ -2759,7 +2856,7 @@ contains
   ! Two accumulators, in two different unit systems, deliberately:
   !
   !   xhat, ehat  working units.  xhat = chi + eta, ehat = eta/beta, so that a
-  !               line adds R*b_i to xhat and R*b_j to ehat -- two positive
+  !               line adds R*b_i to xhat and R*b_j to ehat, two positive
   !               population-weighted sums, with the subtractive
   !               chi = xhat - ehat*beta formed once at the end instead of per
   !               line.  In LTE the two coincide, xhat = ehat = chi/(1-beta),
@@ -2773,28 +2870,29 @@ contains
   !                   sigma <= chi_total = chi_true + sigma
   !               structural rather than something to clamp.
   !=============================================================================
-  ! Continuum true absorption in the LTE working form, plus the continuum
-  ! scattering opacity:
-  !
-  !   xhat = ehat = chi_true_cont / (1 - beta)   [working units]
-  !   sigma       = electron + Rayleigh          [1/cm]
-  !
-  ! The working form is the *cheaper* output, not the more expensive one: the
-  ! opacity tables do not carry stimulated emission, so their raw sum already is
-  ! xhat.  Only transitions flagged istim arrive stim-corrected and have to be
-  ! lifted by 1/(1-beta); they go through a separate buffer so the dominant term
-  ! never round-trips through a small 1-beta.
+  !> Continuum true absorption in the LTE working form, plus the continuum
+  !> scattering opacity:
+  !>
+  !>   xhat = ehat = chi_true_cont / (1 - beta)   [working units]
+  !>   sigma       = electron + Rayleigh          [1/cm]
+  !>
+  !> The working form is the *cheaper* output, not the more expensive one: the
+  !> opacity tables do not carry stimulated emission, so their raw sum already is
+  !> xhat.  Only transitions flagged istim arrive stim-corrected and have to be
+  !> lifted by 1/(1-beta); they go through a separate buffer so the dominant term
+  !> never round-trips through a small 1-beta.
   !=============================================================================
   SUBROUTINE continuum_opacities(self, sp, xhat, sigma, beta, sorted, i0, i1)
     class(composition_type), target :: self
-    class(spectrum_type), intent(in) :: sp
+    class(spectrum_type), intent(in) :: sp                                        !< the wavelength grid
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: xhat                !< working xhat (frequency, x, y, z), set in i0:i1
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma     !< scattering opacity [cm^-1], set in i0:i1
+    real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta !< Boltzmann factor, whole tile or i0:i1
+    logical, optional :: sorted                                                   !< unused
+    integer, intent(in), optional :: i0                                           !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1                                           !< last cell (default size(self%temp,1))
     class(bftrans_type), pointer :: trans
     class(ion_type), pointer :: HeI
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: xhat
-    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma
-    real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta
-    logical, optional :: sorted
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(4), dimension(:,:,:,:), pointer, contiguous :: bet
     real(4), dimension(:,:,:,:), allocatable, target :: bet_mem
     real(4), dimension(:,:,:,:), allocatable :: tmp
@@ -2878,24 +2976,24 @@ contains
   END SUBROUTINE continuum_opacities
 
   !=============================================================================
-  ! Add the sampled metal-line (absmet) opacity to the same two accumulators.
-  ! osmet%add_line_opacities returns *physical* extinction, so its thermal part
-  ! is lifted into the working form by 1/(1-beta):
-  !
-  !   xhat  += eps*chi_met/(1 - beta)      sigma += (1-eps)*chi_met
-  !
-  ! split governs the eps split, and follows line_scattering just as it does for
-  ! the line list -- absmet opacities *are* line opacities.  With split=.false.
-  ! metal lines are pure absorbers (eps = 1), which is what line_scattering=F
-  ! means everywhere else in the code.
+  !> Add the sampled metal-line (absmet) opacity to the same two accumulators.
+  !> osmet%add_line_opacities returns *physical* extinction, so its thermal part
+  !> is lifted into the working form by 1/(1-beta):
+  !>
+  !>   xhat  += eps*chi_met/(1 - beta)      sigma += (1-eps)*chi_met
+  !>
+  !> split governs the eps split, and follows line_scattering just as it does for
+  !> the line list, since absmet opacities *are* line opacities.  With split=.false.
+  !> metal lines are pure absorbers (eps = 1), which is what line_scattering=F
+  !> means everywhere else in the code.
   !=============================================================================
   SUBROUTINE add_absmet_opacities(self, sp, xhat, beta, sigma, split)
     class(composition_type), target :: self
-    class(spectrum_type), intent(in) :: sp
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: xhat
-    real(4), dimension(:,:,:,:), contiguous, intent(in) :: beta
-    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma
-    logical, intent(in), optional :: split
+    class(spectrum_type), intent(in) :: sp                                    !< the wavelength grid
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: xhat            !< working xhat (frequency, x, y, z), added to
+    real(4), dimension(:,:,:,:), contiguous, intent(in) :: beta               !< Boltzmann factor
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional :: sigma !< scattering opacity [cm^-1], added to
+    logical, intent(in), optional :: split                                    !< split off the scattering part (needs sigma)
     real(4), dimension(:,:,:,:), allocatable :: chi_met, epsln
     logical :: do_split
     integer :: i, j, k, f, nf, m(3)
@@ -2944,20 +3042,21 @@ contains
   END SUBROUTINE add_absmet_opacities
 
   !=============================================================================
-  ! Add the sampled metal-line (absmet) opacity to a physical total extinction
-  ! chi and its scattering part sigma, the form the sampled background table
-  ! returns:
-  !
-  !   chi += chi_met                sigma += (1-eps)*chi_met
-  !
-  ! with eps = 1 unless line_scattering, as in add_absmet_opacities.  The sampled
-  ! path evaluates absmet here at the patch's own frequencies, from the osmet
-  ! table all patches share, instead of resampling it into every patch's table.
+  !> Add the sampled metal-line (absmet) opacity to a physical total extinction
+  !> chi and its scattering part sigma, the form the sampled background table
+  !> returns:
+  !>
+  !>   chi += chi_met                sigma += (1-eps)*chi_met
+  !>
+  !> with eps = 1 unless line_scattering, as in add_absmet_opacities.  The sampled
+  !> path evaluates absmet here at the patch's own frequencies, from the osmet
+  !> table all patches share, instead of resampling it into every patch's table.
   !=============================================================================
   SUBROUTINE add_absmet_extinction(self, sp, chi, sigma)
     class(composition_type), target :: self
-    class(spectrum_type), intent(in) :: sp
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi, sigma
+    class(spectrum_type), intent(in) :: sp                          !< the wavelength grid
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi   !< total extinction [cm^-1] (frequency, x, y, z), added to
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: sigma !< its scattering part [cm^-1], added to
     real(4), dimension(:,:,:,:), allocatable :: chi_met, epsln
     integer :: i, j, k, f, nf, m(3)
     integer, save :: itimer=0
@@ -2988,41 +3087,45 @@ contains
   END SUBROUTINE add_absmet_extinction
 
   !=============================================================================
-  ! One call over the whole pipeline, for the callers that want the finished
-  ! numbers: the standalone/Python API, chi500, and the opacity-table builders.
-  !
-  !   chi   total extinction chi_true + scat   [1/cm]   (disjoint=.false., default)
-  !         true absorption alone              [1/cm]   (disjoint=.true.)
-  !   scat  electron + Rayleigh, plus -- when line_scat -- the (1-eps) fraction
-  !         of the absmet and of the LTE line-list opacity.  Lines carrying
-  !         departure coefficients are left out: their scattering lives in the
-  !         NLTE rate equations.
-  !
-  ! The eps split is a *partition*: scat is a share of an extinction that is
-  ! already whole, never an addition to it.  So chi at disjoint=.false. is
-  ! invariant under line_scat -- flipping the split moves opacity between the
-  ! two outputs and must not change their sum.
-  !
-  ! The default keeps the published meaning of hop.opacity() and of the
-  ! opa/scat tables: chi is the total, scat the scattering part *of* it.
-  ! disjoint=.true. is for the sampled background table, where tabulating the
-  ! two components separately and summing after interpolation is what makes the
-  ! interpolated albedo scat/chi_total <= 1 by construction.
-  !
-  ! beta is optional; supply it (the rt path has it stored) to skip nf*ncell
-  ! exponentials.
+  !> One call over the whole pipeline, for the callers that want the finished
+  !> numbers: the standalone/Python API, chi500, and the opacity-table builders.
+  !>
+  !>   chi   total extinction chi_true + scat   [1/cm]   (disjoint=.false., default)
+  !>         true absorption alone              [1/cm]   (disjoint=.true.)
+  !>   scat  electron + Rayleigh, plus, when line_scat, the (1-eps) fraction
+  !>         of the absmet and of the LTE line-list opacity.  Lines carrying
+  !>         departure coefficients are left out: their scattering lives in the
+  !>         NLTE rate equations.
+  !>
+  !> The eps split is a *partition*: scat is a share of an extinction that is
+  !> already whole, never an addition to it.  So chi at disjoint=.false. is
+  !> invariant under line_scat: flipping the split moves opacity between the
+  !> two outputs and must not change their sum.
+  !>
+  !> The default keeps the published meaning of hop.opacity() and of the
+  !> opa/scat tables: chi is the total, scat the scattering part *of* it.
+  !> disjoint=.true. is for the sampled background table, where tabulating the
+  !> two components separately and summing after interpolation is what makes the
+  !> interpolated albedo scat/chi_total <= 1 by construction.
+  !>
+  !> beta is optional; supply it (the rt path has it stored) to skip nf*ncell
+  !> exponentials.
   !=============================================================================
   SUBROUTINE opacity (self, sp, chi, scat, include_absmet, include_llist, dlam, &
                       sorted, line_scat, vproj, departures, beta, disjoint)
     class(composition_type), target :: self
-    class(spectrum_type), intent(in) :: sp
-    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi
-    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional, target :: scat
-    logical, optional :: include_absmet, include_llist, sorted, line_scat, disjoint
-    real(8), intent(in), optional :: dlam
-    real(4), dimension(:,:,:), intent(in), contiguous, target, optional :: vproj
-    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures
-    real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta
+    class(spectrum_type), intent(in) :: sp                                               !< the wavelength grid
+    real(4), dimension(:,:,:,:), contiguous, intent(inout) :: chi                        !< opacity [cm^-1] (freq, x, y, z), set
+    real(4), dimension(:,:,:,:), contiguous, intent(inout), optional, target :: scat     !< scattering opacity [cm^-1], set
+    logical, optional :: include_absmet                                                  !< add the absmet opacity (default .false.)
+    logical, optional :: include_llist                                                   !< add the line list (default: if read)
+    logical, optional :: sorted                                                          !< unused
+    logical, optional :: line_scat                                                       !< split off line scattering
+    logical, optional :: disjoint                                                        !< chi without scat (default .false.)
+    real(8), intent(in), optional :: dlam                                                !< line half-width [AA] (default 100)
+    real(4), dimension(:,:,:), intent(in), contiguous, target, optional :: vproj         !< projected velocity / c (x, y, z)
+    class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures !< departure sets of the NLTE species
+    real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta        !< Boltzmann factor
     real(4), dimension(:,:,:,:), pointer, contiguous :: bet, sig
     real(4), dimension(:,:,:,:), allocatable, target :: bet_mem, sig_mem
     real(4), dimension(:,:,:,:), allocatable :: ehat, chi_scat
@@ -3158,17 +3261,17 @@ contains
   !> real run at that abundance re-forms it: measured on the CH G band of a cool
   !> giant, a 0.2 dex C offset moves the continuum by 2.1%, against a line signal
   !> of 1.8%, and what survives continuum normalisation is 11.5% of that signal.
-  !> The error is a wrong derivative -- it does not shrink with the offset -- so
+  !> The error is a wrong derivative, which does not shrink with the offset, so
   !> a ladder on a molecule-forming element in a cool star carries it at any
   !> rung. Restoring it means a per-set background, which the shared-continuum
   !> design deliberately trades away.
   !===============================================================================
   SUBROUTINE prepare_abundance_sets(self, da, present_element)
     class(composition_type), target :: self
+    real(8), intent(in) :: da(:,:)              !< abundance offsets [dex] (atomic number, set)
+    logical, intent(in) :: present_element(:,:) !< elements each set names (atomic number, set)
     type(ion_pointer_t), allocatable :: mions(:)
     real(dp), allocatable :: fe(:,:,:), fe0(:,:,:), xnecno(:,:,:), seed(:,:,:,:)
-    real(8), intent(in) :: da(:,:)
-    logical, intent(in) :: present_element(:,:)
     real(dp) :: base_abund(92), frac_change
     integer :: i, j, k, s, nions, nstore, ipop
     logical, allocatable :: molecular_set(:)
@@ -3304,12 +3407,16 @@ contains
   END SUBROUTINE prepare_abundance_sets
 
   !===============================================================================
+  !> The number density of species id in abundance set i_set: re-solved
+  !> populations, or a scale on the base ones.  A set that leaves the species
+  !> alone gives a null pointer and 1.
+  !===============================================================================
   SUBROUTINE set_population(self, id, i_set, population, scale)
     class(composition_type), target :: self
-    character(len=*), intent(in) :: id
-    integer, intent(in) :: i_set
-    real(dp), dimension(:,:,:), pointer, intent(out) :: population
-    real(dp), intent(out) :: scale
+    character(len=*), intent(in) :: id                             !< ion or molecule id
+    integer, intent(in) :: i_set                                   !< abundance set
+    real(dp), dimension(:,:,:), pointer, intent(out) :: population !< number density [cm^-3], or null
+    real(dp), intent(out) :: scale                                 !< factor on the base number density when population is null
     integer :: i
     !-----------------------------------------------------------------------------
     ! A table match, and nothing else: this runs once per species per set inside
@@ -3329,11 +3436,14 @@ contains
   END SUBROUTINE set_population
 
   !===============================================================================
+  !> Number density of an element (all stages) or a molecule in abundance set
+  !> i_set, relative to the base one; 1 for any other id.
+  !===============================================================================
   SUBROUTINE population_ratio(self, id, i_set, ratio)
     class(composition_type), target :: self
-    character(len=*), intent(in) :: id
-    integer, intent(in) :: i_set
-    real(dp), intent(out), dimension(:,:,:) :: ratio
+    character(len=*), intent(in) :: id               !< element symbol or molecule formula
+    integer, intent(in) :: i_set                     !< abundance set
+    real(dp), intent(out), dimension(:,:,:) :: ratio !< the ratio
     class(element_type), pointer :: element
     class(molec_type), pointer :: mol
     real(dp), dimension(:,:,:), pointer :: pop
@@ -3370,16 +3480,19 @@ contains
   END SUBROUTINE population_ratio
 
   !===============================================================================
+  !> Total number density of species id: summed over the stages of an element
+  !> (without H-), that of a molecule, or abund relative to hydrogen for neither.
+  !===============================================================================
   SUBROUTINE get_totn(self, id, abund, totn, el, mol, i_set)
     class(composition_type), target :: self
-    class(element_type), intent(out), optional, pointer :: el
-    class(molec_type), intent(out), optional, pointer :: mol
+    character(len=*), intent(in) :: id                        !< element symbol or molecule formula
+    real(dp), intent(in) :: abund                             !< log eps, H=12, of a species not in the composition
+    real(dp), dimension(:,:,:) :: totn                        !< number density [cm^-3]
+    class(element_type), intent(out), optional, pointer :: el !< the element, or null; set only with mol
+    class(molec_type), intent(out), optional, pointer :: mol  !< the molecule, or null; set only with el
+    integer, intent(in), optional :: i_set                    !< abundance set
     class(element_type), pointer :: element
     class(molec_type), pointer :: molec
-    character(len=*), intent(in) :: id
-    real(dp), intent(in) :: abund
-    real(dp), dimension(:,:,:) :: totn
-    integer, intent(in), optional :: i_set
     real(dp), allocatable :: ratio(:,:,:)
     integer :: j
     !---------------------------------------------------------------------------
@@ -3416,13 +3529,17 @@ contains
   END SUBROUTINE get_totn
 
   !===============================================================================
+  !> Gas pressure N k T and internal energy per gram, the thermal energy plus the
+  !> ionisation and dissociation energy; cells where e is NaN stay NaN.
+  !===============================================================================
   SUBROUTINE compute_energy_and_gas_pressure(self, eh, e, pg)
     class(composition_type), target :: self
+    real(dp), intent(out), dimension(:,:,:) :: eh  !< ionisation energy density of hydrogen [eV cm^-3], negative
+    real(dp), intent(inout), dimension(:,:,:) :: e !< internal energy [erg g^-1]
+    real(dp), intent(out), dimension(:,:,:) :: pg  !< gas pressure [dyn cm^-2]
     class(element_type), pointer :: element
     class(molec_type), pointer :: mol
     class(ion_type), pointer :: ion, HI, Hm
-    real(dp), intent(out), dimension(:,:,:) :: eh, pg
-    real(dp), intent(inout), dimension(:,:,:) :: e
     real(dp), dimension(:,:,:), allocatable :: xerg, ejon, emol
     integer :: i, j
     !---------------------------------------------------------------------------
@@ -3465,12 +3582,14 @@ contains
   END SUBROUTINE compute_energy_and_gas_pressure
 
   !===============================================================================
+  !> The molecule of formula id, or null.
+  !===============================================================================
   SUBROUTINE molecule_by_id(self, id, molecule, verbose)
     class(composition_type), target :: self
-    character(len=*), intent(in) :: id
-    class(molec_type), pointer, intent(out) :: molecule
+    character(len=*), intent(in) :: id                  !< molecule formula
+    class(molec_type), pointer, intent(out) :: molecule !< the molecule
+    logical, optional :: verbose                        !< warn when not found
     integer :: idx
-    logical, optional :: verbose
     !---------------------------------------------------------------------------
     idx = findloc(self%molecules%id, id, 1)
     if (idx == 0) then
@@ -3484,12 +3603,14 @@ contains
   END SUBROUTINE molecule_by_id
 
   !===============================================================================
+  !> The element of symbol id, in any case, or null.
+  !===============================================================================
   SUBROUTINE element_by_id(self, id, element, verbose)
     class(composition_type), target :: self
-    character(len=*), intent(in) :: id
-    class(element_type), pointer, intent(out) :: element
+    character(len=*), intent(in) :: id                   !< element symbol
+    class(element_type), pointer, intent(out) :: element !< the element
+    logical, optional :: verbose                         !< warn when not found
     integer :: idx
-    logical, optional :: verbose
     !---------------------------------------------------------------------------
     idx = findloc(self%elements%id, capitalize(id), 1)
 
@@ -3504,13 +3625,15 @@ contains
   END SUBROUTINE element_by_id
 
   !===============================================================================
+  !> The ion of id, `'<Sym> <ROMAN>'` as 'Fe II' or 'H -', or null.
+  !===============================================================================
   SUBROUTINE ion_by_id(self, id, ion, verbose, element_out)
     class(composition_type), target :: self
-    character(len=*), intent(in) :: id
-    class(ion_type), pointer, intent(out) :: ion
-    class(element_type), intent(out), pointer, optional :: element_out
+    character(len=*), intent(in) :: id                                 !< ion id
+    class(ion_type), pointer, intent(out) :: ion                       !< the ion
+    logical, optional :: verbose                                       !< warn when id cannot be read
+    class(element_type), intent(out), pointer, optional :: element_out !< its element
     class(element_type), pointer :: element
-    logical, optional :: verbose
     character(3) :: eid, iid
     character(6) :: trim_id
     integer :: idx, iostat
@@ -3545,14 +3668,19 @@ contains
   END SUBROUTINE ion_by_id
 
   !===============================================================================
+  !> The ion or molecule of id, or null.  A first word that is both an element
+  !> symbol and a molecule formula in some case is taken as written.
+  !===============================================================================
   SUBROUTINE particle_by_id(self, id, particle, verbose, np, ion, mol, is_molecule)
     class(composition_type), target :: self
+    character(len=*), intent(in) :: id                     !< ion id ('Fe II') or molecule formula
+    class(particle_type), pointer, intent(out) :: particle !< the ion or molecule
+    logical, intent(in), optional :: verbose               !< warn when not found
+    integer, intent(out), optional :: np                   !< atomic number of an ion
+    integer, intent(out), optional :: ion                  !< index of an ion in its element's ions
+    integer, intent(out), optional :: mol                  !< index of a molecule in self%molecules
+    logical, intent(out), optional :: is_molecule          !< id names a molecule
     class(element_type), pointer :: element
-    character(len=*), intent(in) :: id
-    class(particle_type), pointer, intent(out) :: particle
-    logical, intent(in), optional :: verbose
-    integer, intent(out), optional :: np, ion, mol
-    logical, intent(out), optional :: is_molecule
     logical :: is_mol
     character(3) :: id1, id2
     character(6) :: trim_id
@@ -3602,6 +3730,8 @@ contains
   END SUBROUTINE particle_by_id
 
   !=========================================================================
+  !> Mass of matter per hydrogen nucleus, grph [g], from the abundances.
+  !=========================================================================
   SUBROUTINE compute_grams_per_hydrogen(self)
     class(composition_type), target :: self
     !---------------------------------------------------------------------
@@ -3614,14 +3744,18 @@ contains
   END SUBROUTINE compute_grams_per_hydrogen
 
   !=========================================================================
+  !> Sets the abundance of an element, or for a molecule that of its first
+  !> constituent other than hydrogen, and updates grph.
+  !=========================================================================
   SUBROUTINE overwrite_abundance(self, species, abnd, awgt, relative_abundance)
     class(composition_type), target :: self
-    class(massive_type), pointer :: species
+    class(massive_type), pointer :: species   !< element or molecule
+    real(dp), intent(in) :: abnd              !< log eps, H=12, or an offset [dex]
+    real(dp), intent(in) :: awgt              !< unused
+    logical, intent(in) :: relative_abundance !< abnd is an offset
     class(element_type), pointer :: element
     class(molec_type), pointer :: mol
     class(ion_type), pointer :: ion
-    real(dp), intent(in) :: abnd, awgt
-    logical, intent(in) :: relative_abundance
     real(dp) :: abund, a
     integer :: j
     !---------------------------------------------------------------------
@@ -3658,12 +3792,17 @@ contains
   END SUBROUTINE overwrite_abundance
 
   !=========================================================================
+  !> Adds the bound-free opacity of the H I levels above n = 15, summed in the
+  !> hydrogenic approximation up to the lowered ionisation limit, where the
+  !> lowering dxi leaves them bound.
+  !=========================================================================
   SUBROUTINE add_hrest(self, chi, lam, i0, i1)
     class(composition_type), target :: self
+    real(4), dimension(:,:,:,:), intent(inout) :: chi !< opacity (wavelength, x, y, z) without stimulated emission, added to
+    real(dp), dimension(:), intent(in) :: lam         !< wavelengths [AA]
+    integer, intent(in), optional :: i0               !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1               !< last cell of the first axis (default size(self%temp,1))
     class(ion_type), pointer :: HI
-    real(4), dimension(:,:,:,:), intent(inout) :: chi
-    real(dp), dimension(:), intent(in) :: lam
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: lam3
     real(dp) :: hrest, fakt, e_kT, dxi
     real(dp), parameter :: nniv2 = 15.5**2
@@ -3699,10 +3838,13 @@ contains
   END SUBROUTINE add_hrest
 
   !=========================================================================
+  !> Adds Thomson scattering by free electrons.
+  !=========================================================================
   SUBROUTINE electron_scattering(self, chi, i0, i1)
     class(composition_type), target :: self
-    real(4), dimension(:,:,:,:), intent(inout) :: chi
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
+    real(4), dimension(:,:,:,:), intent(inout) :: chi !< scattering opacity [cm^-1] (wavelength, x, y, z), added to
+    integer, intent(in), optional :: i0               !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1               !< last cell of the first axis (default size(chi,2))
     real(dp), parameter :: thomson = 8./3.*PI*(EC**2/(EM*CC**2))**2
     real(dp) :: els
     integer :: x, y, z, lo, hi
@@ -3722,13 +3864,17 @@ contains
   END SUBROUTINE electron_scattering
 
   !=========================================================================
+  !> Adds Rayleigh scattering by H I and H2 longward of 1400 AA, and by He I when
+  !> helium_scattering.
+  !=========================================================================
   SUBROUTINE rayleigh_scattering(self, lam, chi, i0, i1)
     class(composition_type), target :: self
+    real(dp), dimension(:), intent(in) :: lam         !< wavelengths [AA]
+    real(4), dimension(:,:,:,:), intent(inout) :: chi !< scattering opacity [cm^-1] (wavelength, x, y, z), added to
+    integer, intent(in), optional :: i0               !< first cell of the first axis (default 1)
+    integer, intent(in), optional :: i1               !< last cell of the first axis (default size(chi,2))
     class(molec_type), pointer :: H2
     class(ion_type), pointer :: HI, HE
-    real(dp), dimension(:), intent(in) :: lam
-    real(4), dimension(:,:,:,:), intent(inout) :: chi
-    integer, intent(in), optional :: i0, i1        ! optional cell range on dim 1 (threading)
     real(dp), dimension(:), allocatable :: xray2, HeIscat
     real(dp) :: xr, rayh, rayh2, nHI, nH2, nHE
     logical :: do_H2
@@ -3785,13 +3931,16 @@ contains
   END SUBROUTINE rayleigh_scattering
 
   !===============================================================================
+  !> Reads the molecules and links them with their constituent ions; none when
+  !> tmolim <= 0.
+  !===============================================================================
   SUBROUTINE read_molec_file (self, molec_file)
     class(composition_type), target :: self
+    character(len=*) :: molec_file !< path of the molecule file
     class(element_type), pointer :: element
     class(molec_type), pointer :: mol
     type(molec_type) :: molecule
     type(ion_type), pointer :: ion
-    character(len=*) :: molec_file
     integer :: i, j, lunit, iostat
     !---------------------------------------------------------------------------
     self%nmolec = 0
@@ -3852,9 +4001,13 @@ contains
   END SUBROUTINE read_molec_file
 
   !===============================================================================
+  !> Constituent ions, atomic numbers and weight of a molecule from its formula:
+  !> element symbols, each with an optional count 2 to 9, and a + or - after the
+  !> constituent that carries the charge.
+  !===============================================================================
   SUBROUTINE parse_mol_id (self, mol)
     class(composition_type) :: self
-    class(molec_type) :: mol
+    class(molec_type) :: mol !< the molecule, with its id set
     class(ion_type), pointer :: ion
     integer :: i, j, lenid, count, nions
     character(len=2) :: elem
@@ -3943,10 +4096,13 @@ contains
   END SUBROUTINE parse_mol_id
 
   !===============================================================================
+  !> The wavelengths of the absdat tables, merged within 0.5 AA, that bracket those
+  !> of sp_in.
+  !===============================================================================
   SUBROUTINE get_table_sp(self, sp_in, sp_out)
     class(composition_type) :: self
-    type(spectrum_type), intent(in) :: sp_in
-    type(spectrum_type), intent(out) :: sp_out
+    type(spectrum_type), intent(in) :: sp_in   !< the wavelength grid
+    type(spectrum_type), intent(out) :: sp_out !< the table wavelengths
     real(dp), dimension(:), allocatable :: tab_lam
     logical, dimension(:), allocatable :: needed
     integer :: i, j, nnu, pos
@@ -3974,11 +4130,15 @@ contains
   END SUBROUTINE get_table_sp
 
   !===============================================================================
+  !> Appends to opacity_contributions.txt in the run directory, per depth of the
+  !> first column, the state, the absorption and scattering per gram, and the share
+  !> of every absdat component in percent at frequency nu(1).
+  !===============================================================================
   SUBROUTINE print_opacity_contributions(self, nu)
     class(composition_type), target :: self
+    real(dp), dimension(:), intent(in) :: nu !< frequencies [Hz]
     class(bftrans_type), pointer :: trans
     class(ion_type), pointer :: HeI
-    real(dp), dimension(:), intent(in) :: nu
     real(4), dimension(:,:,:,:), allocatable :: stim, tchi
     real(4), dimension(:,:,:,:,:), allocatable :: absk, scat
     real(dp), dimension(:), allocatable :: lam, hnu_e
@@ -4089,13 +4249,14 @@ contains
     call io%lock%unset('opacity_contributions')
     call trace%end(itimer)
   END SUBROUTINE print_opacity_contributions
+
   !===============================================================================
-  ! Write the used line-list lines of every ion and molecule to unit, in the
-  ! linelist_out.txt format (linelist_mod%print_ll_particle).
-  !-------------------------------------------------------------------------------
+  !> Write the used line-list lines of every ion and molecule to unit, in the
+  !> linelist_out.txt format (linelist_mod%print_ll_particle).
+  !===============================================================================
   SUBROUTINE write_linelists (self, unit)
     class(composition_type), target :: self
-    integer, intent(in) :: unit
+    integer, intent(in) :: unit !< open formatted unit
     integer :: i, j
     !-----------------------------------------------------------------------------
     if (allocated(self%elements)) then

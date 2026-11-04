@@ -9,8 +9,8 @@
 !> everything a consumer decides (namelist overrides of vmic or [Fe/H], which of
 !> rho/pe the EOS uses, messages) stays with the consumer.
 !>
-!> The thermodynamic columns are stored as natural logarithms in the same real(4)
-!> precision read_atmos_mod has always used, so the runtime copy is exact and the
+!> The thermodynamic columns are stored as natural logarithms in the real(4)
+!> precision of read_atmos_mod, so the runtime copy is exact and the
 !> binary formats that tabulate logarithms convert with one multiplication.
 !> Arrays keep the file's own orientation and units after the format's conversion
 !> to cgs (Stagger code units, km/s, momenta): read_atmos_mod%thick2thin decides
@@ -25,23 +25,26 @@ MODULE atmos_reader_mod
   implicit none
   private
 
+  !=============================================================================
+  !> An atmosphere as a file gives it, converted to cgs.
+  !=============================================================================
   type, public :: atmos_data_t
     character(len=16) :: format = ''
     integer :: nx=0, ny=0, nz=0
-    integer :: gz=0                          ! ghost zones at each end in z (Stagger)
-    real(4) :: timestamp=-1                  ! CO5BOLD snapshot time
-    ! ln T [K], ln P_e [dyn/cm2], ln rho [g/cm3]; a column a format does not carry
-    ! is flagged absent and left unset.
+    integer :: gz=0         !< ghost zones at each end in z (Stagger)
+    real(4) :: timestamp=-1 !< CO5BOLD snapshot time
+    !> ln T [K], ln P_e [dyn/cm2], ln rho [g/cm3]; a column a format does not carry
+    !> is flagged absent and left unset.
     real(4), allocatable :: ltemp(:,:,:), lpe(:,:,:), lrho(:,:,:)
     logical :: has_pe=.false., has_rho=.false.
-    real(4), allocatable :: vmic(:,:,:)      ! [km/s], the file's own values
-    real(4), allocatable :: vx(:,:,:), vy(:,:,:), vz(:,:,:)  ! [cm/s] where the format has them, else 0
-    real(4), allocatable :: xx(:), yy(:)     ! horizontal mesh [cm] (3D formats), else 0
-    real(4), allocatable :: zz(:)            ! depth coordinate as the file gives it
+    real(4), allocatable :: vmic(:,:,:)                     !< [km/s], the file's own values
+    real(4), allocatable :: vx(:,:,:), vy(:,:,:), vz(:,:,:) !< [cm/s] where the format has them, else 0
+    real(4), allocatable :: xx(:), yy(:)                    !< horizontal mesh [cm] (3D formats), else 0
+    real(4), allocatable :: zz(:)                           !< depth coordinate as the file gives it
     logical :: has_feh=.false.
-    real(8) :: feh=0                         ! model [Fe/H] when the file states one
-    real(4) :: radius=0                      ! [cm], MARCS (1 for plane-parallel)
-    real(4), allocatable :: abund(:)         ! MARCS: log eps for Z=1..92
+    real(8) :: feh=0                 !< model [Fe/H] when the file states one
+    real(4) :: radius=0              !< [cm], MARCS (1 for plane-parallel)
+    real(4), allocatable :: abund(:) !< MARCS: log eps for Z=1..92
   contains
     procedure :: allocate => allocate_atmos_data
   end type atmos_data_t
@@ -82,7 +85,7 @@ CONTAINS
   !> 'unknown'; '' when nothing matches.
   !=============================================================================
   FUNCTION atmos_format_from_name(atmos_file) RESULT(fmt)
-    character(len=*), intent(in) :: atmos_file
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
     character(len=16) :: fmt
     !---------------------------------------------------------------------------
     if (index(atmos_file, '.mod') > 0) then
@@ -113,12 +116,13 @@ CONTAINS
   !> .aux file when there is one; both default as in &atmos_params.
   !=============================================================================
   SUBROUTINE read_atmos_file(atmos_format, atmos_file, atmos, ierr, msg, snap, use_aux)
-    character(len=*), intent(in) :: atmos_format, atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
-    integer, intent(in), optional :: snap
-    logical, intent(in), optional :: use_aux
+    character(len=*), intent(in) :: atmos_format !< format name
+    character(len=*), intent(in) :: atmos_file   !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos     !< parsed atmosphere
+    integer, intent(out) :: ierr                 !< 0 on success
+    character(len=*), intent(out) :: msg         !< reason of a failure
+    integer, intent(in), optional :: snap        !< Stagger snapshot number (default 0)
+    logical, intent(in), optional :: use_aux     !< Stagger T and n_e from the .aux file (default .true.)
     integer :: snap_
     logical :: aux_
     !---------------------------------------------------------------------------
@@ -190,10 +194,10 @@ CONTAINS
   !> the T/Pe table and the density table, both keyed by the depth index.
   !=============================================================================
   SUBROUTINE read_marcs_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     integer :: lunit, nz, kk, k, iostat
     real(8) :: FeH_marcs
     real(4) :: teff, flux, vmic_marcs, g, rmass, alpha, rluminosity
@@ -268,15 +272,15 @@ CONTAINS
   !=============================================================================
   !> Text 1D: name, "nz [FeH]", then one "z T Pe rho vmic [vz]" row per depth.  A
   !> column of zeros marks Pe or rho as absent, and the logarithms are taken only
-  !> where the value is positive, as read_atmos_mod always has.  The first row
+  !> where the value is positive.  The first row
   !> decides whether the rows carry the vertical velocity vz [km/s], positive
   !> outward whatever the orientation of the depth column; it is stored in cm/s.
   !=============================================================================
   SUBROUTINE read_text_1d_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     integer :: nwords, nz, lunit, i, iostat
     character(128) :: text
     character(256) :: row
@@ -348,10 +352,10 @@ CONTAINS
   !> stored in cm/s.
   !=============================================================================
   SUBROUTINE read_multi_1d_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     integer :: nz, lunit, i, iostat
     character(128) :: text
     real(4), dimension(:), allocatable :: temp, ne
@@ -409,10 +413,10 @@ CONTAINS
   !> momenta, which are divided by the density here.
   !=============================================================================
   SUBROUTINE read_co5bold_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     real(4), dimension(:,:,:), allocatable :: over_rho
     integer :: lunit, nx, ny, nz
     !---------------------------------------------------------------------------
@@ -440,18 +444,18 @@ CONTAINS
   END SUBROUTINE read_co5bold_file
 
   !=============================================================================
-  !> The original Stagger grid: <file>.msh (mesh) and <file>_<snap>.dat (density,
+  !> The original Stagger grid: `<file>.msh` (mesh) and `<file>_<snap>.dat` (density,
   !> momenta, energy, T) in code units, big-endian, with y the vertical axis and
   !> five ghost zones at each end.  With use_aux and an .aux file, T and n_e come
   !> from the .aux file (has_pe); otherwise T from the .dat file and no P_e.
   !=============================================================================
   SUBROUTINE read_stagger_file(stagger_file, snap, use_aux, atmos, ierr, msg)
-    character(len=*), intent(in) :: stagger_file
-    integer, intent(in) :: snap
-    logical, intent(in) :: use_aux
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: stagger_file !< path of the snapshot without `_<snap>.dat`
+    integer, intent(in) :: snap                  !< snapshot number
+    logical, intent(in) :: use_aux               !< T and n_e from the .aux file when there is one
+    type(atmos_data_t), intent(out) :: atmos     !< parsed atmosphere
+    integer, intent(out) :: ierr                 !< 0 on success
+    character(len=*), intent(out) :: msg         !< reason of a failure
     character(len=4096) :: mesh_file, snap_file, data_file, aux_file
     real(4), allocatable, dimension(:) :: xdn, dxidxup, dxidxdn, dx, dxdn
     real(4), allocatable, dimension(:) :: ydn, dyidyup, dyidydn, dy, dydn
@@ -555,15 +559,15 @@ CONTAINS
   END SUBROUTINE read_stagger_file
 
   !=============================================================================
-  !> MULTI3D/M3DIS snapshot: <base>.mesh (formatted nx ny nz and the axes [cm])
-  !> and <base>.atmos (stream: n_e, T, vx, vy, vz [cm/s], rho).  atmos_file may
+  !> MULTI3D/M3DIS snapshot: `<base>.mesh` (formatted nx ny nz and the axes [cm])
+  !> and `<base>.atmos` (stream: n_e, T, vx, vy, vz [cm/s], rho).  atmos_file may
   !> name either file or the common base.
   !=============================================================================
   SUBROUTINE read_multi_snapshot_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     character(len=:), allocatable :: base
     integer :: lunit, nx, ny, nz, nb
     real(4), dimension(:,:,:), allocatable :: ne, temp, rho
@@ -604,14 +608,14 @@ CONTAINS
   END SUBROUTINE read_multi_snapshot_file
 
   !=============================================================================
-  !> Stagger grid 2 (Lagae): mesh.<id> (formatted, each axis as count then
-  !> values) beside atm3d.<id> (stream: n_e, T, vx, vy, vz [km/s], rho).
+  !> Stagger grid 2 (Lagae): `mesh.<id>` (formatted, each axis as count then
+  !> values) beside `atm3d.<id>` (stream: n_e, T, vx, vy, vz [km/s], rho).
   !=============================================================================
   SUBROUTINE read_stagger2_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     character(len=:), allocatable :: mesh_file
     integer :: lunit, nx, ny, nz, pos
     real(4), dimension(:), allocatable :: xx, yy, zz
@@ -668,10 +672,10 @@ CONTAINS
   !> SIU binary 1D model: log10 tau_500 as depth, log10 of T, P_e and rho.
   !=============================================================================
   SUBROUTINE read_siu_bin_file(atmos_file, atmos, ierr, msg)
-    character(len=*), intent(in) :: atmos_file
-    type(atmos_data_t), intent(out) :: atmos
-    integer, intent(out) :: ierr
-    character(len=*), intent(out) :: msg
+    character(len=*), intent(in) :: atmos_file !< path of the atmosphere
+    type(atmos_data_t), intent(out) :: atmos   !< parsed atmosphere
+    integer, intent(out) :: ierr               !< 0 on success
+    character(len=*), intent(out) :: msg       !< reason of a failure
     integer :: lunit, nz, nel, nmol, nbreak, recl
     real(4), parameter :: ln10 = log(10.0)
     integer, dimension(:), allocatable :: at_idx, at_nion, break
@@ -710,8 +714,9 @@ CONTAINS
   END SUBROUTINE read_siu_bin_file
 
   !=============================================================================
+  !> f is centered on (i-.5,j,k), fifth order stagger
+  !=============================================================================
   SUBROUTINE xup_set (f, fp)
-    ! f is centered on (i-.5,j,k), fifth order stagger
     real(4), dimension(:,:,:), intent(in) :: f
     real(4), dimension(:,:,:), intent(out) :: fp
     integer :: j, k
