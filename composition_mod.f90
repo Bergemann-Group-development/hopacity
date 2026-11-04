@@ -1505,13 +1505,14 @@ contains
     ! the Stark profile (append_h_line). Two column layouts are accepted, selected by
     ! hlinedata:
     !   hlinedata=.true.  (dedicated 'Hlinedata' file):
-    !       lam_air, i, j, lower_ev, upper_ev, loggf, label, grad_in
+    !       lam, i, j, lower_ev, upper_ev, loggf, label, grad_in
     !     -- principal quantum numbers i,j are read directly from the file.
     !   hlinedata=.false. (H I block embedded in a metal file):
-    !       lam_air, lower_ev, loggf, gvdw, grad, gstk, i, j
+    !       lam, lower_ev, loggf, gvdw, grad, gstk, i, j
     !     -- i,j are the principal quantum numbers when both are given, else derived
     !        from the level energies with the ionisation energy of hydrogen.
-    ! The broadening columns are inert: hydrogen_line supplies the widths.
+    ! lam is in vacuum for the Lyman lines (i = 1) and in air for the others. The
+    ! broadening columns are inert: hydrogen_line supplies the widths.
     subroutine add_h_block(particle, buf, lstart, lend, n, mask, lam_min_arg, lam_max_arg, &
                            intervals_arg, use_intervals_arg)
       class(particle_type), pointer :: particle
@@ -1522,7 +1523,7 @@ contains
       real(dp), intent(in) :: lam_min_arg, lam_max_arg
       type(interval_t), intent(in), optional :: intervals_arg(:)
       logical, intent(in), optional :: use_intervals_arg
-      real(dp) :: lam_air_h, lower_ev_h, upper_ev_h, loggf_h, gv_h, ga_h, gq_h, r_i, r_j
+      real(dp) :: lam_h, lower_ev_h, upper_ev_h, loggf_h, gv_h, ga_h, gq_h, r_i, r_j
       real(dp) :: lam0v, nu0, upper_ev
       character(len=150) :: label
       integer :: ii, ios, i_h, j_h
@@ -1535,10 +1536,10 @@ contains
       do ii=1, n
         gv_h = 0; ga_h = 0; gq_h = 0; r_i = 0; r_j = 0
         if (hlinedata) then
-          read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h, i_h, j_h, &
+          read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_h, i_h, j_h, &
                                           lower_ev_h, upper_ev_h, loggf_h, label, ga_h
         else
-          read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_air_h, lower_ev_h, loggf_h, &
+          read(buf(lstart(ii):lend(ii)), *, iostat=ios) lam_h, lower_ev_h, loggf_h, &
                                           gv_h, ga_h, gq_h, r_i, r_j
         endif
         ! ios < 0 is a record that ends before the optional trailing columns
@@ -1546,7 +1547,19 @@ contains
           call console_error ('cannot read hydrogen line: '//buf(lstart(ii):lend(ii)))
           error stop
         endif
-        lam0v = air2vac(lam_air_h)
+        if (.not. hlinedata) then
+          if (r_i > 0 .and. r_j > 0) then
+            i_h = nint(r_i)
+          else
+            i_h = nint(sqrt(RYD / (RYD-lower_ev_h)))
+          endif
+        endif
+        ! Lyman wavelengths are in vacuum, as in Turbospectrum (hbop.f, IFVAC)
+        if (i_h == 1) then
+          lam0v = lam_h
+        else
+          lam0v = air2vac(lam_h)
+        endif
         if (mask) then
           if (use_intervals_local .and. present(intervals_arg)) then
             if (.not. in_any_interval(lam0v, intervals_arg)) cycle
@@ -1557,11 +1570,9 @@ contains
         nu0 = HZ_TO_AA / lam0v
         if (.not. hlinedata) then
           if (r_i > 0 .and. r_j > 0) then
-            i_h = nint(r_i)
             j_h = nint(r_j)
           else
             upper_ev = lower_ev_h + H_E*nu0
-            i_h = nint(sqrt(RYD / (RYD-lower_ev_h)))
             j_h = nint(sqrt(RYD / (RYD-upper_ev)))
           endif
         endif

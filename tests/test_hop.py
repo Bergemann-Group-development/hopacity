@@ -358,3 +358,18 @@ def test_lyman_wing_gives_way_to_rayleigh_scattering(tmp_path):
     assert np.all(chi1[0, ~red & (lam > 1030.0)] > cont[0, ~red & (lam > 1030.0)])
     np.testing.assert_allclose(chi1[0, red], cont[0, red], rtol=1e-6)
     np.testing.assert_allclose(chi4, chi1, rtol=1e-6)
+
+
+def test_lyman_wavelengths_are_vacuum(tmp_path):
+    """Hlinedata lists the Lyman lines in vacuum (as Turbospectrum does), the other
+    series in air, so a Lyman line peaks at its listed wavelength on a vacuum grid. An
+    air-to-vacuum conversion would move Lyman beta by 0.8 AA."""
+    from hopacity import HopEOS
+
+    linelist = tmp_path / "Hlinedata"     # the name selects the Hlinedata column layout
+    linelist.write_text(LYMAN_BETA)
+    lam = np.linspace(1024.722, 1026.722, 2001)
+    with HopEOS(feh=0.0) as hop:
+        hop.load_state([5800.0], rho=[1e-9])
+        chi, _ = hop.opacity(lam, linelist=linelist, dlam=10.0)
+    assert lam[np.argmax(chi[0])] == pytest.approx(1025.722, abs=2e-3)
