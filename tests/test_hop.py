@@ -14,8 +14,7 @@ opacity on a 4 x 6 (T, rho) grid (3500-12000 K, 1e-10 to 1e-7 g/cm^3) over 5160-
 no analytic answer for these states, so the reference records agreement with a reviewed
 result, not correctness.
 
-``hop_eos`` was generated at df4c20bf, ``hop_opacity`` at 6a71ff283 of the Dispatch
-repository, both with gfortran 15.1.0, ``OPTS=hoppe`` (-O3 -mcpu=apple-m1), from (md5
+Both were generated at fef711087 of the Dispatch repository with gfortran 15.1.0, ``OPTS=hoppe`` (-O3 -mcpu=apple-m1), from (md5
 prefix): absdat/TS_absdat.txt 5b921bc86ca0, abund/abund_magg22.txt abcd0926adda,
 isotopes/isotopes_blp.txt d63a83de4230, OpenMULTI3D's SIU_masterline_Bergemann2026.txt 2821ea404b92 (of which
 ``fixtures/master_line_5000_5170.txt`` is an exact cut, see ``hop_reference.py``), and
