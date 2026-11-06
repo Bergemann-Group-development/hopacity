@@ -14,7 +14,7 @@ python -m pip install --upgrade pip
 
 ### From a release wheel
 
-The [releases](https://github.com/Bergemann-Group-development/hopacity/releases) of this repository carry ready-built wheels for Linux x86_64 and macOS on Apple silicon (macOS 14 and later). They contain the compiled library, its Fortran and OpenMP runtimes and HOP's default input data, so no compiler is needed. Download the one for your platform and install it:
+The [releases](https://github.com/Bergemann-Group-development/hopacity/releases) of this repository carry ready-built wheels for Linux x86_64 and macOS on Apple silicon (macOS 15 and later). They contain the compiled library, its Fortran and OpenMP runtimes and HOP's default input data, so no compiler is needed. Download the one for your platform and install it:
 
 ```bash
 pip install hopacity-0.1.0-py3-none-macosx_14_0_arm64.whl     # the file you downloaded

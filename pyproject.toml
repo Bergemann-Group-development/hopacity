@@ -40,4 +40,4 @@ environment = { OPT = "-O3", HW = "-march=sandybridge -mtune=generic" }
 archs = ["arm64"]
 # Homebrew's gcc provides gfortran and its runtimes, built for the runner's macOS
 before-all = "brew install gcc"
-environment = { OPT = "-O3", HW = "-mcpu=apple-m1", MACOSX_DEPLOYMENT_TARGET = "14.0" }
+environment = { OPT = "-O3", HW = "-mcpu=apple-m1", MACOSX_DEPLOYMENT_TARGET = "15.0" }
