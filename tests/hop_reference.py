@@ -3,7 +3,7 @@ one path that writes those references.
 
 Inputs are the default data files of ``hopacity.HopEOS`` and the line list
 ``fixtures/master_line_5000_5170.txt``, through the ``libhop.so`` of the imported
-hopacity. The fixture is a verbatim cut of OpenMULTI3D's ``input/linelists/master_line.txt``
+hopacity. The fixture is a verbatim cut of OpenMULTI3D's ``input/linelists/SIU_masterline_Bergemann2026.txt``
 (md5 prefix 2821ea404b92): every species block with its records between 4960 and 5040 AA
 and between 5120 and 5210 AA (air), counts adjusted. It covers every window the tests read
 with their largest ``dlam`` (30 AA), and gives the same opacity, scattering and line
