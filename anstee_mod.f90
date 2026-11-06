@@ -27,7 +27,7 @@
 !> github.com/bertrandplez/Turbospectrum_NLTE), read once on first use.
 !===============================================================================
 MODULE anstee_mod
-  USE prec_mod
+  USE const_mod
   USE console_mod
   implicit none
   private

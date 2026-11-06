@@ -2,7 +2,7 @@
 !> Chemical elements of HOP's equation of state and their ionisation equilibrium.
 !===============================================================================
 MODULE element_mod
-  USE prec_mod
+  USE const_mod
   USE op_math_mod
   USE ion_mod
   implicit none

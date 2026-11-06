@@ -12,7 +12,7 @@ MODULE interpol_mod
   ! call, while the per-point evaluation stays inline in the drivers.  Both halves
   ! are in this file, so they inline together under -Ofast / -O3 in the hot loops
   ! (rt_patch and ray_patch ghost zones).
-  USE prec_mod                       ! dp; single precision written as real(4)
+  USE const_mod                       ! dp; single precision written as real(4)
   USE op_math_mod, only: searchsorted, option
   USE console_mod
   implicit none

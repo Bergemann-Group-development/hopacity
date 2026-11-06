@@ -5,7 +5,7 @@
 MODULE composition_mod
   USE hop_env_mod, only: io, os, trace
   USE console_mod
-  USE prec_mod
+  USE const_mod
   USE op_math_mod
   USE handyfuncs_mod
   USE element_mod
@@ -753,9 +753,8 @@ contains
     Hm%dxi_fac = 2
     ! --- Different Hm ionisation in Oslo legacy code ---!
     !Hm%xion = 0.747
-    ! --------------------------------------------------!
-    RYD = HI%xion ! overwriting RYD constant
-    ! --------------------------------------------------!
+
+    HI%xion = RYD ! the hydrogenic levels of init_H_levels use RYD as well
     self%peachmet%id = 'Me I' ! pseudo-ion for combination of minor metals
 
     call self%read_molec_file(molec_file)
@@ -2410,7 +2409,7 @@ contains
     self%ne = ne
     self%temp = temp
     self%teta = temp_to_theta / temp
-    self%e_kT = EK / temp
+    self%e_kT = e_k / temp
     self%pe = temp * BK * ne
     self%lsaha = log(2 * op_saha_const * temp*sqrt(temp)) - log(ne)
     self%fo = fo_const * ne**two_third ! Holtsmark normal field strength

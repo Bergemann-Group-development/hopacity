@@ -3,7 +3,7 @@
 !===============================================================================
 MODULE ion_mod
   USE hop_env_mod, only: os
-  USE prec_mod
+  USE const_mod
   USE level_mod
   USE line_types_mod, only: linelist_type
   implicit none

@@ -2,14 +2,14 @@
 !> The structure-of-arrays line-list type, linelist_type: parallel arrays over the
 !> lines of one particle or isotope.
 !>
-!> It depends only on prec_mod, so that particle_type (ion_mod) can embed a linelist_type
+!> It depends only on const_mod, so that particle_type (ion_mod) can embed a linelist_type
 !> component without depending on linelist_mod, which holds the build, opacity and rate
 !> kernels.  linelist_mod in turn uses ion_mod and works on particle_type directly.
 !>
 !> All procedures acting on a linelist_type are in linelist_mod.
 !=======================================================================================
 MODULE line_types_mod
-  USE prec_mod
+  USE const_mod
   implicit none
   private
 

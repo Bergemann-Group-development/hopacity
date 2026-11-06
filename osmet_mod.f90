@@ -4,7 +4,6 @@
 MODULE osmet_mod
   USE hop_env_mod, only: os, trace
   USE console_mod
-  USE prec_mod
   USE const_mod
   USE op_math_mod
   USE interpol_mod, only: pchip_mono

@@ -6,7 +6,6 @@
 MODULE hprofl_mod
   USE bbtrans_mod, only: bbtrans_type, disable_rad, disable_stk, disable_vdw
   USE qlg, only: qlg_bot_coef_t, qlg_bot_coef, qlg_bot_eval   ! the one Voigt kernel; see linelist_mod's kernel note
-  USE prec_mod, only: RYD, dp
   USE const_mod
   USE hvcs_mod, only: vcs_supported, vcs_resonance, vcs_radiative, ensure_vcs_loaded, &
                       vcs_profile_t, vcs_prepare, vcs_eval, vcs_tail

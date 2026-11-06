@@ -3,7 +3,7 @@
 !> polynomial evaluation and the merging of wavelength intervals.
 !===============================================================================
 MODULE op_math_mod
-  USE prec_mod
+  USE const_mod
   implicit none
 
   !===============================================================================

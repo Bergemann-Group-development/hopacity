@@ -3,7 +3,6 @@
 !> line broadening constants shared by model-atom and line-list lines.
 !===============================================================================
 MODULE bbtrans_mod
-  USE prec_mod
   USE const_mod
   implicit none
 

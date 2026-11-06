@@ -4,7 +4,6 @@
 MODULE optab_mod
   USE hop_env_mod, only: os, trace
   USE console_mod
-  USE prec_mod
   USE const_mod
   USE spectrum_mod, only: spectrum_type
   USE op_math_mod, only: searchsorted, pca_grid_2d

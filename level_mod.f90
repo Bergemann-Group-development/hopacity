@@ -3,7 +3,7 @@
 !> and the occupation probabilities and bound-free opacity of H I levels.
 !===============================================================================
 MODULE level_mod
-  USE prec_mod
+  USE const_mod
   implicit none
 
   !===============================================================================
@@ -47,12 +47,9 @@ contains
     real(dp), intent(in) :: e_kT !< 1 eV / kT
     real(dp), intent(in) :: ne   !< electron number density [cm^-3]
     real(dp) :: a, a2, r, r2, r3, axl2, p, p2, p3, p4
-    real(dp) :: bk_err
     !---------------------------------------------------------------------------
-    bk_err = BK / uop_BK ! keep around for consistency
-
     a = 31.321*ion**2 * log10e * e_kT
-    p = ion * 4.2E3 / (ne*bk_err)**0.166666667
+    p = ion * 4.2E3 / ne**0.166666667
 
     if (p <= self%xl) then
       axl2 = a / self%xl**2

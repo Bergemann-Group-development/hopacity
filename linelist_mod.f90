@@ -25,7 +25,6 @@
 !> and the departure-coefficient lookup; per particle it calls add_particle_opacity.
 !=======================================================================================
 MODULE linelist_mod
-  USE prec_mod
   USE const_mod
   USE hop_env_mod, only: trace
   USE handyfuncs_mod, only: air2vac, vac2air

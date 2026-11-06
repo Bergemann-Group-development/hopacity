@@ -4,7 +4,11 @@
 !>
 ! *******************************************************************
 MODULE const_mod
+  USE, intrinsic :: iso_fortran_env, only: REAL64
   implicit none
+
+  ! kinds
+  integer, parameter :: dp = REAL64 !< double-precision real kind
 
   ! math
   real(8), parameter :: pi = 3.14159265359d0       !< Pi
@@ -23,9 +27,12 @@ MODULE const_mod
   real(8), parameter :: two_third=2.0d0/3.0d0
   real(8), parameter :: one_eigth=1.0d0/8.0d0
   real(8), parameter :: one_24th =1.0d0/2.4d1
-  real(8), parameter :: ln2 = 0.69314718056d0  !< ln 2
-  real(8), parameter :: ln10 = log(10.d0)      !< ln 10
-  real(8), parameter :: iln2 = 1.44269504089d0 !< 1/ln(2)
+  real(8), parameter :: ln2 = 0.69314718056d0     !< ln 2
+  real(8), parameter :: ln10 = log(10.d0)         !< ln 10
+  real(8), parameter :: iln2 = 1.44269504089d0    !< 1/ln(2)
+  real(8), parameter :: log10e = log10(exp(1.d0)) !< log10(e)
+  real(8), parameter :: inf8 = huge(1.d0)         !< largest real(8)
+  real(4), parameter :: inf4 = huge(1.e0)         !< largest real(4)
 
   ! physics
   real(8), parameter :: ee = 1.602189d-12                              !< 1 eV in erg [erg eV^-1]
@@ -65,9 +72,12 @@ MODULE const_mod
   real(8), parameter :: over_4pi= 1.0 / pi4          !< 1/(4 pi)
   real(8), parameter :: h_4pi   = hh * over_4pi      !< h/(4 pi) [erg s]
   ! 24.09.21 PE: Include parameter for line opacity
-  real(8), parameter :: pie2_mc = pi * ec**2 / em / cc !< pi e^2/(m_e c) [cm^2 s^-1]
-  real(8), parameter :: RydV = 13.605d0                !< Rydberg constant [eV]
-  real(8), parameter :: Rydk = 13.605d0*e_k            !< Rydberg constant [K]
+  real(8), parameter :: pie2_mc = pi * ec**2 / em / cc            !< pi e^2/(m_e c) [cm^2 s^-1]
+  real(8), parameter :: RydV = 13.605d0                           !< Rydberg constant [eV]
+  real(8), parameter :: Rydk = 13.605d0*e_k                       !< Rydberg constant [K]
+  real(8), parameter :: RYD = 13.598434d0                         !< hydrogen ionisation energy, Rydberg energy of H [eV]
+  real(8), parameter :: temp_to_theta = log10e*e_k                !< theta = temp_to_theta/T, log10(e) e/k [K]
+  real(8), parameter :: op_saha_const = (2*pi*em*bk/hh**2)**1.5d0 !< (2 pi m_e k/h^2)^(3/2) [cm^-3 K^-3/2]
 
 contains
 

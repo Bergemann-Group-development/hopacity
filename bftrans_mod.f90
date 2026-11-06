@@ -4,7 +4,7 @@
 !> temperature.
 !===============================================================================
 MODULE bftrans_mod
-  USE prec_mod
+  USE const_mod
   USE op_math_mod
   USE level_mod, only: level_type, wcalc, wcalc2
   USE ion_mod

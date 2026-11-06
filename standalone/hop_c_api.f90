@@ -35,8 +35,7 @@ MODULE hop_c_api
   USE qlg,          only: qlg_init
   USE osmet_mod,    only: osmet, eosmet, compute_epsilon_stage
   USE handyfuncs_mod, only: lowercase, vac2air
-  USE prec_mod,     only: dp
-  USE const_mod,    only: h_k
+  USE const_mod,    only: dp, h_k
   USE atmos_reader_mod, only: atmos_data_t, read_atmos_file, atmos_format_from_name
 #ifdef _OPENMP
   USE omp_lib,      only: omp_set_num_threads, omp_get_max_threads, &
