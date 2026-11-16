@@ -2,6 +2,39 @@
 
 HOP is the equation-of-state and opacity code of OpenMULTI3D. `hopacity` is its Python package. For any set of temperatures and densities it solves the equation of state (electron density, pressures, internal energy, number densities of atoms, ions and molecules) and computes the extinction coefficient at the wavelengths you choose: the continuum with Thomson and Rayleigh scattering, sampled metal-line opacity, and line opacity from a line list in Turbospectrum format. It needs neither DISPATCH nor OpenMULTI3D, and returns numpy arrays, so you can write opacity tables in whatever format your own code reads.
 
+## Range of stellar parameters
+
+HOP's default input data (partition functions, the ions and molecules covered by the line lists, continuum cross-sections) are chosen for the atmospheres of late-B and AFGKM-type stars: main-sequence stars, subgiants, red giants, AGB stars and red supergiants. OpenMULTI3D, and with it HOP, has been tested with 1D (MARCS, MAFAGS-OS, M1DIS) and 3D (M3DIS) model atmospheres in this range:
+
+| Parameter | Range |
+|---|---|
+| Effective temperature | 2500 K ≲ T<sub>eff</sub> ≲ 8000 K |
+| Surface gravity | −1.0 ≲ log g ≲ 5.5 |
+| Metallicity | −10 ≲ [Fe/H] ≲ +1 |
+
+At [Fe/H] = −10 the atmospheres are effectively metal-free apart from Li, so the spectra show only H I and Li I features.
+
+## Citing hopacity
+
+If you use hopacity in published work, please cite the OpenMULTI3D code release paper, [Hoppe et al. (2026), arXiv:2611.09370](https://arxiv.org/abs/2611.09370), accepted for publication in A&A:
+
+```bibtex
+@ARTICLE{HoppeBergemann2026,
+       author = {{Hoppe}, Richard and {Bergemann}, Maria and {Eitner}, Philipp and {Nordlund}, {\r{A}}ke and {Leenaarts}, Jorrit and {Popovas}, Andrius and {Storm}, Nicholas},
+        title = "{The OpenMULTI3D stellar analysis package. A 3D non-LTE spectrum synthesis code for AFGKM-type stars within the DISPATCH framework}",
+      journal = {arXiv e-prints},
+         year = 2026,
+        month = nov,
+          eid = {arXiv:2611.09370},
+        pages = {arXiv:2611.09370},
+          doi = {10.48550/arXiv.2611.09370},
+archivePrefix = {arXiv},
+       eprint = {2611.09370},
+ primaryClass = {astro-ph.SR},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2026arXiv261109370H}
+}
+```
+
 ## Install
 
 hopacity needs Python 3.11 or later. Install it into a virtual environment of its own, so it does not interfere with other Python projects:
