@@ -278,6 +278,6 @@ contains
     end do
   END SUBROUTINE wcalc2
 
-  include 'exp_neg.inc'
+#include "exp_neg.inc"
 
 END MODULE level_mod
