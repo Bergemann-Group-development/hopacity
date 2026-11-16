@@ -55,7 +55,7 @@ pip install hopacity-0.1.0-py3-none-macosx_14_0_arm64.whl     # the file you dow
 
 ### From the source code
 
-On other platforms, or to build from a clone, you need a Fortran compiler and `make`: gfortran (`brew install gcc` on macOS, `sudo apt install gfortran make` on Debian or Ubuntu), or the Intel compilers with `COMPILER=ifort` or `COMPILER=ifx` set in the environment. In the activated environment:
+On other platforms, or to build from a clone, you need a Fortran compiler and `make`: gfortran 11 or later (`brew install gcc` on macOS, `sudo apt install gfortran make` on Debian or Ubuntu), or Intel's `ifort` with `COMPILER=ifort` set in the environment (its last release, 2021.13 from oneAPI 2024.2; `COMPILER=ifx` also works). In the activated environment:
 
 ```bash
 git clone https://github.com/Bergemann-Group-development/hopacity.git
