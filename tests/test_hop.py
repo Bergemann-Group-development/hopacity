@@ -61,7 +61,7 @@ def test_chunking_is_exact_without_a_linelist():
     temp, rho = hop_grid()
     lam = hop_wavelengths()
     # the solar table of the OpenMULTI3D checkout HOP sits in
-    absmet = TESTS_DIR.parents[1] / 'input' / 'absmet_files' / 'absmet'
+    absmet = TESTS_DIR.parents[1] / 'input' / 'absmet_files' / 'm+0.00a+0.00c+0.00n+0.00o+0.00r+0.00s+0.00v+1.00.bin'
     if not absmet.is_file():
         pytest.skip('solar absmet table not present')
     with HopEOS(feh=0.0, absmet_file=absmet) as hop:
