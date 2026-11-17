@@ -1329,6 +1329,15 @@ contains
       endif
 
       if (.not. ok) then
+        ! a molecule in the composition whose label names none of its isotopologues
+        ! would lose the whole block, and with it the molecule's bands
+        if (isotope .and. associated(particle) .and. is_mol) then
+          call console_error ('init_linelist: '//trim(linelist_file)//': '//trim(ion_id(1:6))// &
+            ' label '//trim(blk%siso)//' names none of its isotopologues. Labels give each '// &
+            'constituent''s mass in three digits by ascending Z (12C16O is 012016, 12CH is '// &
+            '000012); python -m hopacity.linelists fetch DEST downloads current master lists')
+          error stop 'init_linelist: unknown isotopologue label'
+        end if
         if (isotope) then
           write(msg,'(2a,i0,a)') trim(ion_id(1:6)), ' isotope ', iso, ' not found'
           call console_warn (ch_hop, msg)
