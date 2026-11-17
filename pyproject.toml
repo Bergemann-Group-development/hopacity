@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hopacity"
-version = "0.1.0"
+version = "0.2.0"
 description = "HOP equation of state and opacities (continuum, sampled metal lines, line lists) from Python, without DISPATCH"
 readme = "README.md"
 requires-python = ">=3.11"
