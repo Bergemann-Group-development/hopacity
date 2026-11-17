@@ -451,7 +451,7 @@ contains
     end function scaled_factor
   END SUBROUTINE interp_xkap
 
-  include 'exp_neg.inc'
+#include "exp_neg.inc"
 
   !===============================================================================
   !> The factor fakt by which the component's table is multiplied to an opacity, with

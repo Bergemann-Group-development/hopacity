@@ -61,8 +61,11 @@
   !===============================================================================
   !> y = exp4(y) elementwise.  Kept out of line, so that exp4 is inlined into
   !> this loop also where the caller is too large for gfortran's early inliner.
+  !> The noinline attribute exists from gfortran 13; older versions build without it.
   pure subroutine exp4_array (y)
+#if __GNUC__ >= 13
 !GCC$ ATTRIBUTES noinline :: exp4_array
+#endif
     real(4), intent(inout) :: y(:)
     integer :: i
     !-----------------------------------------------------------------------------
