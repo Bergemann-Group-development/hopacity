@@ -676,8 +676,10 @@ contains
           xstark = 0.5*stark_eval(c%st, q)
 
           !  If Lyman alpha we match the static ion part to the Allard et al
-          !  value at -4000 cm^-1 detuning on red wing.
-          if (q < 0 .and. xstark > 0) then
+          !  value at -4000 cm^-1 detuning on red wing.  At the lowest electron
+          !  densities (cool, metal-poor gas) the Stark profile there underflows
+          !  to zero and there is nothing to match.
+          if (q < 0 .and. xstark > 0 .and. c%xholt4000 > 0) then
             sat4000 = LyA0 * c%ne * 10.**lymanh2plus(111)
             xfac = 1. + (sat4000/c%xholt4000 - 1.)*q/q4000
             xstark = xstark * (1. + xfac)
