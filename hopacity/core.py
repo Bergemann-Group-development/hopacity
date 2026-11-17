@@ -5,7 +5,7 @@ same composition_type solves that dispatch.x uses:
 
 - :class:`HopEOS` -- allocate/initialize a composition instance, solve the EOS on
   arbitrary (T, rho) or (T, ne) points (``load_state``, after which the state is
-  readable as the array properties temp/rho/ne/pe/pg/energy/chi500), and compute
+  readable as the array properties temp/rho/ne/pe/pg/energy/chi500/log_p6), and compute
   opacities on a wavelength grid (``opacity``, the one entry point for continuum,
   sampled metal-line and line-list opacity).
 - :func:`read_atmosphere` parses a model-atmosphere file (MARCS, text, MULTI 1D,
@@ -406,7 +406,7 @@ class HopEOS:
         keep for species_density() ('Fe I', 'CH', ...).
 
         Returns self; results are exposed as the array properties temp, ne, rho,
-        pe, pg, energy, eh, chi500.
+        pe, pg, energy, eh, chi500, log_p6.
         """
         if species is not None:
             self.keep_species(species)
@@ -462,11 +462,24 @@ class HopEOS:
                   doc='hydrogen ionization/dissociation energy term')
     chi500 = property(lambda self: self._get_field('chi500'),
                       doc='extinction at the reference wavelength (air 5000 A) [1/cm]')
+    log_p6 = property(lambda self: self._get_field('log_p6'),
+                      doc='log10 of the van der Waals perturber pressure '
+                          'P(H I) + 0.41 P(He I) + 0.85 P(H2) [dyn/cm2]')
 
     @property
     def grph(self):
         """Grams of matter per hydrogen nucleus."""
         return self._lib.hop_get_grph()
+
+    @property
+    def abundances(self):
+        """Abundances log eps (H = 12) of the elements Z = 1..92 as HOP uses them, after
+        the [Fe/H] scaling, the enhancements and the overrides; -99 for an element HOP
+        does not carry.  Index Z - 1."""
+        out = np.empty(92, np.float64)
+        _check(self._lib, self._lib.hop_get_abundances(92, _buf(out, np.float64, 'double *')),
+               'hop_get_abundances')
+        return out
 
     # -- opacity ------------------------------------------------------------
 

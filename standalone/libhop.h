@@ -2,6 +2,7 @@ int hop_atmos_free ();
 int hop_atmos_get (const char *name, int n, float *out);
 int hop_atmos_read (const char *atmos_format, const char *atmos_file, int snap, int use_aux, int *dims);
 int hop_free ();
+int hop_get_abundances (int n, double *abund);
 int hop_get_field (const char *name, int n, double *out);
 double hop_get_grph ();
 int hop_get_linelist (int n, double *lam_air, double *evi, double *loggf, double *strength, int *ispec);

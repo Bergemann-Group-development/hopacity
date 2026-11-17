@@ -52,7 +52,7 @@ MODULE hop_c_api
   public :: hop_init_linelist, hop_init_linelist_windows, hop_keep_species, &
             hop_linelist_count, hop_get_linelist, hop_linelist_species, hop_write_linelist
   public :: hop_load_state, hop_set_vmic, hop_get_n, hop_get_field, hop_get_species, &
-            hop_get_grph, hop_opacity, hop_opacity_omp, hop_scattering
+            hop_get_grph, hop_get_abundances, hop_opacity, hop_opacity_omp, hop_scattering
   public :: hop_atmos_read, hop_atmos_get, hop_atmos_free, hop_optical_depth, hop_pchip_integral
 
   !> master is the initialized-but-never-loaded composition; each hop_load_state
@@ -788,6 +788,8 @@ CONTAINS
       out(1:n) = reshape(comp%eh, [n])
     case ('chi500')
       out(1:n) = reshape(real(comp%chi500, dp), [n])
+    case ('log_p6')
+      out(1:n) = reshape(comp%p6, [n])
     case default
       call fail("hop_get_field: unknown field '" // trim(nm) // "'", 1, status)
     end select
@@ -851,6 +853,30 @@ CONTAINS
     grph = 0
     if (allocated(master)) grph = master%grph
   END FUNCTION hop_get_grph
+
+  !=============================================================================
+  !> Abundances log eps (H = 12) of the elements Z = 1..n after hop_init, with the
+  !> [Fe/H] scaling, the enhancements and the overrides applied; -99 for an element
+  !> HOP does not carry.
+  !=============================================================================
+  FUNCTION hop_get_abundances(n, abund) RESULT(status) BIND(c, name='hop_get_abundances')
+    integer(c_int), value :: n
+    real(c_double), intent(out) :: abund(*)
+    integer(c_int) :: status
+    integer :: i, z
+    !---------------------------------------------------------------------------
+    status = 0
+    if (.not. allocated(master)) then
+      call fail('hop_get_abundances: call hop_init first', 1, status)
+      return
+    end if
+    abund(1:n) = -99
+    do i = 1, size(master%elements)
+      z = master%elements(i)%np
+      if (z >= 1 .and. z <= n .and. master%elements(i)%abund > 0) &
+        abund(z) = 12 + log10(master%elements(i)%abund)
+    end do
+  END FUNCTION hop_get_abundances
 
   !=============================================================================
   !> Microturbulence [km/s] of the loaded state.  vmic enters only the line
