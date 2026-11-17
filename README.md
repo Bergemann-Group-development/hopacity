@@ -222,7 +222,7 @@ This computes 825 wavelengths for all 3640 cells in a few seconds. The figure sh
 
 A line-list file is in [Turbospectrum](https://github.com/bertrandplez/Turbospectrum_NLTE) format, which [`tests/smoke.py`](tests/smoke.py) shows for two Mg I lines.
 
-`include_absmet=True` adds the opacity of a sampled metal-line table, which the option `absmet_file` names (`HopEOS(absmet_file='path/to/absmet')`). The MARCS tables are on the same [Keeper share](https://keeper.mpdl.mpg.de/d/3191475aebe340638422/?p=%2Fabsmet_files), and [Sampled line-opacity tables](#sampled-line-opacity-tables) computes them for any composition.
+`include_absmet=True` adds the opacity of a sampled metal-line table, which the option `absmet_file` names (`HopEOS(absmet_file='path/to/absmet')`). Tables are on the same [Keeper share](https://keeper.mpdl.mpg.de/d/3191475aebe340638422/?p=%2Fabsmet_files).
 
 ### Parallel runs
 
@@ -232,26 +232,6 @@ A line-list file is in [Turbospectrum](https://github.com/bertrandplez/Turbospec
 - Each process reads the lines within `dlam` of its own part of the wavelength range. Far wings of strong lines more than `dlam` away from a part are missing there, so choose `dlam` larger than the wings you need. With `nprocs=1` all lines within `dlam` of the whole range contribute everywhere.
 
 If HOP stops with an error inside one of these processes (for example on a missing data file), `opacity` raises `HopError`, and HOP's message is printed above the Python traceback. With `nprocs=1` the same error ends the Python process itself, after printing the message.
-
-## Sampled line-opacity tables
-
-`hopacity.absmet` computes, reads and writes sampled line-opacity tables (absmet tables) in the layout of the MARCS tables (Gustafsson et al. 2008, Sect. 5.3), which HOP, MULTI and Turbospectrum read. A table holds log₁₀ of the line opacity per gram on a grid of wavelength, temperature and the van der Waals perturber pressure P6 (`log_p6` above). `build_absmet` solves the EOS at each node (T, P6) for the density that gives that P6, and takes the opacity of the line list minus the continuum there. Its grids default to those of the MARCS tables: 17 temperatures from 500 to 30000 K, log₁₀ P6 from −8 to 9 and 153910 wavelengths at R = 20000 from 910 Å to 200 µm. The composition keywords are those of `HopEOS`:
-
-```python
-from hopacity.absmet import build_absmet, write_absmet
-
-
-def main():
-    table = build_absmet(['linelists/vald_atoms.txt', 'linelists/Hlinedata'], feh=-2.0, alpha_enhancement=0.4,
-                         vmic=1.0, nprocs=8)
-    write_absmet('absmet_m-2.00.bin', table)
-
-
-if __name__ == '__main__':
-    main()
-```
-
-With 870000 lines on the MARCS grids this takes about half a minute on 8 cores. Include the hydrogen lines (`Hlinedata`): HOP's continuum has only their bound-free part. `read_absmet` reads a table in either byte order, and `table.log_kappa` has the shape (wavelength, temperature, P6), with −30 where there is no opacity.
 
 ## Line strengths
 
