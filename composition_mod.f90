@@ -1202,10 +1202,10 @@ contains
   !> block layout and the dedicated 'Hlinedata' column layout (selected by the
   !> hlinedata flag); its block is read whole and masked there.
   !===============================================================================
-  SUBROUTINE init_linelist (self, linelist_file, dlam, lam, intervals)
+  SUBROUTINE init_linelist (self, linelist_file, line_margin, lam, intervals)
     class(composition_type), target :: self
     character(len=*) :: linelist_file                                 !< path of the line list
-    real(dp), intent(in) :: dlam                                      !< margin [AA] around lam within which lines are read
+    real(dp), intent(in) :: line_margin                                      !< margin [AA] around lam within which lines are read
     real(dp), intent(in), dimension(:), optional :: lam               !< vacuum wavelengths [AA] to read lines for
     type(interval_t), intent(in), dimension(:), optional :: intervals !< vacuum wavelength windows, used instead of lam
     class(particle_type), pointer :: particle
@@ -1251,8 +1251,8 @@ contains
     lam_mask = present(lam)
     use_intervals = present(intervals)
     if (lam_mask .and. .not. use_intervals) then
-      lam_min = lam(1) - dlam
-      lam_max = lam(size(lam)) + dlam
+      lam_min = lam(1) - line_margin
+      lam_max = lam(size(lam)) + line_margin
     else
       lam_min = 0
       lam_max = 0
@@ -1656,18 +1656,18 @@ contains
   !> physical 1/cm on the way out, so callers never see the raw form.
   !>
   !> all_chi holds the continuum on entry, which sets each line's cutoff.  The stage
-  !> groups of one_m_eps are 1 for neutrals and molecules and 2 for ions.  With dlam
+  !> groups of one_m_eps are 1 for neutrals and molecules and 2 for ions.  With line_margin
   !> = 0 a hydrogen line is placed only on a grid point at its own wavelength.  The
   !> cells i0:i1 of the first axis default to all of them.
   !===============================================================================
-  SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, dlam, vproj, departures, &
+  SUBROUTINE add_linelist_opacities(self, sp, all_chi, all_eta, line_margin, vproj, departures, &
                                     only_departures, one_m_eps, chi_scat, beta, i0, i1, llam_in, &
                                     i_set, window_lam, chi_lines, eta_lines, lte_of)
     class(composition_type), target :: self
     class(spectrum_type) :: sp                                                           !< the wavelength grid
     real(4), intent(inout), dimension(:,:,:,:) :: all_chi                                !< working xhat (freq, x, y, z), added to
     real(4), intent(inout), dimension(:,:,:,:) :: all_eta                                !< working ehat (freq, x, y, z), added to
-    real(8), intent(in) :: dlam                                                          !< line selection half-width [AA]
+    real(8), intent(in) :: line_margin                                                          !< line selection half-width [AA]
     real(4), intent(in), dimension(:,:,:), contiguous, target, optional :: vproj         !< projected velocity / c (default 0)
     class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures !< departure sets of the NLTE species
     logical, intent(in), optional :: only_departures                                     !< only species with departure sets
@@ -1747,7 +1747,7 @@ contains
       llam => llam_mem
     endif
 
-    ! This patch's line neighbourhood in log(lambda), handed to the kernels. dlam is the
+    ! This patch's line neighbourhood in log(lambda), handed to the kernels. line_margin is the
     ! selection half-width in Angstrom, so dividing by the bluest wavelength gives the
     ! widest log-space equivalent. Only a segmented (multi-window) grid needs this: there
     ! the shared line list is disjoint, and the forward march would otherwise clamp another
@@ -1755,9 +1755,9 @@ contains
     ! neighbourhood of the whole window, so splitting a window into several patches visits
     ! the same lines as one patch would. A contiguous grid keeps the whole-list visit.
     if (present(window_lam)) then
-      llam_lines = log(window_lam) + [-1d0, 1d0] * dlam / window_lam(1)
+      llam_lines = log(window_lam) + [-1d0, 1d0] * line_margin / window_lam(1)
     else if (window_file /= '') then
-      llam_lines = [llam(1) - dlam / exp(llam(1)), llam(nf) + dlam / exp(llam(1))]
+      llam_lines = [llam(1) - line_margin / exp(llam(1)), llam(nf) + line_margin / exp(llam(1))]
     else
       llam_lines = [-huge(1d0), huge(1d0)]
     end if
@@ -1792,11 +1792,11 @@ contains
       do l=1, hll%nline
         if (.not. hll%active(l)) cycle
         lam0 = exp(hll%llam0(l))
-        if (dlam == 0) then
+        if (line_margin == 0) then
           f0 = findloc(llam, hll%llam0(l), 1)
         else
           f0 = find_closest(sp%lam, lam0)
-          if (abs(sp%lam(f0) - lam0) > dlam) f0 = 0
+          if (abs(sp%lam(f0) - lam0) > line_margin) f0 = 0
         endif
         if (f0 == 0) cycle
         nu0 = HZ_TO_AA / lam0
@@ -3119,7 +3119,7 @@ contains
   !> beta is optional; supply it (the rt path has it stored) to skip nf*ncell
   !> exponentials.
   !=============================================================================
-  SUBROUTINE opacity (self, sp, chi, scat, include_absmet, include_llist, dlam, &
+  SUBROUTINE opacity (self, sp, chi, scat, include_absmet, include_llist, line_margin, &
                       sorted, line_scat, vproj, departures, beta, disjoint)
     class(composition_type), target :: self
     class(spectrum_type), intent(in) :: sp                                               !< the wavelength grid
@@ -3130,7 +3130,7 @@ contains
     logical, optional :: sorted                                                          !< unused
     logical, optional :: line_scat                                                       !< split off line scattering
     logical, optional :: disjoint                                                        !< chi without scat (default .false.)
-    real(8), intent(in), optional :: dlam                                                !< line half-width [AA] (default 100)
+    real(8), intent(in), optional :: line_margin                                                !< line half-width [AA] (default 100)
     real(4), dimension(:,:,:), intent(in), contiguous, target, optional :: vproj         !< projected velocity / c (x, y, z)
     class(departure_pointer_t), intent(in), dimension(:), target, optional :: departures !< departure sets of the NLTE species
     real(4), dimension(:,:,:,:), contiguous, intent(in), target, optional :: beta        !< Boltzmann factor
@@ -3147,7 +3147,7 @@ contains
     m = shape(self%temp)
     nf = size(chi, 1)
     dl = 100d0
-    if (present(dlam)) dl = dlam
+    if (present(line_margin)) dl = line_margin
     do_absmet = .false.
     if (present(include_absmet)) do_absmet = include_absmet .and. osmet%initialised
     do_llist = self%ll_initialised

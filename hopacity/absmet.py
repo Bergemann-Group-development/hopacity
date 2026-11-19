@@ -172,7 +172,7 @@ def p6_density(hop, temp, log_p6, log_rho=None):
 
 
 def build_absmet(linelist, *, vmic=1.0, temp=MARCS_TEMP, log_p6=MARCS_LOG_P6, lam=None,
-                 dlam=100.0, nprocs=1, text=None, **composition):
+                 line_margin=100.0, nprocs=1, text=None, **composition):
     """Compute an absmet table with HOP.
 
     linelist : line list(s) as :meth:`HopEOS.opacity` takes them.  Include the hydrogen
@@ -180,7 +180,7 @@ def build_absmet(linelist, *, vmic=1.0, temp=MARCS_TEMP, log_p6=MARCS_LOG_P6, la
         iterations; HOP's continuum carries none of them, only the bound-free opacity.
     vmic : microturbulence [km/s] of the line profiles.
     temp, log_p6, lam : the grids, by default those of the MARCS tables.
-    dlam, nprocs : passed to :meth:`HopEOS.opacity`.
+    line_margin, nprocs : passed to :meth:`HopEOS.opacity`.
     text : the two header records; by default the line list and the composition.
     composition : keyword arguments of :class:`HopEOS` (``feh``, ``alpha_enhancement``,
         ``abund_file``, ``abundances``, ...).
@@ -196,7 +196,7 @@ def build_absmet(linelist, *, vmic=1.0, temp=MARCS_TEMP, log_p6=MARCS_LOG_P6, la
         p6_density(hop, temp, log_p6)
         rho = hop.rho[..., None]
         cnt, _ = hop.opacity(lam, nprocs=nprocs)
-        tot, _ = hop.opacity(lam, linelist=linelist, dlam=dlam, vmic=vmic, nprocs=nprocs)
+        tot, _ = hop.opacity(lam, linelist=linelist, line_margin=line_margin, vmic=vmic, nprocs=nprocs)
         abund = hop.abundances
     kappa = np.maximum(tot.astype(float) - cnt, 0.0) / rho
     if not np.all(np.isfinite(kappa)):

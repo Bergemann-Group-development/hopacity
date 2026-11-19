@@ -2,7 +2,7 @@
 
 Needs the library of the imported hopacity: an installed wheel, or a source tree after
 ``make -C standalone``. Chunking is only
-neutral within one process: a spawned worker reads only the lines within dlam of its own
+neutral within one process: a spawned worker reads only the lines within line_margin of its own
 chunk, so a far Lorentz wing reaching in from outside that window is missing (as in a
 Dispatch run). Hence nprocs=1 here.
 
@@ -31,7 +31,7 @@ summary), then ``--write``, and give the reason in the commit message.
 import numpy as np
 import pytest
 
-from hop_reference import (HOP_DLAM, HOP_LINELIST, HOP_VMIC, TESTS_DIR, assert_matches_golden,
+from hop_reference import (HOP_LINE_MARGIN, HOP_LINELIST, HOP_VMIC, TESTS_DIR, assert_matches_golden,
                            hop_eos_reference, hop_grid, hop_library, hop_opacity_reference,
                            hop_wavelengths, load_golden)
 
@@ -86,7 +86,7 @@ def test_chunking_perturbs_line_opacity():
 
     A narrower chunk puts f0 on a different wavelength, so ``ref`` shifts and every line
     is truncated somewhere slightly different.  The effect sits at the ``tolerance``
-    level, and widening dlam does not remove it (it is not a line-selection effect).
+    level, and widening line_margin does not remove it (it is not a line-selection effect).
 
     Consequence for the threading work: the wavelength axis must NOT be split across
     threads, or results would depend on OMP_NUM_THREADS.  Thread the cell loop instead -
@@ -98,7 +98,7 @@ def test_chunking_perturbs_line_opacity():
     lam = hop_wavelengths()
     with HopEOS(feh=0.0) as hop:
         hop.load_state(temp, rho=rho)
-        kw = dict(linelist=str(HOP_LINELIST), dlam=HOP_DLAM, vmic=HOP_VMIC,
+        kw = dict(linelist=str(HOP_LINELIST), line_margin=HOP_LINE_MARGIN, vmic=HOP_VMIC,
                   line_scattering=True)
         chi1, _ = hop.opacity(lam, nchunks=1, **kw)
         chi3, _ = hop.opacity(lam, nchunks=3, **kw)
@@ -126,13 +126,13 @@ def test_linelist_rebuild_is_transparent():
 
     with HopEOS(feh=0.0) as hop:                      # wide window from the start
         hop.load_state(temp, rho=rho, species=["Fe I"])
-        direct, _ = hop.opacity(lam, dlam=30.0, **kw)
+        direct, _ = hop.opacity(lam, line_margin=30.0, **kw)
         n_fe_direct = hop.species_density("Fe I")
 
     with HopEOS(feh=0.0) as hop:                      # narrow first, then widen
         hop.load_state(temp, rho=rho, species=["Fe I"])
-        hop.opacity(lam, dlam=5.0, **kw)
-        rebuilt, _ = hop.opacity(lam, dlam=30.0, **kw)
+        hop.opacity(lam, line_margin=5.0, **kw)
+        rebuilt, _ = hop.opacity(lam, line_margin=30.0, **kw)
         n_fe_rebuilt = hop.species_density("Fe I")
 
     np.testing.assert_array_equal(rebuilt, direct)
@@ -229,7 +229,7 @@ def test_line_strengths_are_the_ranking_hop_itself_uses():
     lam = air2vac(np.arange(5000.0, 5002.0, 0.005))
     with HopEOS(feh=0.0) as hop:
         hop.load_state([5876.0], rho=[2.609e-07])   # tau_Ross ~ 2/3 of a solar MARCS model
-        lines = hop.line_strengths(lam, str(HOP_LINELIST), dlam=2.0, vmic=HOP_VMIC)
+        lines = hop.line_strengths(lam, str(HOP_LINELIST), line_margin=2.0, vmic=HOP_VMIC)
 
     assert len(lines) > 0
     assert set(lines.columns) == {"ion", "lam0", "evi", "loggf", "strength"}
@@ -272,7 +272,7 @@ def test_linelist_numeric_reader_keeps_supported_and_fallback_syntax(tmp_path):
     lam = air2vac(np.arange(4999.9, 5001.1, 0.005))
     with HopEOS(feh=0.0) as hop:
         hop.load_state([5876.0], rho=[2.609e-07])
-        lines = hop.line_strengths(lam, lines_path, dlam=0.2, vmic=HOP_VMIC)
+        lines = hop.line_strengths(lam, lines_path, line_margin=0.2, vmic=HOP_VMIC)
 
     inside = lines[(lines.lam0 >= 4999.9) & (lines.lam0 <= 5001.1)]
     np.testing.assert_allclose(inside.lam0, [5000.0, 5000.5, 5001.0], atol=2e-8)
@@ -308,7 +308,7 @@ def test_long_data_paths(tmp_path):
     for paths in ({}, {"anstee_file": str(deep / "Anstee.txt"), "vcs_data_dir": str(deep / "vcs")}):
         with HopEOS(feh=0.0, **paths) as hop:
             hop.load_state([5000.0], rho=[1e-8])
-            chi.append(hop.opacity(lam, linelist=linelist, dlam=10.0, vmic=1.0, nprocs=2)[0])
+            chi.append(hop.opacity(lam, linelist=linelist, line_margin=10.0, vmic=1.0, nprocs=2)[0])
     np.testing.assert_array_equal(chi[1], chi[0])
 
 
@@ -321,7 +321,7 @@ def test_a_dying_worker_raises(tmp_path):
     with HopEOS(feh=0.0, anstee_file=str(tmp_path / "missing.dat")) as hop:
         hop.load_state([5000.0], rho=[1e-8])
         with pytest.raises(HopError, match="worker process died"):
-            hop.opacity(np.linspace(5170.0, 5186.0, 40), linelist=linelist, dlam=10.0,
+            hop.opacity(np.linspace(5170.0, 5186.0, 40), linelist=linelist, line_margin=10.0,
                         nprocs=2)
 
 
@@ -351,8 +351,8 @@ def test_lyman_wing_gives_way_to_rayleigh_scattering(tmp_path):
     with HopEOS(feh=0.0) as hop:
         hop.load_state([3800.0], rho=[1e-11])
         cont, _ = hop.opacity(lam)
-        chi1, _ = hop.opacity(lam, linelist=linelist, dlam=100.0)
-        chi4, _ = hop.opacity(lam, linelist=linelist, dlam=100.0, nchunks=4)
+        chi1, _ = hop.opacity(lam, linelist=linelist, line_margin=100.0)
+        chi4, _ = hop.opacity(lam, linelist=linelist, line_margin=100.0, nchunks=4)
     red = lam > 1400.0
     assert np.all(chi1[0, ~red & (lam > 1030.0)] > cont[0, ~red & (lam > 1030.0)])
     np.testing.assert_allclose(chi1[0, red], cont[0, red], rtol=1e-6)
@@ -370,5 +370,5 @@ def test_lyman_wavelengths_are_vacuum(tmp_path):
     lam = np.linspace(1024.722, 1026.722, 2001)
     with HopEOS(feh=0.0) as hop:
         hop.load_state([5800.0], rho=[1e-9])
-        chi, _ = hop.opacity(lam, linelist=linelist, dlam=10.0)
+        chi, _ = hop.opacity(lam, linelist=linelist, line_margin=10.0)
     assert lam[np.argmax(chi[0])] == pytest.approx(1025.722, abs=2e-3)

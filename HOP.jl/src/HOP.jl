@@ -46,7 +46,7 @@ mutable struct HopEOS
     shape::Dims                                   # shape of the loaded state
     state::Union{Nothing,NamedTuple}              # (temp, rho, ne, vmic) replay args
     species::Vector{String}
-    linelist::Union{Nothing,Tuple}                # (files, dlam, lam_min, lam_max)
+    linelist::Union{Nothing,Tuple}                # (files, line_margin, lam_min, lam_max)
 end
 
 """
@@ -159,21 +159,21 @@ _hop_get_field(name, n, out) = ccall(_fp(:hop_get_field), Cint, (Cstring, Cint, 
 _hop_get_grph() = ccall(_fp(:hop_get_grph), Cdouble, ())
 _hop_keep_species(id) = ccall(_fp(:hop_keep_species), Cint, (Cstring,), id)
 _hop_set_vmic(n, vmic) = ccall(_fp(:hop_set_vmic), Cint, (Cint, Cfloat), n, vmic)
-_hop_init_linelist(file, dlam, nlam, lam) = ccall(
-    _fp(:hop_init_linelist), Cint, (Cstring, Cdouble, Cint, Ptr{Float64}), file, dlam, nlam, lam
+_hop_init_linelist(file, line_margin, nlam, lam) = ccall(
+    _fp(:hop_init_linelist), Cint, (Cstring, Cdouble, Cint, Ptr{Float64}), file, line_margin, nlam, lam
 )
 
-_hop_opacity(nlam, lam, chi, scat, absmet, llist, dlam, lscat) = ccall(
+_hop_opacity(nlam, lam, chi, scat, absmet, llist, line_margin, lscat) = ccall(
     _fp(:hop_opacity), Cint,
     (Cint, Ptr{Float64}, Ptr{Float32}, Ptr{Float32}, Cint, Cint, Cdouble, Cint),
-    nlam, lam, chi, scat, absmet, llist, dlam, lscat
+    nlam, lam, chi, scat, absmet, llist, line_margin, lscat
 )
 
 # --- threaded opacity: OpenMP over cells, inside Fortran ---
-_hop_opacity_omp(nlam, lam, chi, scat, absmet, llist, dlam, lscat, nthreads) = ccall(
+_hop_opacity_omp(nlam, lam, chi, scat, absmet, llist, line_margin, lscat, nthreads) = ccall(
     _fp(:hop_opacity_omp), Cint,
     (Cint, Ptr{Float64}, Ptr{Float32}, Ptr{Float32}, Cint, Cint, Cdouble, Cint, Cint),
-    nlam, lam, chi, scat, absmet, llist, dlam, lscat, nthreads)
+    nlam, lam, chi, scat, absmet, llist, line_margin, lscat, nthreads)
 
 _verbosity(v::Bool) = v ? 1 : -1
 _verbosity(v) = Int(v)
@@ -313,31 +313,31 @@ _linelist_files(files) = begin
     Tuple(fs)
 end
 
-_load_linelist!(eos::HopEOS, files::Tuple, dlam, lam) = begin
+_load_linelist!(eos::HopEOS, files::Tuple, line_margin, lam) = begin
     lam_min, lam_max = Float64(minimum(lam)), Float64(maximum(lam))
     la = Float64[lam_min, lam_max]
     for f in files
-        status = _hop_init_linelist(f, Float64(dlam), Cint(2), la)
+        status = _hop_init_linelist(f, Float64(line_margin), Cint(2), la)
         status == 2 && error("hop_init_linelist needs an initialised instance")
         status == 0 || error("hop_init_linelist($f) failed with status $status")
     end
-    eos.linelist = (files, Float64(dlam), lam_min, lam_max)
+    eos.linelist = (files, Float64(line_margin), lam_min, lam_max)
     eos
 end
 
 """
-    load_linelist!(eos, linelist; dlam=100.0, lam)
+    load_linelist!(eos, linelist; line_margin=100.0, lam)
 
 Load a line list (file, folder, or iterable) into `eos`.
-Only lines within `[minimum(lam)-dlam, maximum(lam)+dlam]` are loaded.
+Only lines within `[minimum(lam)-line_margin, maximum(lam)+line_margin]` are loaded.
 Re-solves the state if one is already loaded. Calling with a different list
 or wavelength range requires a fresh `HopEOS`.
 """
-function load_linelist!(eos::HopEOS, linelist; dlam=100.0, lam)
+function load_linelist!(eos::HopEOS, linelist; line_margin=100.0, lam)
     eos.owns || error("this HopEOS does not own an initialised instance")
     files = _linelist_files(linelist)
     lamv  = _check_lam(lam)
-    spec  = (files, Float64(dlam), Float64(minimum(lamv)), Float64(maximum(lamv)))
+    spec  = (files, Float64(line_margin), Float64(minimum(lamv)), Float64(maximum(lamv)))
     if eos.linelist !== nothing
         eos.linelist == spec && return eos
         error("a line list is already loaded; HOP appends and cannot clear it — " *
@@ -345,7 +345,7 @@ function load_linelist!(eos::HopEOS, linelist; dlam=100.0, lam)
     end
     lock(_PROC_LOCK)
     try
-        _load_linelist!(eos, files, dlam, lamv)
+        _load_linelist!(eos, files, line_margin, lamv)
     finally
         unlock(_PROC_LOCK)
     end
@@ -359,12 +359,12 @@ end
 
 _set_vmic!(eos::HopEOS, vmic) = (_hop_set_vmic(n(eos), Cfloat(vmic)); nothing)
 
-_opacity_call(lam::Vector{Float64}, include_absmet, include_llist, dlam, line_scattering) = begin
+_opacity_call(lam::Vector{Float64}, include_absmet, include_llist, line_margin, line_scattering) = begin
     nn = Int(_hop_get_n())
     chi  = Matrix{Float32}(undef, length(lam), nn)
     scat = Matrix{Float32}(undef, length(lam), nn)
     status = _hop_opacity(length(lam), lam, chi, scat, Cint(include_absmet),
-                          Cint(include_llist), Float64(dlam), Cint(line_scattering))
+                          Cint(include_llist), Float64(line_margin), Cint(line_scattering))
     status == 0 || error("hop_opacity failed with status $status")
     chi, scat
 end
@@ -389,7 +389,7 @@ _cellchunk(n, w, nc) = begin
 end
 
 """
-    opacity(eos, lam; linelist=nothing, dlam=100.0, include_absmet=false,
+    opacity(eos, lam; linelist=nothing, line_margin=100.0, include_absmet=false,
             line_scattering=false, vmic=nothing)
 
 Compute extinction `chi` and scattering `scat` [1/cm] for the given vacuum wavelengths.
@@ -397,21 +397,21 @@ Returns two `Float32` arrays shaped `<state shape> × nλ`. Computes serially.
 Passing `linelist` automatically loads it and re-solves the state.
 """
 function opacity(eos::HopEOS, lam;
-                 linelist=nothing, dlam=100.0, include_absmet=false,
+                 linelist=nothing, line_margin=100.0, include_absmet=false,
                  line_scattering=false, vmic=nothing)
     lamv = _check_lam(lam)
     eos.state === nothing && error("no state loaded; call load_state! first")
     eos.owns || error("this HopEOS does not own an initialised instance")
 
     # mirror hop.py: passing a list here loads it and re-solves so comp sees the lines
-    linelist !== nothing && load_linelist!(eos, linelist; dlam=dlam, lam=lamv)
+    linelist !== nothing && load_linelist!(eos, linelist; line_margin=line_margin, lam=lamv)
 
     lock(_PROC_LOCK)
     try
         vmic !== nothing && _set_vmic!(eos, vmic)
         include_llist = eos.linelist !== nothing
 
-        chi, scat = _opacity_call(lamv, include_absmet, include_llist, dlam, line_scattering)
+        chi, scat = _opacity_call(lamv, include_absmet, include_llist, line_margin, line_scattering)
         shape = _stateshape(eos.state)
         return _reshape_out(chi, shape), _reshape_out(scat, shape)
     finally
@@ -420,14 +420,14 @@ function opacity(eos::HopEOS, lam;
 end
 
 """
-    opacity_threaded(eos, lam; dlam=100.0, line_scattering=false, vmic=nothing,
+    opacity_threaded(eos, lam; line_margin=100.0, line_scattering=false, vmic=nothing,
                      nthreads=nothing, include_llist=nothing)
 
 Compute extinction and scattering using Julia threads over the loaded state's T-ρ cells.
 Returns newly allocated arrays shaped `<state shape> × nλ`. Does not support `include_absmet`.
 """
 function opacity_threaded(eos::HopEOS, lam;
-                          dlam=100.0, line_scattering=false, vmic=nothing,
+                          line_margin=100.0, line_scattering=false, vmic=nothing,
                           nthreads=nothing, include_llist=nothing)
     lamv  = _check_lam(lam)
     eos.state === nothing && error("no state loaded; call load_state! first")
@@ -435,14 +435,14 @@ function opacity_threaded(eos::HopEOS, lam;
     ncell = Int(_hop_get_n())
     chi  = Matrix{Float32}(undef, nlam, ncell)
     scat = Matrix{Float32}(undef, nlam, ncell)
-    opacity_threaded!(chi, scat, eos, lamv; dlam=dlam, line_scattering=line_scattering,
+    opacity_threaded!(chi, scat, eos, lamv; line_margin=line_margin, line_scattering=line_scattering,
                       vmic=vmic, nthreads=nthreads, include_llist=include_llist)
     shape = _stateshape(eos.state)
     return _reshape_out(chi, shape), _reshape_out(scat, shape)
 end
 
 """
-    opacity_threaded!(chi, scat, eos, lam; dlam=100.0, line_scattering=false,
+    opacity_threaded!(chi, scat, eos, lam; line_margin=100.0, line_scattering=false,
                       vmic=nothing, nthreads=nothing, include_llist=nothing)
 
 In-place variant of `opacity_threaded`. Fills the provided `(nλ, ncell)` `Float32` 
@@ -450,7 +450,7 @@ matrices in column-major order with zero allocation.
 """
 function opacity_threaded!(chi::AbstractMatrix{Float32}, scat::AbstractMatrix{Float32},
                            eos::HopEOS, lam;
-                           dlam=100.0, line_scattering=false, vmic=nothing,
+                           line_margin=100.0, line_scattering=false, vmic=nothing,
                            nthreads=nothing, include_llist=nothing)
     lamv = _check_lam(lam)
     eos.state === nothing && error("no state loaded; call load_state! first")
@@ -467,7 +467,7 @@ function opacity_threaded!(chi::AbstractMatrix{Float32}, scat::AbstractMatrix{Fl
         vmic !== nothing && _set_vmic!(eos, vmic)
         nthreads = clamp(something(nthreads, 1), 1, ncell)
 
-        st = _hop_opacity_omp(nlam, lamv, chi, scat, Cint(0), Cint(ilist), Float64(dlam), Cint(lscat), Cint(nthreads))
+        st = _hop_opacity_omp(nlam, lamv, chi, scat, Cint(0), Cint(ilist), Float64(line_margin), Cint(lscat), Cint(nthreads))
         st == 0 || error("hop_opacity_omp failed with status $st: $(_last_error())")
     finally
         unlock(_PROC_LOCK)
@@ -651,7 +651,7 @@ function _compute_grid_chunk(t, rho, lam; HOP_kwargs, opacity_kwargs,
     E2d  = Array{Float64}(undef, ntemp, nrho); pg2d      = similar(E2d)
     ne2d = similar(E2d);                       chi500_2d = similar(E2d)
 
-    tkw = (; dlam=opacity_kwargs.dlam, line_scattering=opacity_kwargs.line_scattering,
+    tkw = (; line_margin=opacity_kwargs.line_margin, line_scattering=opacity_kwargs.line_scattering,
              vmic=opacity_kwargs.vmic, nthreads=opacity_kwargs.nthreads)
 
     maxtile = t_block * rho_block
@@ -661,7 +661,7 @@ function _compute_grid_chunk(t, rho, lam; HOP_kwargs, opacity_kwargs,
     eos = HopEOS(; HOP_kwargs...)
     try
         #t_load = @elapsed begin
-        isnothing(opacity_kwargs.linelist) || load_linelist!(eos, opacity_kwargs.linelist; dlam=opacity_kwargs.dlam, lam=lam)
+        isnothing(opacity_kwargs.linelist) || load_linelist!(eos, opacity_kwargs.linelist; line_margin=opacity_kwargs.line_margin, lam=lam)
         #end
         #println("Worker $(Distributed.myid()): load_linelist! took $(round(t_load, digits=2)) seconds.")
         
@@ -686,7 +686,7 @@ function _compute_grid_tiled(
     HOP_kwargs=Dict{Symbol,Any}(:feh => 0.0),
     mmap=true,
     linelist=nothing,
-    dlam=100.0, include_absmet=false, line_scattering=true, vmic=nothing,
+    line_margin=100.0, include_absmet=false, line_scattering=true, vmic=nothing,
     nthreads=nothing, nprocs=nothing,
     t_block=length(T), rho_block=length(rho),
     energy_offset=ENERGY_OFFSET,
@@ -694,7 +694,7 @@ function _compute_grid_tiled(
     verbose=false,
 )
     opacity_kwargs = (; 
-        linelist=linelist, dlam=dlam, include_absmet=include_absmet,line_scattering=line_scattering, vmic=vmic, nthreads=nthreads
+        linelist=linelist, line_margin=line_margin, include_absmet=include_absmet,line_scattering=line_scattering, vmic=vmic, nthreads=nthreads
     )
 
     np = isnothing(nprocs) ? 1 : max(1, nprocs)

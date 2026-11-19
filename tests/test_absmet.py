@@ -42,7 +42,7 @@ def test_lyman_alpha_without_electrons(tmp_path):
     lam = np.linspace(1215.6, 1215.8, 201)
     with HopEOS(feh=-3.0) as hop:
         hop.load_state([500.0, 500.0], rho=[1e-10, 1e-9])    # n_e = 1e-10 to 1e-9 cm^-3
-        chi, _ = hop.opacity(lam, linelist=linelist, dlam=100.0)
+        chi, _ = hop.opacity(lam, linelist=linelist, line_margin=100.0)
     assert np.all(np.isfinite(chi))
 
 
@@ -52,7 +52,7 @@ def test_table_round_trip(tmp_path):
 
     lam = np.linspace(5160.0, 5170.0, 101)
     table = build_absmet(TESTS_DIR / "fixtures" / "master_line_5000_5170.txt",
-                         temp=[4000.0, 6300.0], log_p6=[2.0, 4.0], lam=lam, dlam=5.0,
+                         temp=[4000.0, 6300.0], log_p6=[2.0, 4.0], lam=lam, line_margin=5.0,
                          feh=-1.0)
     assert table.log_kappa.shape == (101, 2, 2)
     assert table.abundances[25] == pytest.approx(7.51 - 1.0, abs=1e-6)   # Fe, Magg et al. 2022

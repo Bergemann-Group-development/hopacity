@@ -48,8 +48,8 @@ def _opacities(lists, write=None):
     with HopEOS() as hop:
         hop.load_state([4500.0, 6000.0], rho=[1e-7, 3e-7])
         if write is not None:
-            hop.write_linelist(write, lam, lists[0], dlam=2.0, vmic=HOP_VMIC)
-        return [hop.opacity(lam, linelist=ll, dlam=2.0, vmic=HOP_VMIC)[0] for ll in lists]
+            hop.write_linelist(write, lam, lists[0], line_margin=2.0, vmic=HOP_VMIC)
+        return [hop.opacity(lam, linelist=ll, line_margin=2.0, vmic=HOP_VMIC)[0] for ll in lists]
 
 
 def test_tumult_rewrite_of_a_turbospectrum_list_gives_its_opacity(tmp_path):
@@ -107,7 +107,7 @@ import numpy as np
 from hopacity import HopEOS, air2vac
 with HopEOS() as hop:
     hop.load_state([5000.0], rho=[1e-7])
-    lines = hop.line_strengths(air2vac(np.arange(5161.45, 5161.6, 0.01)), {str(path)!r}, dlam=0.05)
+    lines = hop.line_strengths(air2vac(np.arange(5161.45, 5161.6, 0.01)), {str(path)!r}, line_margin=0.05)
 print(sorted(round(x, 3) for x in lines.lam0[lines.loggf == -2]))
 """
     result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,

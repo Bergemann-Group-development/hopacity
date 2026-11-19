@@ -6,7 +6,7 @@ Inputs are the default data files of ``hopacity.HopEOS`` and the line list
 hopacity. The fixture is a verbatim cut of OpenMULTI3D's ``input/linelists/SIU_masterline_Bergemann2026.txt``
 (md5 prefix 2821ea404b92): every species block with its records between 4960 and 5040 AA
 and between 5120 and 5210 AA (air), counts adjusted. It covers every window the tests read
-with their largest ``dlam`` (30 AA), and gives the same opacity, scattering and line
+with their largest ``line_margin`` (30 AA), and gives the same opacity, scattering and line
 strengths there as the full list, bit for bit.
 
 A reference records agreement with a reviewed earlier result, not correctness.
@@ -30,7 +30,7 @@ HOP_LINELIST = TESTS_DIR / "fixtures" / "master_line_5000_5170.txt"
 
 # a coarse T x rho node grid (4 x 6 = 24 cells) and a narrow 10 AA window: small enough to
 # solve in seconds, wide enough to cross the Mg b lines and a good deal of Fe I
-HOP_DLAM = 10.0        # line-wing search radius [AA]
+HOP_LINE_MARGIN = 10.0        # line-wing search radius [AA]
 HOP_VMIC = 1.0         # [km/s]; must be pinned, it moves the line opacity a lot
 
 
@@ -90,7 +90,7 @@ def hop_opacity_reference():
     with HopEOS(feh=0.0) as hop:
         hop.load_state(temp, rho=rho)
         chi_c, scat_c = hop.opacity(lam)
-        chi_l, scat_l = hop.opacity(lam, linelist=str(HOP_LINELIST), dlam=HOP_DLAM,
+        chi_l, scat_l = hop.opacity(lam, linelist=str(HOP_LINELIST), line_margin=HOP_LINE_MARGIN,
                                     vmic=HOP_VMIC, line_scattering=True)
         return {
             "lam": lam,

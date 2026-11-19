@@ -529,21 +529,21 @@ contains
   !> Input:
   !>   windows(:,1) = blue edges [Angstrom]
   !>   windows(:,2) = red edges [Angstrom]
-  !>   dlam = expansion margin (in Angstrom)
+  !>   margin = expansion margin (in Angstrom)
   !> Output:
   !>   merged_intervals = sorted, non-overlapping intervals
   !>   n_merged = number of merged intervals
   !>
   !> The routine:
-  !> 1. Expands each window by dlam on both sides
+  !> 1. Expands each window by margin on both sides
   !> 2. Clamps the lower edge to a physically valid wavelength
   !> 3. Sorts the expanded intervals
   !> 4. Merges overlapping or touching intervals
   !=====================================================================================
-  SUBROUTINE merge_intervals(windows, n_windows, dlam, merged_intervals, n_merged)
+  SUBROUTINE merge_intervals(windows, n_windows, margin, merged_intervals, n_merged)
     real(dp), intent(in) :: windows(:,:)                              !< blue (:,1) and red (:,2) edges of the windows [AA]
     integer, intent(in) :: n_windows                                  !< number of windows
-    real(dp), intent(in) :: dlam                                      !< expansion on each side [AA]
+    real(dp), intent(in) :: margin                                      !< expansion on each side [AA]
     type(interval_t), intent(out), allocatable :: merged_intervals(:) !< merged intervals, ascending
     integer, intent(out) :: n_merged                                  !< number of merged intervals
     type(interval_t), allocatable :: expanded(:), trimmed(:)
@@ -557,11 +557,11 @@ contains
       return
     end if
 
-    ! Step 1: Expand windows by dlam
+    ! Step 1: Expand windows by margin
     allocate(expanded(n_windows))
     do i = 1, n_windows
-      expanded(i)%blue_vac = max(windows(i,1) - dlam, min_lam)
-      expanded(i)%red_vac  = windows(i,2) + dlam
+      expanded(i)%blue_vac = max(windows(i,1) - margin, min_lam)
+      expanded(i)%red_vac  = windows(i,2) + margin
     end do
 
     ! Step 2: Sort by blue edge

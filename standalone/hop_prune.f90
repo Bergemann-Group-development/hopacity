@@ -7,7 +7,7 @@
 !> &spectrum_params) plus a small &prune_params group, so one set of settings
 !> describes both.  It parses the atmosphere with atmos_reader_mod, samples its
 !> depths, solves the EOS on those states through the standalone HOP C API, loads
-!> the configured line lists over the requested windows expanded by dlam, computes
+!> the configured line lists over the requested windows expanded by line_margin, computes
 !> the opacity over the run's own wavelength grid so HOP marks the transitions that
 !> pass its negligibility test, and writes those with hop_write_linelist. Each record
 !> ends with the transition's strength and reach: the half-width [Angstrom] out to which
@@ -90,10 +90,10 @@ PROGRAM hop_prune
     ldne, ldrho, ldtemp, absmet_file, absmet_folder
 
   ! --- &linelist_params ---------------------------------------------------------------
-  real(8) :: dlam=100.
+  real(8) :: line_margin=100.
   character(len=4096) :: linelist_folder=''
   character(len=4096) :: linelist_file(128)
-  namelist /linelist_params/ dlam, exclude_elements, linelist_file, linelist_folder, &
+  namelist /linelist_params/ line_margin, exclude_elements, linelist_file, linelist_folder, &
     tolerance, only_elements, line_scattering, ll_profile, voigt_kernel, anstee_file, &
     match_nlte_levels
 
@@ -233,7 +233,7 @@ PROGRAM hop_prune
                     cstr(molec_file), FeH, tmolim, alpha_enhancement, r_process_enhancement), &
                     'hop_init')
   do i = 1, nfiles
-    call check_status(hop_init_linelist_windows(cstr(linelist_file(i)), dlam, &
+    call check_status(hop_init_linelist_windows(cstr(linelist_file(i)), line_margin, &
                       int(nwin, c_int), blue, red), 'hop_init_linelist_windows')
   end do
   call check_status(hop_load_state(int(nsample, c_int), temp, ne, rho, vmic_eff, &
@@ -242,7 +242,7 @@ PROGRAM hop_prune
   call check_status(hop_set_vmic(int(nsample, c_int), vmic_eff), 'hop_set_vmic')
   allocate(chi(sp%nnu * nsample), scat(sp%nnu * nsample))
   call check_status(hop_opacity(int(sp%nnu, c_int), sp%lam, chi, scat, 0_c_int, 1_c_int, &
-                    dlam, -1_c_int), 'hop_opacity')
+                    line_margin, -1_c_int), 'hop_opacity')
   nkept = hop_linelist_count()
 
   ! --- output: temporary file, then an atomic rename ----------------------------------

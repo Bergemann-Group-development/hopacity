@@ -24,7 +24,7 @@ def main():
         with HopEOS(feh=0.0) as hop:
             hop.load_state([5000.0, 6500.0], rho=[1e-8, 3e-7])
             cont, _ = hop.opacity(lam)
-            chi, scat = hop.opacity(lam, linelist=linelist, dlam=10.0, vmic=1.0)
+            chi, scat = hop.opacity(lam, linelist=linelist, line_margin=10.0, vmic=1.0)
             ne = hop.ne
     assert np.all(ne > 0), ne
     assert np.all(np.isfinite(chi)) and np.all(chi >= cont), 'line opacity below continuum'

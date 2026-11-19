@@ -233,7 +233,7 @@ class HopEOS:
                             alpha_enhancement=float(alpha_enhancement),
                             r_process_enhancement=float(r_process_enhancement),
                             verbose=_verbosity(verbose))
-        self._linelist = None   # (files, dlam, lam_min, lam_max, windows) read in
+        self._linelist = None   # (files, line_margin, lam_min, lam_max, windows) read in
         self._state = None      # the load_state arguments, replayed after a rebuild
         self._shape = ()        # shape of the state, given to the field properties
         self._species = []      # keep_species ids, replayed after a rebuild
@@ -322,17 +322,17 @@ class HopEOS:
             out.append(str(f))
         return tuple(out)
 
-    def _load_linelist(self, files, dlam, lam, windows=None):
-        """Make sure the line list (files, dlam) covering lam is the one read in.
+    def _load_linelist(self, files, line_margin, lam, windows=None):
+        """Make sure the line list (files, line_margin) covering lam is the one read in.
 
-        Without ``windows``, only lines inside [lam[0]-dlam, lam[-1]+dlam] are kept,
+        Without ``windows``, only lines inside [lam[0]-line_margin, lam[-1]+line_margin] are kept,
         exactly as composition_pre_init does with the output spectrum's range.  A line
         list can only be *added* to the never-solved master instance -- and the solve
         works on a copy of it -- so a different list, or one read over too narrow a
         window, means rebuilding the instance and re-solving the state.
 
         ``windows`` is a sequence of ``(blue, red)`` vacuum-Angstrom bounds, and keeps
-        only the lines inside them (each expanded by ``dlam`` and merged, as a full run
+        only the lines inside them (each expanded by ``line_margin`` and merged, as a full run
         does).  That matters whenever the wavelengths of interest are a handful of narrow
         windows spread over a wide span: the range mask would load everything between the
         first and the last.  Over the fifteen 2.5 A windows of a balance fit, the range
@@ -342,8 +342,8 @@ class HopEOS:
         lam_min, lam_max = float(np.min(lam)), float(np.max(lam))
         key = tuple((float(b), float(r)) for b, r in windows) if windows else None
         if self._linelist is not None:
-            have_files, have_dlam, have_min, have_max, have_key = self._linelist
-            if (files, dlam, key) == (have_files, have_dlam, have_key) and \
+            have_files, have_line_margin, have_min, have_max, have_key = self._linelist
+            if (files, line_margin, key) == (have_files, have_line_margin, have_key) and \
                     have_min <= lam_min and lam_max <= have_max:
                 return                       # already covered
             self._rebuild()                  # lines cannot be unread
@@ -352,15 +352,15 @@ class HopEOS:
                 blue = np.ascontiguousarray([b for b, _r in key], np.float64)
                 red = np.ascontiguousarray([r for _b, r in key], np.float64)
                 status = self._lib.hop_init_linelist_windows(
-                    _c_str(f), float(dlam), len(key),
+                    _c_str(f), float(line_margin), len(key),
                     _buf(blue, np.float64, 'double *'), _buf(red, np.float64, 'double *'))
                 _check(self._lib, status, f'hop_init_linelist_windows({f})')
             else:
                 lam_arr = np.ascontiguousarray([lam_min, lam_max], np.float64)
                 status = self._lib.hop_init_linelist(
-                    _c_str(f), float(dlam), 2, _buf(lam_arr, np.float64, 'double *'))
+                    _c_str(f), float(line_margin), 2, _buf(lam_arr, np.float64, 'double *'))
                 _check(self._lib, status, f'hop_init_linelist({f})')
-        self._linelist = (files, dlam, lam_min, lam_max, key)
+        self._linelist = (files, line_margin, lam_min, lam_max, key)
         if self._state is not None:
             self.load_state(**self._state)   # the solve must see the new lines
 
@@ -489,7 +489,7 @@ class HopEOS:
         if self._state is not None:
             self._state['vmic'] = float(vmic)
 
-    def _opacity_call(self, lam, include_absmet, include_linelist, dlam,
+    def _opacity_call(self, lam, include_absmet, include_linelist, line_margin,
                       line_scattering):
         """One hop_opacity call over the whole of lam, as flat (ncell, nlam)."""
         n = self.n
@@ -499,12 +499,12 @@ class HopEOS:
                                        _buf(chi, np.float32, 'float *'),
                                        _buf(scat, np.float32, 'float *'),
                                        int(bool(include_absmet)),
-                                       int(bool(include_linelist)), float(dlam),
+                                       int(bool(include_linelist)), float(line_margin),
                                        int(bool(line_scattering)))
         _check(self._lib, status, 'hop_opacity')
         return chi, scat
 
-    def line_strengths(self, lam, linelist, dlam=100.0, vmic=None):
+    def line_strengths(self, lam, linelist, line_margin=100.0, vmic=None):
         """Per-line strengths over ``lam``: a DataFrame of ion / lam0 / evi / loggf / strength.
 
         ``strength`` is HOP's own diagnostic — the line's centre extinction over the
@@ -522,13 +522,13 @@ class HopEOS:
         depth-thinned 8-layer one over the same window. A floor of ~0.03 s is reading the
         line list, and does not shrink with either.
         The strength is evaluated at each line's centre, so ``lam`` need not resolve the
-        cores. Only lines HOP actually used are returned, which is the set within ``dlam``
+        cores. Only lines HOP actually used are returned, which is the set within ``line_margin``
         of ``lam``.
         """
         import pandas as pd
         if self._state is None:
             raise HopError('no state loaded; call load_state first')
-        self.opacity(lam, linelist=linelist, dlam=dlam, vmic=vmic)
+        self.opacity(lam, linelist=linelist, line_margin=line_margin, vmic=vmic)
         n = self._lib.hop_linelist_count()
         if n < 1:
             return pd.DataFrame(columns=['ion', 'lam0', 'evi', 'loggf', 'strength'])
@@ -549,7 +549,7 @@ class HopEOS:
         return pd.DataFrame({'ion': [names[i] for i in ispec], 'lam0': lam0,
                              'evi': evi, 'loggf': loggf, 'strength': strength})
 
-    def write_linelist(self, path, lam, linelist, dlam=None, vmic=None,
+    def write_linelist(self, path, lam, linelist, line_margin=None, vmic=None,
                        windows=None):
         """Write the lines used over ``lam`` as a line list in the *input* format.
 
@@ -564,16 +564,16 @@ class HopEOS:
         of the atmosphere instead of each run's own abundance.
 
         What lands in it is the line list as *loaded*, so ``windows`` is what crops it:
-        a sequence of ``(blue, red)`` vacuum-Angstrom bounds, each expanded by ``dlam``
+        a sequence of ``(blue, red)`` vacuum-Angstrom bounds, each expanded by ``line_margin``
         and merged, as a full run does. Passing only ``lam`` is not enough -- the load
-        then masks on [min(lam)-dlam, max(lam)+dlam] and a set of narrow windows spread
+        then masks on [min(lam)-line_margin, max(lam)+line_margin] and a set of narrow windows spread
         over a wide span keeps the whole span (18943 lines against the windows' 484, on
-        this application's balance windows). ``dlam`` has to match what the runs will
+        this application's balance windows). ``line_margin`` has to match what the runs will
         use, or the crop drops wing contributors they would have had.
         """
         if self._state is None:
             raise HopError('no state loaded; call load_state first')
-        kwargs = {} if dlam is None else {'dlam': dlam}
+        kwargs = {} if line_margin is None else {'line_margin': line_margin}
         self.opacity(lam, linelist=linelist, vmic=vmic, windows=windows, **kwargs)
         _check(self._lib, self._lib.hop_write_linelist(_c_str(str(path))),
                f'hop_write_linelist({path})')
@@ -596,7 +596,7 @@ class HopEOS:
         _check(self._lib, status, 'hop_scattering')
         return sig.reshape(self._shape + (lam.size,))
 
-    def opacity(self, lam, linelist=None, dlam=100.0, include_absmet=False,
+    def opacity(self, lam, linelist=None, line_margin=100.0, include_absmet=False,
                 line_scattering=False, vmic=None, nchunks=None, nprocs=1,
                 windows=None):
         """Extinction chi and its scattering part [1/cm] on vacuum wavelengths.
@@ -615,8 +615,8 @@ class HopEOS:
         inside HOP and only summed at the end.
 
         linelist: a file, a list of files or a folder (the &linelist_params
-        linelist_file / linelist_folder), with ``dlam`` [AA] the line-wing search
-        radius; only lines within dlam of the requested wavelengths are read.
+        linelist_file / linelist_folder), with ``line_margin`` [AA] the line-wing search
+        radius; only lines within line_margin of the requested wavelengths are read.
         Switching to a different list rebuilds the instance and re-solves the
         state, since HOP can only ever add lines.
 
@@ -652,7 +652,7 @@ class HopEOS:
         for i in range(1, nchunks + 1):
             fs, fe = freq_split(lam.size, i, nchunks)
             jobs.append(dict(lam=lam[fs:fe], recipe=self._recipe, state=self._state,
-                             species=list(self._species), linelist=linelist, dlam=dlam,
+                             species=list(self._species), linelist=linelist, line_margin=line_margin,
                              vmic=vmic, include_absmet=include_absmet,
                              line_scattering=line_scattering))
 
@@ -671,7 +671,7 @@ class HopEOS:
                                'reason to stderr') from None
         else:
             if linelist is not None:
-                self._load_linelist(linelist, dlam, lam, windows)
+                self._load_linelist(linelist, line_margin, lam, windows)
             if vmic is not None:
                 self._set_vmic(vmic)
             results = [_opacity_chunk(job, self) for job in jobs]
@@ -831,14 +831,14 @@ def _opacity_chunk(job, hop=None):
     try:
         if own:
             if job['linelist'] is not None:
-                hop._load_linelist(job['linelist'], job['dlam'], job['lam'])
+                hop._load_linelist(job['linelist'], job['line_margin'], job['lam'])
             if job['species']:
                 hop.keep_species(job['species'])
             hop.load_state(**job['state'])
             if job['vmic'] is not None:
                 hop._set_vmic(job['vmic'])
         return hop._opacity_call(job['lam'], job['include_absmet'],
-                                 job['linelist'] is not None, job['dlam'],
+                                 job['linelist'] is not None, job['line_margin'],
                                  job['line_scattering'])
     finally:
         if own:

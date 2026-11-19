@@ -907,12 +907,12 @@ CONTAINS
   !> line_scat < 0 leaves the split to the module-global line_scattering, 0/1
   !> override it; include_llist is honoured only once a line list has been read.
   !=============================================================================
-  FUNCTION hop_opacity(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
+  FUNCTION hop_opacity(nlam, lam, chi, scat, include_absmet, include_llist, line_margin, &
                        line_scat) RESULT(status) BIND(c, name='hop_opacity')
     integer(c_int), value :: nlam, include_absmet, include_llist, line_scat
     real(c_double), intent(in) :: lam(*)
     real(c_float), intent(inout), target :: chi(*), scat(*)
-    real(c_double), value :: dlam
+    real(c_double), value :: line_margin
     integer(c_int) :: status
     type(spectrum_type) :: sp
     real(4), pointer, contiguous :: chi4(:,:,:,:), scat4(:,:,:,:)
@@ -933,10 +933,10 @@ CONTAINS
     scat4(1:nlam, 1:n, 1:1, 1:1) => scat(1:nlam*n)
     if (line_scat < 0) then
       call comp%opacity(sp, chi4, scat4, include_absmet = include_absmet /= 0, &
-        include_llist = include_llist /= 0, dlam = dlam, sorted = .true.)
+        include_llist = include_llist /= 0, line_margin = line_margin, sorted = .true.)
     else
       call comp%opacity(sp, chi4, scat4, include_absmet = include_absmet /= 0, &
-        include_llist = include_llist /= 0, dlam = dlam, sorted = .true., &
+        include_llist = include_llist /= 0, line_margin = line_margin, sorted = .true., &
         line_scat = line_scat /= 0)
     end if
   END FUNCTION hop_opacity
@@ -944,12 +944,12 @@ CONTAINS
   !=============================================================================
   !> Threaded Opacity
   !=============================================================================
-  FUNCTION hop_opacity_omp(nlam, lam, chi, scat, include_absmet, include_llist, dlam, &
+  FUNCTION hop_opacity_omp(nlam, lam, chi, scat, include_absmet, include_llist, line_margin, &
                            line_scat, nthreads) RESULT(status) BIND(c, name='hop_opacity_omp')
     integer(c_int), value :: nlam, include_absmet, include_llist, line_scat, nthreads
     real(c_double), intent(in) :: lam(*)
     real(c_float), intent(inout), target :: chi(*), scat(*)
-    real(c_double), value :: dlam
+    real(c_double), value :: line_margin
     integer(c_int) :: status
 
     type(spectrum_type) :: sp
@@ -1001,7 +1001,7 @@ CONTAINS
       return
     end if
     nf = size(chi4, 1)
-    dl = dlam
+    dl = line_margin
     do_absmet = (include_absmet /= 0) .and. osmet%initialised
     do_llist = (include_llist /= 0) .and. comp%ll_initialised
     do_split = (line_scat /= 0)
@@ -1113,19 +1113,19 @@ CONTAINS
   !=============================================================================
   !> Read a line list keeping only the lines inside a set of windows, rather than
   !> everything between the first and last wavelength.  hop_init_linelist masks on
-  !> [lam(1)-dlam, lam(nlam)+dlam], so a request for fifteen 2.5 A windows spread
+  !> [lam(1)-line_margin, lam(nlam)+line_margin], so a request for fifteen 2.5 A windows spread
   !> over 1300 A loads all 1300 A of it: measured on the master list, 18943 lines
-  !> where the windows hold 484.  The windows are merged and expanded by dlam here
+  !> where the windows hold 484.  The windows are merged and expanded by line_margin here
   !> exactly as a full run does it (build_linelist_intervals), so the kept set is the
   !> one that run would keep, wing contributors included.
   !>
   !> blue_vac/red_vac are vacuum Angstrom, like interval_t itself; the reader masks
   !> on the vacuum line centre.
   !=============================================================================
-  FUNCTION hop_init_linelist_windows(linelist_file, dlam, nwin, blue_vac, red_vac) &
+  FUNCTION hop_init_linelist_windows(linelist_file, line_margin, nwin, blue_vac, red_vac) &
            RESULT(status) BIND(c, name='hop_init_linelist_windows')
     character(kind=c_char), intent(in) :: linelist_file(*)
-    real(c_double), value :: dlam
+    real(c_double), value :: line_margin
     integer(c_int), value :: nwin
     real(c_double), intent(in) :: blue_vac(*), red_vac(*)
     integer(c_int) :: status
@@ -1155,7 +1155,7 @@ CONTAINS
     allocate(windows(nwin, 2))
     windows(:,1) = blue_vac(1:nwin)
     windows(:,2) = red_vac(1:nwin)
-    call merge_intervals(windows, nwin, dlam, merged, nmerged)
+    call merge_intervals(windows, nwin, line_margin, merged, nmerged)
     if (nmerged < 1) then
       call fail('hop_init_linelist_windows: the windows merged to nothing', 3, status)
       return
@@ -1163,21 +1163,21 @@ CONTAINS
     ! the lam range is the hull of the merged intervals; the intervals do the masking
     allocate(lam8(2))
     lam8 = [minval(merged(1:nmerged)%blue_vac), maxval(merged(1:nmerged)%red_vac)]
-    call master%init_linelist(file_f, dlam, lam8, merged(1:nmerged))
+    call master%init_linelist(file_f, line_margin, lam8, merged(1:nmerged))
   END FUNCTION hop_init_linelist_windows
 
   !=============================================================================
   !> Read one line-list file into the master instance, keeping only lines inside
-  !> [lam(1)-dlam, lam(nlam)+dlam] (pass nlam=0 for no wavelength mask).  Mirrors
+  !> [lam(1)-line_margin, lam(nlam)+line_margin] (pass nlam=0 for no wavelength mask).  Mirrors
   !> the composition%init_linelist calls dispatch makes at setup, one per file in
   !> linelist_folder; repeated calls accumulate.  Must be called after hop_init and
   !> BEFORE hop_load_state: the solve works on a fresh copy of master, and
   !> particle%ll is allocatable, so the copy carries the lines along.
   !=============================================================================
-  FUNCTION hop_init_linelist(linelist_file, dlam, nlam, lam) RESULT(status) &
+  FUNCTION hop_init_linelist(linelist_file, line_margin, nlam, lam) RESULT(status) &
            BIND(c, name='hop_init_linelist')
     character(kind=c_char), intent(in) :: linelist_file(*)
-    real(c_double), value :: dlam
+    real(c_double), value :: line_margin
     integer(c_int), value :: nlam
     real(c_double), intent(in) :: lam(*)
     integer(c_int) :: status
@@ -1201,9 +1201,9 @@ CONTAINS
     if (nlam > 0) then
       allocate(lam8(nlam))
       lam8 = lam(1:nlam)
-      call master%init_linelist(file_f, dlam, lam8)
+      call master%init_linelist(file_f, line_margin, lam8)
     else
-      call master%init_linelist(file_f, dlam)
+      call master%init_linelist(file_f, line_margin)
     end if
   END FUNCTION hop_init_linelist
 
