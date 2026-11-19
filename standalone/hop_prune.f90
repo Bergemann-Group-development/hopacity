@@ -83,11 +83,11 @@ PROGRAM hop_prune
   integer :: comp_verbose=console_inherit
 
   ! --- &opac_table_params: only opac_table_vmic influences the selection ------------
-  character(len=4096) :: opac_table='', absmet_file=''
+  character(len=4096) :: opac_table='', absmet_file='', absmet_folder=''
   logical :: pca_opac=.true.
   real(8) :: ldne=0.25, ldrho=0.25, ldtemp=0.05
   namelist /opac_table_params/ opac_table, opac_table_vmic, pca_opac, &
-    ldne, ldrho, ldtemp, absmet_file
+    ldne, ldrho, ldtemp, absmet_file, absmet_folder
 
   ! --- &linelist_params ---------------------------------------------------------------
   real(8) :: dlam=100.

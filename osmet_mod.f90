@@ -364,4 +364,43 @@ contains
     !     if(z .gt. 1) psemi = 0.200
     ! endif
   end SUBROUTINE psemi
+
+  !===============================================================================
+  !> The absmet table among the file names names whose [Fe/H] is nearest feh, or ''
+  !> if none states one.  A table's [Fe/H] opens its name, as in the MARCS tables
+  !> (m-2.00a+0.40c+0.00...).  A table carries no metallicity scaling, so a tie goes
+  !> to the more metal-poor table.
+  !===============================================================================
+  FUNCTION nearest_absmet (names, feh) result(name)
+    character(len=*), dimension(:), intent(in) :: names !< file names, without the folder
+    real(8), intent(in) :: feh                          !< [Fe/H] of the run
+    character(len=:), allocatable :: name
+    character(len=*), parameter :: digits='0123456789'
+    real(8) :: table_feh, best_feh
+    integer :: i, iostat, best, dot, last
+    !---------------------------------------------------------------------------
+    best = 0
+    best_feh = 0d0
+    do i=1, size(names)
+      ! m, a sign, digits, a point and digits: the [Fe/H] is names(i)(2:last)
+      if (names(i)(1:1) /= 'm' .or. scan(names(i)(2:2), '+-') /= 1) cycle
+      dot = verify(names(i)(3:), digits) + 2
+      if (dot < 4 .or. names(i)(dot:dot) /= '.') cycle
+      last = verify(names(i)(dot+1:), digits) + dot - 1
+      if (last == dot - 1) last = len(names(i))
+      if (last == dot) cycle
+      read (names(i)(2:last), *, iostat=iostat) table_feh
+      if (iostat /= 0) cycle
+      if (best == 0 .or. abs(table_feh-feh) < abs(best_feh-feh) .or. &
+          (abs(table_feh-feh) == abs(best_feh-feh) .and. table_feh < best_feh)) then
+        best = i
+        best_feh = table_feh
+      end if
+    end do
+    if (best == 0) then
+      allocate(name, source='')
+    else
+      allocate(name, source=trim(names(best)))
+    end if
+  END FUNCTION nearest_absmet
 END MODULE osmet_mod
