@@ -10,6 +10,9 @@
 !> A namelist group cannot be passed to a procedure, so the caller writes the
 !> group to a scratch unit and the declared keys are parsed from that text; the
 !> READ_NAMELIST macro in read_namelist.inc does this.
+!>
+!> trim_namelist_values copies a namelist file that a program wrote, such as a
+!> run's params.nml, without the blank padding of its character values.
 !===============================================================================
 MODULE namelist_check_mod
   USE iso_fortran_env, only: error_unit, iostat_eor
@@ -17,8 +20,69 @@ MODULE namelist_check_mod
   implicit none
   private
   integer, parameter:: name_len=64
-  public:: namelist_error
+  public:: namelist_error, trim_namelist_values
 CONTAINS
+
+!===============================================================================
+!> Copy the records of unit input to unit output, dropping the trailing blanks of
+!> each quoted character value.  A namelist write pads every character variable
+!> to its declared length, 4096 characters for file names.  The Intel Fortran
+!> runtime (ifort 2021, ifx 2024) corrupts the heap when its namelist read meets
+!> a value of more than about 2000 characters, blanks included, so a program
+!> built with it cannot read back its own params.nml.  Reading the copy assigns
+!> the same values, since a character variable is blank-padded on assignment.
+!> A doubled quote inside a value is kept as such; output is left positioned
+!> after the copy.
+!===============================================================================
+SUBROUTINE trim_namelist_values (input, output)
+  integer, intent(in):: input, output
+  character(len=:), allocatable:: record, copy
+  character:: quote
+  integer:: iostat, i, i0, blanks
+  !-----------------------------------------------------------------------------
+  quote = ' '
+  blanks = 0
+  do
+    call read_record (input, record, iostat)
+    if (iostat /= 0) exit
+    allocate (character(len=0):: copy)
+    i0 = 1
+    i = 1
+    do while (i <= len(record))
+      if (quote == ' ') then
+        if (record(i:i) == '"' .or. record(i:i) == "'") quote = record(i:i)
+      else if (record(i:i) == ' ') then
+        ! a run of blanks inside a value is held back until a character follows
+        call append (copy, record(i0:i-1))
+        blanks = blanks + 1
+        i0 = i + 1
+      else
+        if (record(i:i) == quote .and. .not. doubled(record, i)) then
+          quote = ' '
+        else
+          call append (copy, repeat(' ', blanks))
+          if (record(i:i) == quote) i = i + 1
+        end if
+        blanks = 0
+      end if
+      i = i + 1
+    end do
+    call append (copy, record(i0:))
+    write (output, '(a)') copy
+    deallocate (copy)
+  end do
+END SUBROUTINE trim_namelist_values
+
+!===============================================================================
+!> Whether the quote at record(i:i) is the first of a doubled quote
+!===============================================================================
+LOGICAL FUNCTION doubled (record, i)
+  character(len=*), intent(in):: record
+  integer, intent(in):: i
+  !-----------------------------------------------------------------------------
+  doubled = .false.
+  if (i < len(record)) doubled = record(i+1:i+1) == record(i:i)
+END FUNCTION doubled
 
 !===============================================================================
 !> Report the failed read of a group from unit input and stop.  scratch holds the
